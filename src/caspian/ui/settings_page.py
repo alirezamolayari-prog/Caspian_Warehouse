@@ -21,6 +21,7 @@ from caspian.services.ai import config
 from caspian.services.ai.config import PRESETS, ProviderConfig
 from caspian.services.errors import ServiceError
 from caspian.ui.app_context import AppContext, exec_dialog
+from caspian.ui.automation_settings import McpSection, MessagingTab, TasksTab
 from caspian.ui.dialogs import FormDialog, ltr_field, password_field
 from caspian.ui.messages import show_error, show_info
 from caspian.ui.theme import ThemeManager
@@ -155,6 +156,7 @@ class AITab(QWidget):
         self.table.doubleClicked.connect(lambda _: self.on_edit())
         card.body.addWidget(self.table)
         layout.addWidget(card, 1)
+        layout.addWidget(McpSection(ctx))
         self._update_buttons()
 
     def _update_buttons(self) -> None:
@@ -241,11 +243,18 @@ class SettingsPage(QWidget):
         self.appearance = AppearanceTab(ctx.themes)
         self.theme_combo = self.appearance.theme_combo
         self.ai = AITab(ctx)
+        self.messaging = MessagingTab(ctx)
+        self.tasks = TasksTab(ctx)
         self.tabs.addTab(self.appearance, "ظاهر")
         self.ai_index = self.tabs.addTab(self.ai, "هوش مصنوعی")
+        self.messaging_index = self.tabs.addTab(self.messaging, "پیام‌رسان‌ها")
+        self.tasks_index = self.tabs.addTab(self.tasks, "کارهای زمان‌بندی‌شده")
         layout.addWidget(self.tabs)
         ctx.user_changed.connect(self._apply_permissions)
         self._apply_permissions()
 
     def _apply_permissions(self, *_args) -> None:
         self.tabs.setTabVisible(self.ai_index, self._ctx.actor.can(Perm.AI_CONFIGURE))
+        admin = self._ctx.actor.can(Perm.SETTINGS_EDIT)
+        self.tabs.setTabVisible(self.messaging_index, admin)
+        self.tabs.setTabVisible(self.tasks_index, admin)

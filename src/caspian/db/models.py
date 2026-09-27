@@ -457,3 +457,36 @@ class AIProvider(IdMixin, TimestampMixin, CreatedByMixin, Base):
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=30)
     # Model used for speech-to-text on this provider (empty = not supported).
     stt_model: Mapped[str] = mapped_column(String(200), default="")
+
+
+# ----- scheduled tasks -----
+
+
+class TaskKind(enum.StrEnum):
+    BACKUP = "BACKUP"
+    REPORT = "REPORT"  # build a report and send it via Telegram / email
+
+
+class TaskStatus(enum.StrEnum):
+    PROPOSED = "PROPOSED"  # parsed from instructions (possibly by the AI); needs admin approval
+    ACTIVE = "ACTIVE"
+    PAUSED = "PAUSED"
+
+
+class ScheduledTask(IdMixin, TimestampMixin, CreatedByMixin, Base):
+    __tablename__ = "scheduled_tasks"
+
+    name: Mapped[str] = mapped_column(String(200))
+    kind: Mapped[TaskKind] = mapped_column(_enum(TaskKind))
+    cron: Mapped[str] = mapped_column(String(100))  # "minute hour day-of-month month day-of-week"
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[TaskStatus] = mapped_column(_enum(TaskStatus), default=TaskStatus.PROPOSED)
+    source_text: Mapped[str] = mapped_column(Text, default="")
+    # Only one PC in the LAN runs a task: the one it was approved on.
+    machine: Mapped[str] = mapped_column(String(128), default="")
+    approved_by_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("users.id"))
+    approved_at: Mapped[dt.datetime | None]
+    last_run_at: Mapped[dt.datetime | None]
+    next_run_at: Mapped[dt.datetime | None]
+    last_ok: Mapped[bool | None] = mapped_column(Boolean)
+    last_result: Mapped[str] = mapped_column(Text, default="")

@@ -15,6 +15,7 @@ from caspian.core.secrets import get_secret, set_secret
 from caspian.core.settings import Settings
 from caspian.db.bootstrap import open_mariadb
 from caspian.db.database import Database, DbConfig, describe_error
+from caspian.services.scheduler import SchedulerRunner
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import run_login
 from caspian.ui.db_setup_dialog import DbSetupDialog
@@ -68,11 +69,14 @@ async def _main(settings: Settings, themes: ThemeManager) -> None:
         if actor is None:
             return
         ctx = AppContext(db, config, settings, themes, actor)
+        runner = SchedulerRunner(db, ctx.messenger)
+        runner.start()
         window = MainWindow(ctx)
         closed = asyncio.Event()
         window.closed.connect(closed.set)
         window.show()
         await closed.wait()
+        await runner.stop()
     finally:
         await db.dispose()
         app.quit()

@@ -33,6 +33,7 @@ class ToolContext:
     db: Database
     actor: Actor  # already restricted with as_ai()
     created_batches: list[int]
+    messenger: object | None = None  # caspian.services.messaging.Messenger
 
 
 @dataclass(frozen=True)
@@ -146,6 +147,30 @@ async def _create_stock_draft(ctx: ToolContext, args: dict) -> dict:
             "note": "پیش‌نویس ساخته شد و باید توسط کاربر در «ورود اطلاعات» بررسی و اعمال شود."}
 
 
+async def _send_report(ctx: ToolContext, args: dict) -> dict:
+    from caspian.services.scheduler import REPORT_NAMES, send_report
+
+    name = str(args.get("report", "stock_balance"))
+    if name not in REPORT_NAMES or name == "activity":
+        return {"error": "گزارش نامعتبر است (stock_balance، reorder یا loans)."}
+    if ctx.messenger is None:
+        return {"error": "ارسال پیام در این محیط در دسترس نیست."}
+    channels = [c for c in args.get("channels", []) if c in ("telegram", "email")] or None
+    # Only admin-configured recipients: the AI can't choose where data goes.
+    return {"result": await send_report(ctx.db, ctx.messenger, name, channels)}
+
+
+async def _propose_tasks(ctx: ToolContext, args: dict) -> dict:
+    from caspian.services.scheduler import add_proposals, parse_instructions
+
+    proposals = parse_instructions(str(args.get("instructions", "")))
+    if not proposals:
+        return {"error": "دستورالعمل قابل‌فهمی (پشتیبان‌گیری یا گزارش با زمان) پیدا نشد."}
+    ids = await add_proposals(ctx.db, ctx.actor, proposals)
+    return {"proposed_task_ids": ids, "tasks": [{"name": p.name, "cron": p.cron} for p in proposals],
+            "note": "کارها پیشنهاد شدند و باید مدیر در تنظیمات ← کارهای زمان‌بندی‌شده تأیید کند."}
+
+
 TOOLS: list[Tool] = [
     Tool("search_items", "جستجوی کالا با نام، کد یا بارکد. موجودی و نقطه سفارش را برمی‌گرداند.",
          _obj({"query": {"type": "string"}, "limit": {"type": "integer"}}, ("query",)),
@@ -178,6 +203,13 @@ TOOLS: list[Tool] = [
                    "unit": {"type": "string"}})}},
              ("doc_type", "lines")),
          _create_stock_draft, Perm.IMPORT_RUN),
+    Tool("send_report", "ساخت گزارش اکسل و ارسال به گیرندگان از پیش تنظیم‌شده (تلگرام/ایمیل). "
+         "report یکی از stock_balance, reorder, loans.",
+         _obj({"report": {"type": "string"}, "channels": {"type": "array", "items": {"type": "string"}}},
+              ("report",)), _send_report, Perm.REPORTS_VIEW),
+    Tool("propose_tasks", "پیشنهاد کار زمان‌بندی‌شده از دستورالعمل متنی، مثل «هر روز ساعت ۸ شب پشتیبان بگیر». "
+         "فقط پیشنهاد است و مدیر باید تأیید کند.",
+         _obj({"instructions": {"type": "string"}}, ("instructions",)), _propose_tasks, Perm.AI_USE),
 ]
 _BY_NAME = {t.name: t for t in TOOLS}
 

@@ -82,7 +82,7 @@ provider). Read-only tool calling (stock, items, reports). Persian text → impo
 Reorder suggestions with narrative, supplier purchase-request message drafts.
 AI can never call write/protected services — enforced by tool registry.
 
-### M10 — MCP, automation & messaging
+### M10 — MCP, automation & messaging ✅
 Read-only MCP server backed by a SELECT-only MariaDB user. Telegram + SMTP email senders.
 Scheduler. `.md` instructions → proposed scheduled tasks → human approval → active.
 

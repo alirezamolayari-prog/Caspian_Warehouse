@@ -36,6 +36,19 @@ After changing models, create a migration:
 uv run alembic revision --autogenerate -m "describe change"
 ```
 
+### Read-only MCP server
+
+External AI clients can query the inventory through the Model Context Protocol:
+
+```json
+{"mcpServers": {"caspian-warehouse": {"command": "caspian-mcp"}}}
+```
+
+It only exposes read tools (item search, stock, reorder analysis, documents, loans,
+reports). Create the dedicated read-only database user from *Settings → AI* to also enable
+ad-hoc `SELECT` queries; that user can't read the `users` table and every MCP connection
+runs in a read-only transaction.
+
 ## Fonts
 
 Bundles [Vazirmatn](https://github.com/rastikerdar/vazirmatn) by Saber Rastikerdar,

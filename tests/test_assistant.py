@@ -45,7 +45,7 @@ def call(name, **args):
 def test_no_destructive_tools_exist():
     names = {t.name for t in TOOLS}
     assert names == {"search_items", "item_stock", "reorder_analysis", "recent_documents",
-                     "open_loans", "suppliers", "create_stock_draft"}
+                     "open_loans", "suppliers", "create_stock_draft", "send_report", "propose_tasks"}
     for forbidden in ("post", "delete", "approve", "apply", "cancel", "merge", "restore", "role"):
         assert not any(forbidden in n for n in names)
 

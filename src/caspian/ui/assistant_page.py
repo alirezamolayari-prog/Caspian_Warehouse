@@ -49,7 +49,7 @@ class AssistantPage(QWidget):
         super().__init__(parent)
         self._ctx = ctx
         self._open_batch = open_batch  # callable(batch_id) supplied by the main window
-        self._assistant = Assistant(ctx.db, ctx.ai, ctx.actor)
+        self._assistant = Assistant(ctx.db, ctx.ai, ctx.actor, ctx.messenger)
         self._recorder = Recorder()
         self._busy = False
 
@@ -145,7 +145,7 @@ class AssistantPage(QWidget):
             self.status.setText(text)
 
     def _on_user_changed(self, actor) -> None:
-        self._assistant = Assistant(self._ctx.db, self._ctx.ai, actor)
+        self._assistant = Assistant(self._ctx.db, self._ctx.ai, actor, self._ctx.messenger)
         self._welcome()
 
     def showEvent(self, event) -> None:

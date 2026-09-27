@@ -40,9 +40,10 @@ class AssistantReply:
 
 
 class Assistant:
-    def __init__(self, db: Database, gateway: Gateway, actor: Actor) -> None:
+    def __init__(self, db: Database, gateway: Gateway, actor: Actor, messenger=None) -> None:
         self._db = db
         self._gateway = gateway
+        self._messenger = messenger
         self.actor = actor.as_ai()  # the AI never acts with full human authority
         self._display_name = actor.display_name
         self.history: list[dict] = []
@@ -57,7 +58,7 @@ class Assistant:
     async def send(self, text: str) -> AssistantReply:
         self.history.append({"role": "user", "content": text})
         self.history = self.history[-HISTORY_LIMIT:]
-        ctx = ToolContext(self._db, self.actor, [])
+        ctx = ToolContext(self._db, self.actor, [], self._messenger)
         tools = [t.schema() for t in available_tools(self.actor)]
         messages = [self._system(), *self.history]
         provider = ""
