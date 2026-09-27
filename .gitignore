@@ -13,3 +13,5 @@ dist/
 .idea/
 .uv-cache/
 alembic_dev.db
+packaging/caspian.ico
+packaging/caspian.png

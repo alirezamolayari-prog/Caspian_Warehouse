@@ -1,6 +1,7 @@
 import datetime as dt
 
 from PySide6.QtCore import QByteArray, QSize, Qt, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -20,6 +21,7 @@ from caspian import APP_DISPLAY_NAME, __version__
 from caspian.core import jalali
 from caspian.services import auth
 from caspian.services.actor import Actor
+from caspian.ui.about import AboutDialog
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.assistant_page import AssistantPage
 from caspian.ui.auth_dialogs import ChangePasswordDialog, SetPinDialog, run_login
@@ -60,6 +62,7 @@ class MainWindow(QMainWindow):
 
         self._themes.theme_changed.connect(self._on_theme_changed)
         ctx.user_changed.connect(self._on_user_changed)
+        self._install_shortcuts()
         self._on_user_changed(ctx.actor)
 
         if self._settings.window_geometry:
@@ -142,6 +145,8 @@ class MainWindow(QMainWindow):
         self._user_menu.addSeparator()
         self._user_menu.addAction("تغییر کاربر", self.on_switch_user)
         self._user_menu.addAction("خروج از حساب", self.on_logout)
+        self._user_menu.addSeparator()
+        self._user_menu.addAction("درباره برنامه", self.show_about)
         self._user_button.setMenu(self._user_menu)
         header.addWidget(self._user_button)
         col.addLayout(header)
@@ -151,6 +156,7 @@ class MainWindow(QMainWindow):
         for spec in PAGES:
             if spec.key == "dashboard":
                 page = DashboardPage(self.ctx)
+                page.open_page.connect(self.open_from_dashboard)
             elif spec.key == "items":
                 page = ItemsPage(self.ctx)
             elif spec.key == "master":
@@ -197,6 +203,23 @@ class MainWindow(QMainWindow):
         self._nav_buttons[key].setChecked(True)
         self._page_title.setText(next(p.title for p in PAGES if p.key == key))
         self._refresh_icons()
+
+    def open_from_dashboard(self, key: str, option: str) -> None:
+        self.navigate(key)
+        if option == "low_stock":
+            self._pages["items"].low_only.setChecked(True)
+        elif option == "loans":
+            documents = self._pages["documents"]
+            documents.tabs.setCurrentWidget(documents.loans)
+
+    def _install_shortcuts(self) -> None:
+        visible = [p.key for p in PAGES]
+        for number, key in enumerate(visible[:9], start=1):
+            shortcut = QShortcut(QKeySequence(f"Ctrl+{number}"), self)
+            shortcut.activated.connect(lambda k=key: self.navigate(k))
+
+    def show_about(self) -> None:
+        AboutDialog(self).open()
 
     @asyncSlot()
     async def open_import_batch(self, batch_id: int) -> None:

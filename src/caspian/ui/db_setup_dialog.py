@@ -15,11 +15,14 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QSpinBox,
     QVBoxLayout,
+    QWidget,
 )
 from qasync import asyncSlot
 
 from caspian.db.bootstrap import open_mariadb
 from caspian.db.database import DEFAULT_PORT, Database, DbConfig, describe_error
+from caspian.db.provision import create_app_user
+from caspian.services.errors import ValidationError
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +92,25 @@ class DbSetupDialog(QDialog):
         self.create_check.setChecked(True)
         layout.addWidget(self.create_check)
 
+        # First install: let the app create its own MariaDB account from an admin one.
+        self.provision_check = QCheckBox(
+            "نصب جدید: ساخت کاربر اختصاصی برنامه با حساب مدیر MariaDB (پیشنهادی)")
+        layout.addWidget(self.provision_check)
+        self.provision_box = QWidget()
+        pform = QFormLayout(self.provision_box)
+        pform.setContentsMargins(24, 0, 0, 0)
+        self.admin_user_edit = QLineEdit("root")
+        self.admin_user_edit.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        self.admin_password_edit = QLineEdit()
+        self.admin_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.lan_check = QCheckBox("اجازه اتصال سایر رایانه‌های شبکه (رمز بالا را برای آن‌ها یادداشت کنید)")
+        pform.addRow("کاربر مدیر MariaDB:", self.admin_user_edit)
+        pform.addRow("رمز مدیر:", self.admin_password_edit)
+        pform.addRow("", self.lan_check)
+        self.provision_box.setVisible(False)
+        self.provision_check.toggled.connect(self._on_provision_toggled)
+        layout.addWidget(self.provision_box)
+
         self.status = QLabel(objectName="StatusText")
         self.status.setWordWrap(True)
         self._show_status(error, is_error=True)
@@ -109,6 +131,12 @@ class DbSetupDialog(QDialog):
         self.local_radio.toggled.connect(self._on_mode_changed)
         (self.local_radio if config.is_local else self.network_radio).setChecked(True)
         self._on_mode_changed()
+
+    def _on_provision_toggled(self, on: bool) -> None:
+        self.provision_box.setVisible(on)
+        self.password_edit.setPlaceholderText(
+            "خالی = رمز تصادفی (فقط برای همین رایانه)" if on else "")
+        self.adjustSize()
 
     def _on_mode_changed(self) -> None:
         local = self.local_radio.isChecked()
@@ -149,7 +177,18 @@ class DbSetupDialog(QDialog):
         self._set_busy(True)
         self._show_status("در حال اتصال…")
         try:
+            if self.provision_check.isChecked():
+                lan = self.lan_check.isChecked()
+                if lan and len(password) < 8:
+                    raise ValidationError("برای اتصال شبکه‌ای، رمز کاربر برنامه را (حداقل ۸ کاراکتر) "
+                                          "خودتان تعیین کنید تا در سایر رایانه‌ها وارد شود.")
+                password = await create_app_user(config, self.admin_user_edit.text().strip(),
+                                                 self.admin_password_edit.text(), lan, password)
             db = await open_mariadb(config, password, create=self.create_check.isChecked())
+        except ValidationError as exc:
+            self._show_status(exc.message, is_error=True)
+            self._set_busy(False)
+            return
         except Exception as exc:
             log.warning("DB connection failed: %s", exc)
             self._show_status(describe_error(exc), is_error=True)

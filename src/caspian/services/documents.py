@@ -6,11 +6,13 @@ never supplies the factor.
 """
 
 import datetime as dt
+import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm.attributes import flag_modified
@@ -38,6 +40,9 @@ from caspian.services import audit
 from caspian.services.actor import Actor
 from caspian.services.errors import ConcurrencyError, NotFound, ValidationError
 from caspian.services.fiscal_state import ensure_open_year
+
+NUMBER_RETRIES = 3
+log = logging.getLogger(__name__)
 
 DOC_TYPE_NAMES = {
     DocType.OPENING: "موجودی اول دوره",
@@ -452,8 +457,17 @@ async def create_document_in(s: AsyncSession, actor: Actor, data: DocumentInput)
 
 
 async def create_document(db: Database, actor: Actor, data: DocumentInput) -> int:
-    async with db.session(actor.user_id) as s:
-        return (await create_document_in(s, actor, data)).id
+    # Two PCs saving the same document type at the same moment can pick the same number;
+    # the unique constraint rejects the second one, which simply retries with the next number.
+    for attempt in range(NUMBER_RETRIES):
+        try:
+            async with db.session(actor.user_id) as s:
+                return (await create_document_in(s, actor, data)).id
+        except IntegrityError:
+            if attempt == NUMBER_RETRIES - 1:
+                raise
+            log.info("Document number collision; retrying")
+    raise AssertionError("unreachable")
 
 
 async def update_document(db: Database, actor: Actor, doc_id: int, expected_version: int,

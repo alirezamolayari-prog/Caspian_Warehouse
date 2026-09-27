@@ -151,6 +151,7 @@ QToolButton#UserChip::menu-indicator {{ image: none; width: 0; }}
 #Card {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: 12px; }}
 #CardTitle {{ color: {t.text_muted}; font-size: 9pt; }}
 #CardValue {{ font-size: 20pt; font-weight: 700; }}
+StatCard#Card:hover {{ border-color: {t.primary}; }}
 #CardHint {{ color: {t.text_muted}; font-size: 8.5pt; }}
 #EmptyTitle {{ font-size: 13pt; font-weight: 700; }}
 #EmptyText, #Muted, #StatusText {{ color: {t.text_muted}; }}

@@ -183,3 +183,31 @@ async def test_mariadb_full_schema():
         assert (await reports.cardex(db, admin, item.id)).rows[-1][7] == Decimal(48)
     finally:
         await db.dispose()
+
+
+MARIADB_ROOT = os.environ.get("CASPIAN_TEST_MARIADB_ROOT")
+
+
+@pytest.mark.skipif(not (MARIADB_URL and MARIADB_ROOT), reason="MariaDB admin credentials not set")
+async def test_provision_app_user_on_mariadb():
+    from sqlalchemy.engine import make_url
+
+    from caspian.db.provision import create_app_user
+
+    url = make_url(MARIADB_URL)
+    root_user, root_password = MARIADB_ROOT.split(":", 1)
+    config = DbConfig(url.host, url.port or 3306, "caspian_prov_test", "caspian_prov")
+    password = await create_app_user(config, root_user, root_password, network=False)
+    db = Database(config.url(password))
+    try:
+        await db.ping()
+        async with db.engine.connect() as conn:
+            dbs = (await conn.execute(text("SHOW DATABASES"))).scalars().all()
+        assert "caspian_prov_test" in dbs and "mysql" not in dbs  # no access beyond its own DB
+    finally:
+        await db.dispose()
+        root = Database(DbConfig(url.host, url.port or 3306, "", root_user).url(root_password, database=""))
+        async with root.engine.connect() as conn:
+            await conn.execute(text("DROP USER IF EXISTS 'caspian_prov'@'localhost'"))
+            await conn.execute(text("DROP DATABASE IF EXISTS caspian_prov_test"))
+        await root.dispose()

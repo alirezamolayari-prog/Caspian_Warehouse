@@ -95,7 +95,7 @@ Active DB keeps its name; each closed year becomes a read-only archive DB (<name
 items, opening stock) → purge stale items option → fresh-start option → export and wipe
 audit logs → previous year made read-only. Year switcher + archive queries for reports/AI.
 
-### M13 — Multi-user LAN, packaging & polish
+### M13 — Multi-user LAN, packaging & polish ✅
 LAN setup guide + concurrency handling (row versioning), installer (PyInstaller + Inno Setup)
 with optional bundled MariaDB setup, performance pass, final UX polish, user manual.
 

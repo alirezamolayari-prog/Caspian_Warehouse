@@ -122,3 +122,26 @@ async def test_users_page_lists_users(window, db, admin):
     page.table.selectRow(0)
     assert page.selected().username == "admin"
     assert not page.active_button.isEnabled()  # can't deactivate yourself
+
+
+def test_dashboard_cards_navigate(window):
+    dashboard = window._pages["dashboard"]
+    dashboard.cards["low_stock"].clicked.emit()
+    assert window.current_page == "items"
+    assert window._pages["items"].low_only.isChecked()
+    window.navigate("dashboard")
+    dashboard.cards["loans"].clicked.emit()
+    documents = window._pages["documents"]
+    assert window.current_page == "documents" and documents.tabs.currentWidget() is documents.loans
+
+
+def test_about_dialog(qtbot):
+    from PySide6.QtWidgets import QLabel
+
+    from caspian import __version__
+    from caspian.ui.about import AboutDialog
+
+    dialog = AboutDialog()
+    qtbot.addWidget(dialog)
+    text = " ".join(label.text() for label in dialog.findChildren(QLabel))
+    assert __version__ in text and "Vazirmatn" in text and "MariaDB" in text

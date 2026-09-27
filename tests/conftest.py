@@ -96,3 +96,9 @@ def _delete_widgets(request):
     for widget in QApplication.topLevelWidgets():
         widget.deleteLater()
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_settings(tmp_path, monkeypatch):
+    """Tests must never overwrite the developer's real settings file."""
+    monkeypatch.setattr("caspian.core.settings.settings_path", lambda: tmp_path / "settings.json")

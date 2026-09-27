@@ -32,15 +32,23 @@ class Card(QFrame):
 
 
 class StatCard(Card):
+    clicked = Signal()
+
     def __init__(self, title: str, value: str = "—", hint: str = "",
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.title = QLabel(title, objectName="CardTitle")
         self.value = QLabel(value, objectName="CardValue")
         self.hint = QLabel(hint, objectName="CardHint")
         for label in (self.title, self.value, self.hint):
             self.body.addWidget(label)
         self.hint.setVisible(bool(hint))
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
 
     def set_value(self, value: str, hint: str | None = None) -> None:
         self.value.setText(value)

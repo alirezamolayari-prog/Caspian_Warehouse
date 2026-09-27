@@ -3,7 +3,9 @@
 Offline-first, AI-assisted inventory management system for Windows.
 Persian (RTL) interface, Jalali calendar, MariaDB backend, dark and light themes.
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for the milestone plan.
+- User guide (Persian): [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
+- Network (multi-user) setup: [docs/LAN_SETUP.md](docs/LAN_SETUP.md)
+- Milestone plan: [docs/ROADMAP.md](docs/ROADMAP.md)
 
 ## Development
 
@@ -35,6 +37,17 @@ After changing models, create a migration:
 ```powershell
 uv run alembic revision --autogenerate -m "describe change"
 ```
+
+### Building the installer
+
+```powershell
+powershell -File packaging\build.ps1 -MariaDbBin "C:\Program Files\MariaDB 11.8\bin"
+```
+
+Produces `dist\CaspianWarehouse\` (PyInstaller, with the MariaDB client tools used for
+backups) and, if Inno Setup 6 is installed, `dist\installer\CaspianWarehouse-Setup-<version>.exe`.
+The frozen build is verified with `CaspianWarehouse.exe --smoke-test`. CI builds the installer
+on every push to `main` and attaches it to the workflow run as an artifact.
 
 ### Read-only MCP server
 

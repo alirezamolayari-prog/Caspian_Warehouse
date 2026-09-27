@@ -7,9 +7,9 @@ import sys
 
 import qasync
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
-from caspian import APP_DISPLAY_NAME, APP_NAME
+from caspian import APP_DISPLAY_NAME, APP_NAME, __version__
 from caspian.core.logging_setup import setup_logging
 from caspian.core.secrets import get_secret, set_secret
 from caspian.core.settings import Settings
@@ -22,8 +22,9 @@ from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import run_login
 from caspian.ui.db_setup_dialog import DbSetupDialog
 from caspian.ui.fonts import apply_app_font
+from caspian.ui.icons import icon
 from caspian.ui.main_window import MainWindow
-from caspian.ui.theme import ThemeManager
+from caspian.ui.theme import LIGHT, ThemeManager
 
 log = logging.getLogger(__name__)
 
@@ -35,7 +36,45 @@ def create_app(argv: list[str] | None = None) -> QApplication:
     app.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
     app.setQuitOnLastWindowClosed(False)
     apply_app_font(app)
+    app.setWindowIcon(icon("boxes", LIGHT.primary))
     return app
+
+
+def install_exception_hook() -> None:
+    """Log unexpected errors and tell the user, instead of silently dying."""
+
+    def hook(exc_type, exc, tb) -> None:
+        log.critical("Unhandled error", exc_info=(exc_type, exc, tb))
+        if QApplication.instance() is not None:
+            box = QMessageBox(QMessageBox.Icon.Critical, "خطای غیرمنتظره",
+                              "خطای غیرمنتظره‌ای رخ داد و جزئیات آن در فایل گزارش ثبت شد.\n"
+                              f"{exc_type.__name__}: {exc}"[:500], QMessageBox.StandardButton.Ok)
+            box.open()
+
+    sys.excepthook = hook
+
+
+async def _smoke_test(themes: ThemeManager) -> None:
+    """Build every page against a throwaway SQLite database (used to verify packaged builds)."""
+    import tempfile
+    from pathlib import Path
+
+    from caspian.db.bootstrap import prepare
+    from caspian.services import auth
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(f"sqlite+aiosqlite:///{Path(tmp) / 'smoke.db'}")
+        await prepare(db)
+        actor = (await auth.login(db, "admin", "admin")).actor
+        settings = Settings()
+        settings.save = lambda *_a, **_k: None  # never overwrite the user's real settings
+        window = MainWindow(AppContext(db, DbConfig(), settings, themes, actor))
+        for key in list(window._pages):
+            window.navigate(key)
+            await asyncio.sleep(0.05)
+        window.close()
+        await db.dispose()
+    print("smoke test OK")
 
 
 async def connect_database(settings: Settings) -> tuple[Database, DbConfig, str] | None:
@@ -87,8 +126,12 @@ async def _main(settings: Settings, themes: ThemeManager) -> None:
 
 def run() -> int:
     setup_logging()
-    log.info("Starting %s", APP_NAME)
+    log.info("Starting %s %s", APP_NAME, __version__)
     app = create_app()
+    if "--smoke-test" in sys.argv:
+        qasync.run(_smoke_test(ThemeManager(app, "light")))
+        return 0
+    install_exception_hook()
     settings = Settings.load()
     themes = ThemeManager(app, settings.theme_mode)
     with contextlib.suppress(asyncio.CancelledError):

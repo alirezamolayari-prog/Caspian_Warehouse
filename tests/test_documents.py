@@ -243,3 +243,21 @@ async def test_list_filters_and_search(env):
         [DocType.LOAN_OUT]
     assert len(await docs.list_documents(db, admin, query="نمایشگاه")) == 1
     assert len(await docs.list_documents(db, admin, date_from=TODAY + dt.timedelta(1))) == 0
+
+
+async def test_number_collision_retries(env, monkeypatch):
+    """Simulate another PC grabbing the same number between our read and our insert."""
+    db, admin = env["db"], env["admin"]
+    await receive(env)
+    real_next = docs._next_number
+    calls = []
+
+    async def stale_next(s, doc_type, year):
+        calls.append(1)
+        return 1 if len(calls) == 1 else await real_next(s, doc_type, year)  # first: stale value
+
+    monkeypatch.setattr(docs, "_next_number", stale_next)
+    doc_id = await docs.create_document(db, admin, doc(
+        DocType.RECEIPT, env["wh1"], (env["drill"], env["u"]["عدد"], Decimal(1))))
+    assert len(calls) == 2
+    assert (await docs.get_document(db, admin, doc_id)).number == 2

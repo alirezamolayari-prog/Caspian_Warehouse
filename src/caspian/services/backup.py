@@ -20,6 +20,7 @@ import shutil
 import sqlite3
 import struct
 import subprocess
+import sys
 import zlib
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -59,7 +60,9 @@ class BackupError(ServiceError):
 def find_tool(name: str, extra_dirs: list[str] | None = None) -> str | None:
     """Locate a MariaDB client tool (mariadb-dump / mariadb)."""
     exe = name + (".exe" if os.name == "nt" else "")
-    for directory in extra_dirs or []:
+    # Installed builds ship the client tools next to the app (tools\mariadb).
+    bundled = Path(sys.executable).parent / "tools" / "mariadb"
+    for directory in [*(extra_dirs or []), str(bundled)]:
         candidate = Path(directory) / exe
         if candidate.is_file():
             return str(candidate)

@@ -3,6 +3,7 @@
 import datetime as dt
 from dataclasses import dataclass
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QGridLayout,
     QLabel,
@@ -43,6 +44,8 @@ PAGES: tuple[PageSpec, ...] = (
 
 
 class DashboardPage(QWidget):
+    open_page = Signal(str, str)  # page key, option (e.g. "low_stock")
+
     def __init__(self, ctx, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._ctx = ctx
@@ -63,6 +66,10 @@ class DashboardPage(QWidget):
         }
         for i, card in enumerate(self.cards.values()):
             grid.addWidget(card, 0, i)
+        targets = {"items": ("items", ""), "low_stock": ("items", "low_stock"),
+                   "loans": ("documents", "loans"), "drafts": ("imports", "")}
+        for key, (page, option) in targets.items():
+            self.cards[key].clicked.connect(lambda p=page, o=option: self.open_page.emit(p, o))
         layout.addLayout(grid)
 
         activity = Card()
