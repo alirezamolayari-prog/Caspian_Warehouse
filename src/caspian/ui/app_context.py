@@ -17,10 +17,11 @@ class AppContext(QObject):
     user_changed = Signal(object)  # Actor
 
     def __init__(self, db: Database, db_config: DbConfig, settings: Settings,
-                 themes: ThemeManager, actor: Actor) -> None:
+                 themes: ThemeManager, actor: Actor, db_password: str = "") -> None:
         super().__init__()
         self.db = db
         self.db_config = db_config
+        self.db_password = db_password  # in memory only; needed by mariadb-dump
         self.settings = settings
         self.themes = themes
         self.actor = actor

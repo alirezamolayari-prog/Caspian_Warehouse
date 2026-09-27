@@ -15,7 +15,9 @@ from caspian.core.secrets import get_secret, set_secret
 from caspian.core.settings import Settings
 from caspian.db.bootstrap import open_mariadb
 from caspian.db.database import Database, DbConfig, describe_error
-from caspian.services.scheduler import SchedulerRunner
+from caspian.db.models import TaskKind
+from caspian.services.backup import make_scheduled_handler
+from caspian.services.scheduler import HANDLERS, SchedulerRunner
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import run_login
 from caspian.ui.db_setup_dialog import DbSetupDialog
@@ -36,14 +38,14 @@ def create_app(argv: list[str] | None = None) -> QApplication:
     return app
 
 
-async def connect_database(settings: Settings) -> tuple[Database, DbConfig] | None:
+async def connect_database(settings: Settings) -> tuple[Database, DbConfig, str] | None:
     """Open the configured DB, or ask the user until it works. None = user gave up."""
     config = DbConfig.from_dict(settings.database)
     password, error = "", ""
     if config is not None:
         password = get_secret("db", config.secret_name) or ""
         try:
-            return await open_mariadb(config, password), config
+            return await open_mariadb(config, password), config, password
         except Exception as exc:
             log.warning("Stored DB connection failed: %s", exc)
             error = describe_error(exc)
@@ -54,7 +56,7 @@ async def connect_database(settings: Settings) -> tuple[Database, DbConfig] | No
     settings.database = dialog.config.to_dict()
     settings.save()
     set_secret("db", dialog.config.secret_name, dialog.password)
-    return dialog.database, dialog.config
+    return dialog.database, dialog.config, dialog.password
 
 
 async def _main(settings: Settings, themes: ThemeManager) -> None:
@@ -63,12 +65,13 @@ async def _main(settings: Settings, themes: ThemeManager) -> None:
     if connected is None:
         app.quit()
         return
-    db, config = connected
+    db, config, password = connected
     try:
         actor = await run_login(db)
         if actor is None:
             return
-        ctx = AppContext(db, config, settings, themes, actor)
+        ctx = AppContext(db, config, settings, themes, actor, password)
+        HANDLERS[TaskKind.BACKUP] = make_scheduled_handler(db, config, password, settings)
         runner = SchedulerRunner(db, ctx.messenger)
         runner.start()
         window = MainWindow(ctx)

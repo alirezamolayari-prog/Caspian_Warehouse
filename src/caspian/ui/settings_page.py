@@ -22,6 +22,7 @@ from caspian.services.ai.config import PRESETS, ProviderConfig
 from caspian.services.errors import ServiceError
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.automation_settings import McpSection, MessagingTab, TasksTab
+from caspian.ui.backup_settings import BackupTab
 from caspian.ui.dialogs import FormDialog, ltr_field, password_field
 from caspian.ui.messages import show_error, show_info
 from caspian.ui.theme import ThemeManager
@@ -245,10 +246,12 @@ class SettingsPage(QWidget):
         self.ai = AITab(ctx)
         self.messaging = MessagingTab(ctx)
         self.tasks = TasksTab(ctx)
+        self.backup = BackupTab(ctx)
         self.tabs.addTab(self.appearance, "ظاهر")
         self.ai_index = self.tabs.addTab(self.ai, "هوش مصنوعی")
         self.messaging_index = self.tabs.addTab(self.messaging, "پیام‌رسان‌ها")
         self.tasks_index = self.tabs.addTab(self.tasks, "کارهای زمان‌بندی‌شده")
+        self.backup_index = self.tabs.addTab(self.backup, "پشتیبان‌گیری")
         layout.addWidget(self.tabs)
         ctx.user_changed.connect(self._apply_permissions)
         self._apply_permissions()
@@ -258,3 +261,4 @@ class SettingsPage(QWidget):
         admin = self._ctx.actor.can(Perm.SETTINGS_EDIT)
         self.tabs.setTabVisible(self.messaging_index, admin)
         self.tabs.setTabVisible(self.tasks_index, admin)
+        self.tabs.setTabVisible(self.backup_index, self._ctx.actor.can(Perm.BACKUP_CREATE))

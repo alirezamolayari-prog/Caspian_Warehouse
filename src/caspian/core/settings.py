@@ -9,7 +9,7 @@ import logging
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-from platformdirs import user_config_dir, user_log_dir
+from platformdirs import user_config_dir, user_documents_dir, user_log_dir
 
 from caspian import APP_NAME
 
@@ -25,6 +25,10 @@ class Settings:
     sidebar_collapsed: bool = False
     # Non-secret DB connection fields (host, port, name, user); empty until configured.
     database: dict = field(default_factory=dict)
+    # Backups are written by this PC (paths are local to it).
+    backup_dir: str = ""
+    backup_keep: int = 30
+    mariadb_tools_dir: str = ""
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Settings":
@@ -56,6 +60,10 @@ def config_dir() -> Path:
 
 def log_dir() -> Path:
     return Path(user_log_dir(APP_NAME, appauthor=False))
+
+
+def default_backup_dir() -> Path:
+    return Path(user_documents_dir()) / "Caspian Backups"
 
 
 def settings_path() -> Path:

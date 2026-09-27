@@ -86,8 +86,8 @@ AI can never call write/protected services — enforced by tool registry.
 Read-only MCP server backed by a SELECT-only MariaDB user. Telegram + SMTP email senders.
 Scheduler. `.md` instructions → proposed scheduled tasks → human approval → active.
 
-### M11 — Backup & restore
-Encrypted backups (mariadb-dump + AES-GCM, `.cwbak`), manual and scheduled, retention,
+### M11 — Backup & restore ✅
+Encrypted backups (mariadb-dump + gzip + AES-256-GCM/scrypt, `.bak`), manual and scheduled, retention,
 verify, restore (protected).
 
 ### M12 — Fiscal year-end & archives
