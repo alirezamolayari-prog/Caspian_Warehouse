@@ -7,12 +7,10 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
-    QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
-    QMenu,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -33,7 +31,7 @@ from caspian.services.stocktake import CountSheet, DiscrepancyReport, StocktakeR
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.dialogs import FormDialog, ltr_field
 from caspian.ui.messages import show_error, show_info
-from caspian.ui.printing import print_html, report_html, save_pdf
+from caspian.ui.printing import output_menu, report_html
 from caspian.ui.widgets import Card, DataTable, QtyEdit
 
 LIST_COLUMNS = ("شماره", "انبار", "محدوده", "عنوان", "شروع", "وضعیت", "پیشرفت شمارش")
@@ -65,30 +63,6 @@ def report_to_html(report: DiscrepancyReport, only_differences: bool) -> str:
           format_qty(ln.difference), ln.note) for ln in lines],
         widths=(10, 34, 8, 12, 12, 12, 12),
     )
-
-
-async def export_pdf(parent: QWidget, html_text: str, default_name: str) -> None:
-    path, _ = QFileDialog.getSaveFileName(parent, "ذخیره PDF", default_name, "PDF (*.pdf)")
-    if path:
-        save_pdf(html_text, path)
-        show_info(parent, "فایل PDF ذخیره شد.")
-
-
-def output_menu(parent: QWidget, make_html, default_name) -> QMenu:
-    """Print / Save-PDF menu. make_html is an async callable returning the HTML."""
-    menu = QMenu(parent)
-
-    @asyncSlot()
-    async def do_print() -> None:
-        print_html(await make_html(), parent)
-
-    @asyncSlot()
-    async def do_pdf() -> None:
-        await export_pdf(parent, await make_html(), default_name())
-
-    menu.addAction("چاپ…", do_print)
-    menu.addAction("ذخیره PDF…", do_pdf)
-    return menu
 
 
 class NewStocktakeDialog(FormDialog):

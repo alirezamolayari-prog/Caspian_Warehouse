@@ -175,5 +175,11 @@ async def test_mariadb_full_schema():
         with pytest.raises(ValidationError):
             await docs.post_document(db, admin, issue)  # 50 > 48
         assert (await docs.stock_by_warehouse(db, item.id))[0][1] == Decimal(48)
+
+        from caspian.services import reports
+
+        report = await reports.stock_balance(db, admin)  # window function on MariaDB
+        assert report.rows[0][4] == Decimal(48)
+        assert (await reports.cardex(db, admin, item.id)).rows[-1][7] == Decimal(48)
     finally:
         await db.dispose()

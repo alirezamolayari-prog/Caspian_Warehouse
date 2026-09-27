@@ -66,7 +66,7 @@ Duplicate detection + fuzzy matching, review grid, approve → post (overwrite =
 Count session, printable count sheets without system quantities (PDF), blind entry,
 discrepancy report, adjustment document on approval (protected).
 
-### M7 — Reports & reorder analysis
+### M7 — Reports & reorder analysis ✅
 Stock balance, movement/cardex, user activity, loans outstanding — on screen and Excel export.
 Manual reorder points + deterministic burn-rate analysis (avg daily usage, coverage months,
 suggested order qty) and low-stock dashboard.

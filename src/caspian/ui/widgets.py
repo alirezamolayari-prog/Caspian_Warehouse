@@ -68,14 +68,16 @@ class EmptyState(QWidget):
 class DataTable(QTableWidget):
     """Read-only, row-selecting table. Rows carry an id retrievable via `selected_id()`."""
 
-    def __init__(self, columns: Sequence[str], parent: QWidget | None = None) -> None:
+    def __init__(self, columns: Sequence[str], parent: QWidget | None = None,
+                 multi_select: bool = False) -> None:
         super().__init__(0, len(columns), parent)
         self.setHorizontalHeaderLabels(list(columns))
         self.verticalHeader().hide()
         self.setShowGrid(False)
         self.setAlternatingRowColors(True)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection if multi_select
+                              else QAbstractItemView.SelectionMode.SingleSelection)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.horizontalHeader().setHighlightSections(False)
@@ -110,6 +112,16 @@ class DataTable(QTableWidget):
         index = self.item(rows[0].row(), 0)
         r = index.data(Qt.ItemDataRole.UserRole) if index else None
         return self._ids[r] if r is not None and r < len(self._ids) else None
+
+    def selected_ids(self) -> list[object]:
+        model = self.selectionModel()
+        ids = []
+        for index in model.selectedRows() if model else []:
+            item = self.item(index.row(), 0)
+            r = item.data(Qt.ItemDataRole.UserRole) if item else None
+            if r is not None and r < len(self._ids):
+                ids.append(self._ids[r])
+        return ids
 
     def select_id(self, row_id: object) -> None:
         if row_id in self._ids:

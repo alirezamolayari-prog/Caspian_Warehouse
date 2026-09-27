@@ -327,6 +327,23 @@ async def update_item(
             audit.record(s, actor, "item.updated", "item", item.id, changes)
 
 
+async def set_reorder_points(db: Database, actor: Actor, values: dict[int, Decimal | None]) -> int:
+    """Bulk-update reorder points (e.g. accepting burn-rate suggestions). Returns count changed."""
+    actor.require(Perm.ITEMS_EDIT)
+    changed = 0
+    async with db.session(actor.user_id) as s:
+        for item_id, value in values.items():
+            if value is not None and value < 0:
+                raise ValidationError("نقطه سفارش نمی‌تواند منفی باشد.")
+            item = await _load(s, item_id)
+            if item.reorder_point != value:
+                audit.record(s, actor, "item.updated", "item", item.id,
+                             {"reorder_point": [str(item.reorder_point), str(value)]})
+                item.reorder_point = value
+                changed += 1
+    return changed
+
+
 async def set_item_active(
     db: Database, actor: Actor, item_id: int, active: bool, approval: Approval | None = None
 ) -> None:
