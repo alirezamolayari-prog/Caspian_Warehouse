@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QDialog
 from caspian.core.settings import Settings
 from caspian.db.database import Database, DbConfig
 from caspian.services.actor import Actor
+from caspian.services.ai.gateway import Gateway
 from caspian.ui.theme import ThemeManager
 
 
@@ -22,6 +23,7 @@ class AppContext(QObject):
         self.settings = settings
         self.themes = themes
         self.actor = actor
+        self.ai = Gateway(db)
 
     def set_actor(self, actor: Actor) -> None:
         self.actor = actor

@@ -1,0 +1,202 @@
+import json
+
+import httpx
+import pytest
+
+from caspian.db.models import ProviderKind
+from caspian.services.ai import config
+from caspian.services.ai.gateway import DEFAULT_COOLDOWN, AIUnavailable, Gateway
+from caspian.services.errors import PermissionDenied, ValidationError
+
+
+@pytest.fixture
+def keys(monkeypatch):
+    """In-memory stand-in for Windows Credential Manager."""
+    store: dict[tuple[str, str], str] = {}
+    monkeypatch.setattr(config, "get_secret", lambda k, n: store.get((k, n)))
+    monkeypatch.setattr(config, "set_secret", lambda k, n, v: store.__setitem__((k, n), v))
+    monkeypatch.setattr(config, "delete_secret", lambda k, n: store.pop((k, n), None))
+    return store
+
+
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def _answer(text="سلام"):
+    return httpx.Response(200, json={"choices": [{"message": {"role": "assistant",
+                                                              "content": text}}]})
+
+
+async def _setup(db, admin, keys):
+    groq = await config.save_provider(db, admin, "Groq", ProviderKind.GROQ,
+                                      "https://api.groq.com/openai/v1", "llama", api_key="k1")
+    hf = await config.save_provider(db, admin, "HF", ProviderKind.HUGGINGFACE,
+                                    "https://router.huggingface.co/v1", "m", api_key="k2")
+    local = await config.save_provider(db, admin, "Ollama", ProviderKind.OLLAMA,
+                                       "http://localhost:11434/v1", "qwen")
+    return groq, hf, local
+
+
+async def test_provider_crud_and_ordering(db, admin, keys):
+    groq, hf, local = await _setup(db, admin, keys)
+    rows = await config.list_providers(db)
+    assert [p.name for p in rows] == ["Groq", "HF", "Ollama"]
+    assert rows[0].has_key and not rows[2].needs_key and rows[2].is_local
+    await config.move_provider(db, admin, local, -1)
+    await config.move_provider(db, admin, local, -1)
+    assert [p.name for p in await config.list_providers(db)] == ["Ollama", "Groq", "HF"]
+    await config.save_provider(db, admin, "Groq", ProviderKind.GROQ, "https://api.groq.com/openai/v1",
+                               "llama", api_key="", provider_id=groq)
+    assert not next(p for p in await config.list_providers(db) if p.id == groq).usable
+    await config.delete_provider(db, admin, hf)
+    assert ("ai", f"provider:{hf}") not in keys
+
+
+async def test_validation(db, admin, keys):
+    for url in ("ftp://x", "api.groq.com", "http://api.groq.com/v1"):
+        with pytest.raises(ValidationError):
+            await config.save_provider(db, admin, "x", ProviderKind.GROQ, url, "m")
+    with pytest.raises(PermissionDenied):
+        viewer = admin.__class__(99, "v", "", "viewer", frozenset())
+        await config.save_provider(db, viewer, "x", ProviderKind.OLLAMA, "http://localhost:1/v1", "m")
+
+
+async def test_fallback_on_rate_limit_then_cooldown(db, admin, keys):
+    await _setup(db, admin, keys)
+    calls = []
+
+    def handler(request: httpx.Request):
+        host = request.url.host
+        calls.append(host)
+        if host == "api.groq.com":
+            return httpx.Response(429, headers={"retry-after": "30"})
+        assert request.headers["authorization"] == "Bearer k2"
+        body = json.loads(request.content)
+        assert body["model"] == "m" and body["messages"][0]["content"] == "hi"
+        return _answer("از HF")
+
+    clock = Clock()
+    gw = Gateway(db, httpx.MockTransport(handler), online_check=lambda: True, clock=clock)
+    result = await gw.chat([{"role": "user", "content": "hi"}])
+    assert result.content == "از HF" and result.provider == "HF"
+    assert [a.outcome for a in gw.last_attempts] == ["rate_limited", "ok"]
+    calls.clear()
+    await gw.chat([{"role": "user", "content": "hi"}])
+    assert calls == ["router.huggingface.co"]  # Groq skipped while cooling down
+    clock.now += 31
+    calls.clear()
+    await gw.chat([{"role": "user", "content": "hi"}])
+    assert calls[0] == "api.groq.com"
+
+
+async def test_timeout_and_server_error_fall_through_to_local(db, admin, keys):
+    await _setup(db, admin, keys)
+
+    def handler(request: httpx.Request):
+        if request.url.host == "api.groq.com":
+            raise httpx.ReadTimeout("slow", request=request)
+        if request.url.host == "router.huggingface.co":
+            return httpx.Response(503)
+        assert "authorization" not in request.headers  # local model: no key sent
+        return _answer("محلی")
+
+    gw = Gateway(db, httpx.MockTransport(handler), online_check=lambda: True)
+    result = await gw.chat([{"role": "user", "content": "hi"}])
+    assert result.provider == "Ollama"
+    assert [a.outcome for a in gw.last_attempts] == ["timeout", "server_error", "ok"]
+
+
+async def test_offline_uses_only_local(db, admin, keys):
+    await _setup(db, admin, keys)
+    hosts = []
+
+    def handler(request):
+        hosts.append(request.url.host)
+        return _answer()
+
+    gw = Gateway(db, httpx.MockTransport(handler), online_check=lambda: False)
+    await gw.chat([{"role": "user", "content": "hi"}])
+    assert hosts == ["localhost"]
+
+
+async def test_all_fail_or_none_configured(db, admin, keys):
+    gw = Gateway(db, httpx.MockTransport(lambda r: _answer()), online_check=lambda: False)
+    with pytest.raises(AIUnavailable, match="تنظیم نشده"):
+        await gw.chat([{"role": "user", "content": "hi"}])
+    await _setup(db, admin, keys)
+    gw = Gateway(db, httpx.MockTransport(lambda r: httpx.Response(429)),
+                 online_check=lambda: True, clock=Clock())
+    with pytest.raises(AIUnavailable):
+        await gw.chat([{"role": "user", "content": "hi"}])
+    with pytest.raises(AIUnavailable, match="محدود"):  # everything cooling down
+        await gw.chat([{"role": "user", "content": "hi"}])
+    assert DEFAULT_COOLDOWN > 0
+
+
+async def test_tools_passed_and_tool_calls_returned(db, admin, keys):
+    await config.save_provider(db, admin, "Ollama", ProviderKind.OLLAMA, "http://localhost:11434/v1", "q")
+    tool_call = {"id": "c1", "type": "function",
+                 "function": {"name": "search_items", "arguments": "{\"query\": \"دریل\"}"}}
+
+    def handler(request):
+        body = json.loads(request.content)
+        assert body["tools"][0]["function"]["name"] == "search_items"
+        return httpx.Response(200, json={"choices": [{"message": {
+            "role": "assistant", "content": None, "tool_calls": [tool_call]}}]})
+
+    gw = Gateway(db, httpx.MockTransport(handler), online_check=lambda: True)
+    result = await gw.chat([{"role": "user", "content": "x"}],
+                           tools=[{"type": "function", "function": {"name": "search_items"}}])
+    assert result.tool_calls == [tool_call] and result.content == ""
+
+
+async def test_transcribe_and_test_provider(db, admin, keys):
+    pid = await config.save_provider(db, admin, "Groq", ProviderKind.GROQ,
+                                      "https://api.groq.com/openai/v1", "llama",
+                                      stt_model="whisper-large-v3", api_key="k")
+
+    def handler(request):
+        if request.url.path.endswith("/audio/transcriptions"):
+            assert b"whisper-large-v3" in request.content
+            return httpx.Response(200, json={"text": " پنج عدد دریل "})
+        return httpx.Response(401)
+
+    gw = Gateway(db, httpx.MockTransport(handler), online_check=lambda: True)
+    assert await gw.transcribe(b"RIFF....") == "پنج عدد دریل"
+    provider = next(p for p in await config.list_providers(db) if p.id == pid)
+    ok, message, _ = await gw.test_provider(provider)
+    assert not ok and "کلید" in message
+
+
+async def test_settings_ai_tab(qtbot, themes, db, admin, keys):
+    from caspian.core.settings import Settings
+    from caspian.db.database import DbConfig
+    from caspian.ui.app_context import AppContext
+    from caspian.ui.settings_page import ProviderDialog, SettingsPage
+    from helpers import settle
+
+    ctx = AppContext(db, DbConfig(), Settings(), themes, admin)
+    ctx.ai = Gateway(db, httpx.MockTransport(lambda r: _answer()), online_check=lambda: False)
+    page = SettingsPage(ctx)
+    qtbot.addWidget(page)
+    assert page.tabs.isTabVisible(page.ai_index)
+
+    dlg = ProviderDialog(ctx)
+    qtbot.addWidget(dlg)
+    dlg.kind.setCurrentIndex(dlg.kind.findData(ProviderKind.GROQ))
+    assert dlg.base_url.text() == "https://api.groq.com/openai/v1"
+    assert dlg.stt_model.text() == "whisper-large-v3"
+    dlg.key.setText("gsk_test")
+    dlg.submit_button.click()
+    await settle(dlg)
+    [provider] = await config.list_providers(db)
+    assert provider.has_key and keys[("ai", f"provider:{provider.id}")] == "gsk_test"
+
+    await page.ai.refresh()
+    assert page.ai.table.rowCount() == 1
+    assert "اینترنت: قطع" in page.ai.status.text()

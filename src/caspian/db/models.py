@@ -430,3 +430,30 @@ class StocktakeLine(IdMixin, Base):
     note: Mapped[str] = mapped_column(Text, default="")
 
     stocktake: Mapped[Stocktake] = relationship(back_populates="lines")
+
+
+# ----- AI providers -----
+
+
+class ProviderKind(enum.StrEnum):
+    OPENAI = "OPENAI"  # any OpenAI-compatible endpoint
+    GROQ = "GROQ"
+    HUGGINGFACE = "HUGGINGFACE"
+    OLLAMA = "OLLAMA"  # local models (GGUF via Ollama / llama.cpp server)
+
+
+class AIProvider(IdMixin, TimestampMixin, CreatedByMixin, Base):
+    """Shared provider settings. API keys are NOT here: they live in each PC's
+    Windows Credential Manager (see caspian.services.ai.config)."""
+
+    __tablename__ = "ai_providers"
+
+    name: Mapped[str] = mapped_column(String(100))
+    kind: Mapped[ProviderKind] = mapped_column(_enum(ProviderKind))
+    base_url: Mapped[str] = mapped_column(String(500))
+    model: Mapped[str] = mapped_column(String(200))
+    priority: Mapped[int] = mapped_column(Integer, default=100)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=30)
+    # Model used for speech-to-text on this provider (empty = not supported).
+    stt_model: Mapped[str] = mapped_column(String(200), default="")

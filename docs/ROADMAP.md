@@ -71,9 +71,9 @@ Stock balance, movement/cardex, user activity, loans outstanding — on screen a
 Manual reorder points + deterministic burn-rate analysis (avg daily usage, coverage months,
 suggested order qty) and low-stock dashboard.
 
-### M8 — AI gateway
+### M8 — AI gateway ✅
 Provider management page (OpenAI-compatible, Groq, Hugging Face, Ollama/local GGUF),
-keys encrypted at rest (Windows DPAPI), priority list, silent fallback on 429/timeout/5xx,
+provider definitions shared in the DB, API keys kept per PC in Windows Credential Manager (DPAPI), priority list, silent fallback on 429/timeout/5xx,
 connectivity detection, test-connection button.
 
 ### M9 — AI assistant

@@ -4,8 +4,6 @@ import datetime as dt
 from dataclasses import dataclass
 
 from PySide6.QtWidgets import (
-    QComboBox,
-    QFormLayout,
     QGridLayout,
     QLabel,
     QVBoxLayout,
@@ -17,7 +15,6 @@ from caspian.core import jalali
 from caspian.core.permissions import Perm
 from caspian.core.text import to_persian_digits
 from caspian.services import documents, imports, items
-from caspian.ui.theme import ThemeManager
 from caspian.ui.widgets import Card, DataTable, EmptyState, StatCard
 
 
@@ -113,39 +110,3 @@ class PlaceholderPage(QWidget):
         )
         layout.addWidget(card)
 
-
-class SettingsPage(QWidget):
-    THEME_OPTIONS = (("system", "هماهنگ با ویندوز"), ("light", "روشن"), ("dark", "تیره"))
-
-    def __init__(self, themes: ThemeManager, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._themes = themes
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        card = Card()
-        card.body.addWidget(QLabel("ظاهر برنامه", objectName="CardTitle"))
-        form = QFormLayout()
-        form.setSpacing(12)
-        self.theme_combo = QComboBox()
-        for value, label in self.THEME_OPTIONS:
-            self.theme_combo.addItem(label, value)
-        self.theme_combo.setCurrentIndex(self.theme_combo.findData(themes.mode))
-        self.theme_combo.currentIndexChanged.connect(self._on_theme_selected)
-        themes.theme_changed.connect(self._sync_combo)
-        form.addRow("پوسته:", self.theme_combo)
-        card.body.addLayout(form)
-        layout.addWidget(card)
-        layout.addStretch(1)
-
-    def _on_theme_selected(self) -> None:
-        mode = self.theme_combo.currentData()
-        if mode != self._themes.mode:
-            self._themes.set_mode(mode)
-
-    def _sync_combo(self, _theme) -> None:
-        index = self.theme_combo.findData(self._themes.mode)
-        if index != self.theme_combo.currentIndex():
-            self.theme_combo.blockSignals(True)
-            self.theme_combo.setCurrentIndex(index)
-            self.theme_combo.blockSignals(False)
