@@ -62,7 +62,7 @@ Generic draft batch + lines with status NEW / EXISTING_MATCH / CONFLICT / ERROR 
 Sources: Excel/CSV (column mapping, saved mappings), Word tables (.docx), rapid barcode scan.
 Duplicate detection + fuzzy matching, review grid, approve → post (overwrite = protected).
 
-### M6 — Blind stocktake
+### M6 — Blind stocktake ✅
 Count session, printable count sheets without system quantities (PDF), blind entry,
 discrepancy report, adjustment document on approval (protected).
 

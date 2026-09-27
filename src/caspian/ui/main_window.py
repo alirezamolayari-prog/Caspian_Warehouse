@@ -29,6 +29,7 @@ from caspian.ui.items_page import ItemsPage
 from caspian.ui.master_page import MasterDataPage
 from caspian.ui.messages import show_info
 from caspian.ui.pages import PAGES, DashboardPage, PageSpec, PlaceholderPage, SettingsPage
+from caspian.ui.stocktake_page import StocktakePage
 from caspian.ui.theme import Theme
 from caspian.ui.users_page import UsersPage
 
@@ -155,6 +156,8 @@ class MainWindow(QMainWindow):
                 page = DocumentsPage(self.ctx)
             elif spec.key == "imports":
                 page = ImportsPage(self.ctx)
+            elif spec.key == "stocktake":
+                page = StocktakePage(self.ctx)
             elif spec.key == "settings":
                 page = SettingsPage(self._themes)
             elif spec.key == "users":

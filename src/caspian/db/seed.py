@@ -3,7 +3,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from caspian.core.permissions import DEFAULT_ROLES
+from caspian.core.permissions import ADDED_PERMISSIONS, DEFAULT_ROLES
 from caspian.db.models import AppSetting, Role, RolePermission, Unit, Warehouse
 
 DEFAULT_UNITS = ("عدد", "جعبه", "کارتن", "بسته", "متر", "متر مربع", "کیلوگرم", "لیتر", "دست", "رول")
@@ -11,6 +11,7 @@ DEFAULT_UNITS = ("عدد", "جعبه", "کارتن", "بسته", "متر", "مت
 
 async def seed_reference_data(session: AsyncSession) -> None:
     await _seed_roles(session)
+    await _grant_added_permissions(session)
     await _seed_units(session)
     await _seed_warehouse(session)
     await _seed_settings(session)
@@ -31,6 +32,27 @@ async def _seed_roles(session: AsyncSession) -> None:
             role.permissions.extend(
                 RolePermission(permission=p.value) for p in sorted(perms) if p.value not in have
             )
+
+
+async def _grant_added_permissions(session: AsyncSession) -> None:
+    """Give new permissions to existing default roles, once (admins may revoke later)."""
+    marker = await session.get(AppSetting, "granted_permissions")
+    done = set(marker.value) if marker else set()
+    todo = {p: roles for p, roles in ADDED_PERMISSIONS.items() if p.value not in done}
+    if not todo:
+        return
+    await session.flush()
+    roles = {r.code: r for r in (await session.scalars(select(Role))).all()}
+    for perm, codes in todo.items():
+        for code in codes:
+            role = roles.get(code)
+            if role and perm.value not in {rp.permission for rp in role.permissions}:
+                role.permissions.append(RolePermission(permission=perm.value))
+        done.add(perm.value)
+    if marker is None:
+        session.add(AppSetting(key="granted_permissions", value=sorted(done)))
+    else:
+        marker.value = sorted(done)
 
 
 async def _seed_units(session: AsyncSession) -> None:

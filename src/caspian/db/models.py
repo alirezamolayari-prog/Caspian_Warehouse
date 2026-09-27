@@ -378,3 +378,55 @@ class ImportLine(IdMixin, Base):
     resolution: Mapped[Resolution | None] = mapped_column(_enum(Resolution))
 
     batch: Mapped[ImportBatch] = relationship(back_populates="lines")
+
+
+# ----- blind stocktake -----
+
+
+class StocktakeStatus(enum.StrEnum):
+    OPEN = "OPEN"  # counting in progress; system quantities hidden
+    COUNTED = "COUNTED"  # counts submitted and locked; awaiting approval
+    APPROVED = "APPROVED"  # adjustment posted
+    CANCELLED = "CANCELLED"
+
+
+class Stocktake(IdMixin, TimestampMixin, CreatedByMixin, Base):
+    __tablename__ = "stocktakes"
+
+    number: Mapped[int] = mapped_column(Integer, unique=True)
+    warehouse_id: Mapped[int] = mapped_column(BigIntPK, ForeignKey("warehouses.id"))
+    category_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("categories.id"))
+    title: Mapped[str] = mapped_column(String(255), default="")
+    status: Mapped[StocktakeStatus] = mapped_column(_enum(StocktakeStatus),
+                                                    default=StocktakeStatus.OPEN, index=True)
+    snapshot_at: Mapped[dt.datetime]
+    submitted_at: Mapped[dt.datetime | None]
+    submitted_by_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("users.id"))
+    approved_at: Mapped[dt.datetime | None]
+    approved_by_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("users.id"))
+    adjustment_document_id: Mapped[int | None] = mapped_column(BigIntPK,
+                                                               ForeignKey("documents.id"))
+
+    lines: Mapped[list["StocktakeLine"]] = relationship(
+        back_populates="stocktake", cascade="all, delete-orphan",
+        order_by="StocktakeLine.line_no", lazy="selectin",
+    )
+
+
+class StocktakeLine(IdMixin, Base):
+    __tablename__ = "stocktake_lines"
+    __table_args__ = (UniqueConstraint("stocktake_id", "item_id"),)
+
+    stocktake_id: Mapped[int] = mapped_column(
+        BigIntPK, ForeignKey("stocktakes.id", ondelete="CASCADE"), index=True
+    )
+    line_no: Mapped[int] = mapped_column(Integer)
+    item_id: Mapped[int] = mapped_column(BigIntPK, ForeignKey("items.id"))
+    # Base-unit quantity when the count started. Never shown to counters.
+    system_qty: Mapped[Decimal]
+    counted_qty: Mapped[Decimal | None]
+    counted_by_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("users.id"))
+    counted_at: Mapped[dt.datetime | None]
+    note: Mapped[str] = mapped_column(Text, default="")
+
+    stocktake: Mapped[Stocktake] = relationship(back_populates="lines")

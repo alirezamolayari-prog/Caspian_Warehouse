@@ -50,14 +50,15 @@ class ItemRow:
     name: str
     category: str
     base_unit: str
-    on_hand: Decimal
+    on_hand: Decimal | None  # None when the viewer may not see stock (blind counters)
     reorder_point: Decimal | None
     is_active: bool
     is_returnable: bool
 
     @property
     def below_reorder(self) -> bool:
-        return self.reorder_point is not None and self.on_hand <= self.reorder_point
+        return (self.reorder_point is not None and self.on_hand is not None
+                and self.on_hand <= self.reorder_point)
 
 
 @dataclass(frozen=True)
@@ -116,10 +117,14 @@ async def search_items(
     raw = to_ascii_digits(query.strip())
     # Exact code matches first, then by name.
     stmt = stmt.order_by((Item.code == raw).desc(), Item.name).limit(limit)
+    if only_below_reorder:
+        actor.require(Perm.STOCK_VIEW)
+    show_stock = actor.can(Perm.STOCK_VIEW)
     async with db.session() as s:
         rows = (await s.execute(stmt)).all()
     return [
-        ItemRow(item.id, item.code, item.name, cat or "", unit, Decimal(q or 0),
+        ItemRow(item.id, item.code, item.name, cat or "", unit,
+                Decimal(q or 0) if show_stock else None,
                 item.reorder_point, item.is_active, item.is_returnable)
         for item, cat, unit, q in rows
     ]

@@ -70,7 +70,7 @@ class ItemChooserDialog(FormDialog):
         self.chosen: ItemRow | None = None
         self.table = DataTable(("کد", "نام کالا", "واحد", "موجودی"))
         self.table.setMinimumHeight(280)
-        self.table.set_rows([(r.id, (r.code, r.name, r.base_unit, format_qty(r.on_hand)))
+        self.table.set_rows([(r.id, (r.code, r.name, r.base_unit, format_qty(r.on_hand) or "—"))
                              for r in rows])
         self.table.selectRow(0)
         self.table.doubleClicked.connect(lambda _: self.submit_button.click())
@@ -350,8 +350,9 @@ class DocumentDialog(FormDialog):
                     break
             else:
                 self._add_line(row.id, row.code, row.name, unit_id, Decimal(1))
-            self.stock_hint.setText(f"موجودی «{row.name}»: {format_qty(row.on_hand)} "
-                                    f"{row.base_unit}")
+            if row.on_hand is not None:
+                self.stock_hint.setText(f"موجودی «{row.name}»: {format_qty(row.on_hand)} "
+                                        f"{row.base_unit}")
         except ServiceError as exc:
             self.show_status(exc.message)
         finally:

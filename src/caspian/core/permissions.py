@@ -18,6 +18,8 @@ class Perm(enum.StrEnum):
     STOCKTAKE_RUN = "stocktake.run"
     STOCKTAKE_APPROVE = "stocktake.approve"
     REPORTS_VIEW = "reports.view"
+    # See system stock quantities. Withheld from counters so blind stocktakes stay blind.
+    STOCK_VIEW = "stock.view"
     AI_USE = "ai.use"
     AI_CONFIGURE = "ai.configure"
     USERS_MANAGE = "users.manage"
@@ -42,11 +44,18 @@ DEFAULT_ROLES: dict[str, tuple[str, frozenset[Perm]]] = {
         frozenset({
             Perm.ITEMS_VIEW, Perm.ITEMS_EDIT, Perm.DOCUMENTS_VIEW, Perm.DOCUMENTS_EDIT,
             Perm.DOCUMENTS_POST, Perm.IMPORT_RUN, Perm.STOCKTAKE_RUN, Perm.REPORTS_VIEW,
-            Perm.AI_USE,
+            Perm.AI_USE, Perm.STOCK_VIEW,
         }),
     ),
     "viewer": (
         "مشاهده‌گر",
-        frozenset({Perm.ITEMS_VIEW, Perm.DOCUMENTS_VIEW, Perm.REPORTS_VIEW}),
+        frozenset({Perm.ITEMS_VIEW, Perm.DOCUMENTS_VIEW, Perm.REPORTS_VIEW, Perm.STOCK_VIEW}),
     ),
+    "counter": ("شمارشگر انبار", frozenset({Perm.ITEMS_VIEW, Perm.STOCKTAKE_RUN})),
+}
+
+# Permissions introduced after the first release, granted once to existing system roles
+# (roles created earlier don't pick up new defaults otherwise).
+ADDED_PERMISSIONS: dict[Perm, tuple[str, ...]] = {
+    Perm.STOCK_VIEW: ("manager", "storekeeper", "viewer"),
 }

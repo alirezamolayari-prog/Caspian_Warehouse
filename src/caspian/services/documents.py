@@ -491,24 +491,28 @@ async def delete_draft(db: Database, actor: Actor, doc_id: int) -> None:
 async def post_document(db: Database, actor: Actor, doc_id: int,
                         expected_version: int | None = None) -> None:
     """Finalize a draft: write the ledger and update balances atomically."""
-    actor.require(Perm.DOCUMENTS_POST)
     async with db.session(actor.user_id) as s:
         doc = await _load(s, doc_id)
         if expected_version is not None and doc.version_id != expected_version:
             raise ConcurrencyError()
-        if doc.status != DocStatus.DRAFT:
-            raise ValidationError("این سند قبلاً ثبت یا ابطال شده است.")
-        # Re-validate: items/warehouses may have been deactivated since the draft was saved.
-        current = _input_of(doc)
-        await _validate(s, current)
-        if doc.doc_type == DocType.LOAN_RETURN:
-            await _check_loan_return_limits(s, doc)
-        await _apply_effects(s, doc, reverse=False)
-        doc.status = DocStatus.POSTED
-        doc.posted_at = dt.datetime.now()
-        doc.posted_by_id = actor.user_id
-        audit.record(s, actor, "document.posted", "document", doc.id,
-                     {"type": doc.doc_type.value, "number": doc.number})
+        await post_document_in(s, actor, doc)
+
+
+async def post_document_in(s: AsyncSession, actor: Actor, doc: Document) -> None:
+    """Post inside the caller's transaction (used by stocktake approval)."""
+    actor.require(Perm.DOCUMENTS_POST)
+    if doc.status != DocStatus.DRAFT:
+        raise ValidationError("این سند قبلاً ثبت یا ابطال شده است.")
+    # Re-validate: items/warehouses may have been deactivated since the draft was saved.
+    await _validate(s, _input_of(doc))
+    if doc.doc_type == DocType.LOAN_RETURN:
+        await _check_loan_return_limits(s, doc)
+    await _apply_effects(s, doc, reverse=False)
+    doc.status = DocStatus.POSTED
+    doc.posted_at = dt.datetime.now()
+    doc.posted_by_id = actor.user_id
+    audit.record(s, actor, "document.posted", "document", doc.id,
+                 {"type": doc.doc_type.value, "number": doc.number})
 
 
 def _input_of(doc: Document) -> DocumentInput:

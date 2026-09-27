@@ -53,7 +53,7 @@ async def test_seed_is_idempotent(db):
     async with db.session() as s:
         await seed_reference_data(s)
     async with db.session() as s:
-        assert await s.scalar(select(func.count()).select_from(Role)) == 4
+        assert await s.scalar(select(func.count()).select_from(Role)) == 5
         assert await s.scalar(select(func.count()).select_from(Unit)) == len(DEFAULT_UNITS)
         assert await s.scalar(select(func.count()).select_from(Warehouse)) == 1
         admin = await s.scalar(select(Role).where(Role.code == "admin"))

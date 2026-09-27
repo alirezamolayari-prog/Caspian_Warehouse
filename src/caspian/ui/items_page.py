@@ -232,6 +232,7 @@ class ItemsPage(QWidget):
         toolbar.addWidget(self.category)
         self.low_only = QCheckBox("فقط زیر نقطه سفارش")
         self.low_only.toggled.connect(lambda _: self.refresh())
+        self.low_only.setVisible(ctx.actor.can(Perm.STOCK_VIEW))
         toolbar.addWidget(self.low_only)
         self.show_inactive = QCheckBox("نمایش غیرفعال‌ها")
         self.show_inactive.toggled.connect(lambda _: self.refresh())
@@ -317,7 +318,7 @@ class ItemsPage(QWidget):
         theme = self._ctx.themes.current
         highlight = {(i, 4): theme.warning for i, r in enumerate(rows) if r.below_reorder}
         self.table.set_rows(
-            [(r.id, (r.code, r.name, r.category or "—", r.base_unit, format_qty(r.on_hand),
+            [(r.id, (r.code, r.name, r.category or "—", r.base_unit, format_qty(r.on_hand) or "—",
                      format_qty(r.reorder_point) or "—", "فعال" if r.is_active else "غیرفعال"))
              for r in rows],
             muted=[not r.is_active for r in rows],
