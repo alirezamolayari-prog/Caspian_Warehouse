@@ -60,7 +60,7 @@ class _Tab(QWidget):
         card.body.addWidget(self.table)
         layout.addWidget(card, 1)
         self.rows: dict = {}
-        ctx.user_changed.connect(lambda _: self.update_buttons())
+        ctx.user_changed.connect(self.update_buttons)
 
     def build_filters(self) -> None:
         pass
@@ -73,7 +73,7 @@ class _Tab(QWidget):
         row_id = self.table.selected_id()
         return self.rows.get(row_id) if row_id is not None else None
 
-    def update_buttons(self) -> None:
+    def update_buttons(self, *_args) -> None:
         row = self.selected()
         self.new_button.setVisible(self.can_edit)
         self.edit_button.setVisible(self.can_edit)

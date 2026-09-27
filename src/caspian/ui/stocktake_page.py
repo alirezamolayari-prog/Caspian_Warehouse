@@ -298,14 +298,14 @@ class StocktakePage(QWidget):
         self.table.doubleClicked.connect(lambda _: self.on_count())
         card.body.addWidget(self.table)
         layout.addWidget(card, 1)
-        ctx.user_changed.connect(lambda _: self._update_buttons())
+        ctx.user_changed.connect(self._update_buttons)
         self._update_buttons()
 
     def selected(self) -> StocktakeRow | None:
         row_id = self.table.selected_id()
         return self._rows.get(row_id) if row_id is not None else None
 
-    def _update_buttons(self) -> None:
+    def _update_buttons(self, *_args) -> None:
         row, actor = self.selected(), self._ctx.actor
         approver = actor.can(Perm.STOCKTAKE_APPROVE) and actor.can(Perm.STOCK_VIEW)
         self.report_button.setVisible(approver)

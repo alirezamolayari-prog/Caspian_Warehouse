@@ -229,10 +229,10 @@ class ReportsPage(QWidget):
         self.activity.filters.addStretch(1)
         self.activity_index = self.tabs.addTab(self.activity, "فعالیت کاربران")
 
-        ctx.user_changed.connect(lambda _: self._apply_permissions())
+        ctx.user_changed.connect(self._apply_permissions)
         self._apply_permissions()
 
-    def _apply_permissions(self) -> None:
+    def _apply_permissions(self, *_args) -> None:
         actor = self._ctx.actor
         stock = actor.can(Perm.STOCK_VIEW)
         for view in (self.stock, self.cardex, self.burn):

@@ -76,7 +76,7 @@ Provider management page (OpenAI-compatible, Groq, Hugging Face, Ollama/local GG
 provider definitions shared in the DB, API keys kept per PC in Windows Credential Manager (DPAPI), priority list, silent fallback on 429/timeout/5xx,
 connectivity detection, test-connection button.
 
-### M9 — AI assistant
+### M9 — AI assistant ✅
 Always-available chatbox + in-app voice button (record → speech-to-text via configured
 provider). Read-only tool calling (stock, items, reports). Persian text → import drafts.
 Reorder suggestions with narrative, supplier purchase-request message drafts.

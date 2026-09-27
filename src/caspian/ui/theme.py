@@ -171,6 +171,12 @@ QPushButton[variant="primary"]:hover {{ background: {t.primary_hover}; }}
 QPushButton[variant="danger"] {{ background: {t.danger}; border-color: {t.danger}; color: #FFFFFF; }}
 QPushButton[variant="danger"]:hover {{ background: {t.danger_hover}; }}
 #WarningBox {{ background: {t.danger_soft}; border: 1px solid {t.danger}; border-radius: 10px; }}
+QPushButton#Chip {{
+    background: {t.surface}; border: 1px solid {t.border}; border-radius: 14px;
+    padding: 4px 12px; color: {t.text_muted}; font-size: 9pt;
+}}
+QPushButton#Chip:hover {{ border-color: {t.primary}; color: {t.primary}; }}
+#Transcript {{ border: none; background: {t.surface}; }}
 QToolButton#IconButton {{
     background: transparent; border: none; border-radius: 8px; padding: 6px;
 }}

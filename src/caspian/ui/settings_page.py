@@ -244,8 +244,8 @@ class SettingsPage(QWidget):
         self.tabs.addTab(self.appearance, "ظاهر")
         self.ai_index = self.tabs.addTab(self.ai, "هوش مصنوعی")
         layout.addWidget(self.tabs)
-        ctx.user_changed.connect(lambda _: self._apply_permissions())
+        ctx.user_changed.connect(self._apply_permissions)
         self._apply_permissions()
 
-    def _apply_permissions(self) -> None:
+    def _apply_permissions(self, *_args) -> None:
         self.tabs.setTabVisible(self.ai_index, self._ctx.actor.can(Perm.AI_CONFIGURE))

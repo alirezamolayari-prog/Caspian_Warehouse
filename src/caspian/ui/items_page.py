@@ -272,10 +272,10 @@ class ItemsPage(QWidget):
         self.empty.hide()
         layout.addWidget(card, 1)
 
-        ctx.user_changed.connect(lambda _: self._apply_permissions())
+        ctx.user_changed.connect(self._apply_permissions)
         self._apply_permissions()
 
-    def _apply_permissions(self) -> None:
+    def _apply_permissions(self, *_args) -> None:
         can_edit = self._ctx.actor.can(Perm.ITEMS_EDIT)
         for b in (self.new_button, self.edit_button, self.active_button, self.delete_button):
             b.setVisible(can_edit)

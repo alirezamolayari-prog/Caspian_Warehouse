@@ -21,6 +21,7 @@ from caspian.core import jalali
 from caspian.services import auth
 from caspian.services.actor import Actor
 from caspian.ui.app_context import AppContext, exec_dialog
+from caspian.ui.assistant_page import AssistantPage
 from caspian.ui.auth_dialogs import ChangePasswordDialog, SetPinDialog, run_login
 from caspian.ui.documents_page import DocumentsPage
 from caspian.ui.icons import icon
@@ -162,6 +163,8 @@ class MainWindow(QMainWindow):
                 page = StocktakePage(self.ctx)
             elif spec.key == "reports":
                 page = ReportsPage(self.ctx)
+            elif spec.key == "assistant":
+                page = AssistantPage(self.ctx, open_batch=self.open_import_batch)
             elif spec.key == "settings":
                 page = SettingsPage(self.ctx)
             elif spec.key == "users":
@@ -194,6 +197,12 @@ class MainWindow(QMainWindow):
         self._nav_buttons[key].setChecked(True)
         self._page_title.setText(next(p.title for p in PAGES if p.key == key))
         self._refresh_icons()
+
+    @asyncSlot()
+    async def open_import_batch(self, batch_id: int) -> None:
+        """Jump from the assistant to the review screen of a draft it created."""
+        self.navigate("imports")
+        await self._pages["imports"].open_review(batch_id)
 
     @property
     def current_page(self) -> str:

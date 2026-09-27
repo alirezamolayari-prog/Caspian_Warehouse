@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QRadioButton,
     QTableWidget,
@@ -30,6 +31,7 @@ from caspian.core.numbers import format_qty
 from caspian.core.text import to_ascii_digits, to_persian_digits
 from caspian.db.models import BatchStatus, DocType, ImportKind, ImportSource, LineStatus, Resolution
 from caspian.services import imports, items, master
+from caspian.services.ai.assistant import text_to_draft
 from caspian.services.documents import DOC_TYPE_NAMES
 from caspian.services.errors import ServiceError, ValidationError
 from caspian.services.import_files import (
@@ -252,6 +254,33 @@ class ScanDialog(FormDialog):
             self.target.person.currentData())
 
 
+class TextImportDialog(FormDialog):
+    """Typed list -> draft. Uses the AI when available, otherwise the offline parser."""
+
+    def __init__(self, ctx: AppContext, warehouses, persons, parent=None) -> None:
+        super().__init__("ورود از متن",
+                         "هر کالا را در یک خط بنویسید، مثلاً «۵ عدد دریل بوش» یا «پیچ ام‌دی‌اف ۲ کارتن». "
+                         "بدون اینترنت هم کار می‌کند.", submit_text="ساخت پیش‌نویس", parent=parent)
+        self.setMinimumSize(560, 460)
+        self._ctx = ctx
+        self.batch_id: int | None = None
+        self.used_ai = False
+        self.target = _TargetFields(self, warehouses, persons)
+        self.target.doc_type.removeItem(self.target.doc_type.findData(DocType.OPENING))
+        self.target.doc_type.removeItem(self.target.doc_type.findData(DocType.LOAN_OUT))
+        self.text = QPlainTextEdit()
+        self.text.setPlaceholderText("۵ عدد دریل بوش\n۲ کارتن پیچ ام‌دی‌اف\nچسب چوب ۶ تا")
+        self.body.addWidget(self.text, 1)
+        self._inputs.append(self.text)
+
+    async def submit(self) -> None:
+        if not self.text.toPlainText().strip():
+            raise ValidationError("متن را وارد کنید.")
+        self.batch_id, self.used_ai = await text_to_draft(
+            self._ctx.db, self._ctx.ai, self._ctx.actor, self.text.toPlainText(),
+            DocType(self.target.doc_type.currentData()), self.target.warehouse.currentData())
+
+
 # ----- review -----
 
 
@@ -432,10 +461,13 @@ class ImportsPage(QWidget):
         self.discard_button.clicked.connect(self.on_discard)
         self.scan_button = QPushButton("اسکن سریع بارکد")
         self.scan_button.clicked.connect(self.on_scan)
+        self.text_button = QPushButton("از متن…")
+        self.text_button.clicked.connect(self.on_text)
         self.file_button = QPushButton("ورود از فایل…")
         self.file_button.setProperty("variant", "primary")
         self.file_button.clicked.connect(self.on_file)
-        for b in (self.review_button, self.discard_button, self.scan_button, self.file_button):
+        for b in (self.review_button, self.discard_button, self.text_button, self.scan_button,
+                  self.file_button):
             toolbar.addWidget(b)
         layout.addLayout(toolbar)
 
@@ -498,6 +530,12 @@ class ImportsPage(QWidget):
     @asyncSlot()
     async def on_scan(self) -> None:
         dialog = ScanDialog(self._ctx, *await self._targets(), self)
+        if await exec_dialog(dialog) and dialog.batch_id:
+            await self.open_review(dialog.batch_id)
+
+    @asyncSlot()
+    async def on_text(self) -> None:
+        dialog = TextImportDialog(self._ctx, *await self._targets(), self)
         if await exec_dialog(dialog) and dialog.batch_id:
             await self.open_review(dialog.batch_id)
 

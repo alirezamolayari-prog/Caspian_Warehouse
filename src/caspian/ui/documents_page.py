@@ -501,14 +501,14 @@ class DocumentsList(QWidget):
         self.table.doubleClicked.connect(lambda _: self.on_open())
         card.body.addWidget(self.table)
         layout.addWidget(card, 1)
-        ctx.user_changed.connect(lambda _: self._update_buttons())
+        ctx.user_changed.connect(self._update_buttons)
         self._update_buttons()
 
     def selected(self) -> DocumentRow | None:
         row_id = self.table.selected_id()
         return self._rows.get(row_id) if row_id is not None else None
 
-    def _update_buttons(self) -> None:
+    def _update_buttons(self, *_args) -> None:
         row, actor = self.selected(), self._ctx.actor
         self.new_button.setVisible(actor.can(Perm.DOCUMENTS_EDIT))
         self.delete_button.setVisible(actor.can(Perm.DOCUMENTS_EDIT))
