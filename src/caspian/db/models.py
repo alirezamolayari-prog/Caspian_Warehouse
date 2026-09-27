@@ -289,3 +289,92 @@ class StockBalance(Base):
         BigIntPK, ForeignKey("warehouses.id"), primary_key=True
     )
     qty: Mapped[Decimal] = mapped_column(default=Decimal(0))
+
+
+# ----- draft-first imports -----
+
+
+class ImportKind(enum.StrEnum):
+    ITEMS = "ITEMS"  # item master data (create / update items)
+    STOCK = "STOCK"  # stock lines that become a draft document
+
+
+class ImportSource(enum.StrEnum):
+    EXCEL = "EXCEL"
+    CSV = "CSV"
+    WORD = "WORD"
+    SCAN = "SCAN"
+    TEXT = "TEXT"  # typed text parsed by the AI assistant
+
+
+class BatchStatus(enum.StrEnum):
+    OPEN = "OPEN"
+    APPLIED = "APPLIED"
+    DISCARDED = "DISCARDED"
+
+
+class LineStatus(enum.StrEnum):
+    NEW = "NEW"
+    EXISTING_MATCH = "EXISTING_MATCH"
+    CONFLICT = "CONFLICT"
+    ERROR = "ERROR"
+    IGNORED = "IGNORED"
+
+
+class Resolution(enum.StrEnum):
+    CREATE = "CREATE"  # create a new item
+    MATCH = "MATCH"  # use `match_item_id` as-is
+    OVERWRITE = "OVERWRITE"  # update `match_item_id` with the row's data (protected)
+    IGNORE = "IGNORE"
+
+
+class ImportBatch(IdMixin, TimestampMixin, CreatedByMixin, Base):
+    """A draft import. Nothing reaches items/documents until a human applies it."""
+
+    __tablename__ = "import_batches"
+
+    kind: Mapped[ImportKind] = mapped_column(_enum(ImportKind))
+    source: Mapped[ImportSource] = mapped_column(_enum(ImportSource))
+    status: Mapped[BatchStatus] = mapped_column(_enum(BatchStatus), default=BatchStatus.OPEN,
+                                                index=True)
+    title: Mapped[str] = mapped_column(String(255), default="")
+    doc_type: Mapped[DocType | None] = mapped_column(_enum(DocType))
+    warehouse_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("warehouses.id"))
+    person_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("persons.id"))
+    applied_at: Mapped[dt.datetime | None]
+    applied_by_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("users.id"))
+    result_document_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("documents.id"))
+
+    lines: Mapped[list["ImportLine"]] = relationship(
+        back_populates="batch", cascade="all, delete-orphan", order_by="ImportLine.row_no",
+        lazy="selectin",
+    )
+
+
+class ImportLine(IdMixin, Base):
+    __tablename__ = "import_lines"
+
+    batch_id: Mapped[int] = mapped_column(
+        BigIntPK, ForeignKey("import_batches.id", ondelete="CASCADE"), index=True
+    )
+    row_no: Mapped[int] = mapped_column(Integer)
+    raw: Mapped[dict | None] = mapped_column(JSON)  # original cells, for the reviewer
+    code: Mapped[str] = mapped_column(String(64), default="")
+    name: Mapped[str] = mapped_column(String(255), default="")
+    barcode: Mapped[str] = mapped_column(String(64), default="")
+    unit_name: Mapped[str] = mapped_column(String(50), default="")
+    category_name: Mapped[str] = mapped_column(String(150), default="")
+    qty: Mapped[Decimal | None]
+    unit_price: Mapped[Decimal | None]
+    reorder_point: Mapped[Decimal | None]
+    status: Mapped[LineStatus] = mapped_column(_enum(LineStatus))
+    # Problem reading the source cell (e.g. text in a number column); cleared by editing.
+    parse_error: Mapped[str] = mapped_column(Text, default="")
+    message: Mapped[str] = mapped_column(Text, default="")
+    match_item_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("items.id"))
+    match_score: Mapped[int | None] = mapped_column(Integer)
+    # Alternative items for CONFLICT rows: [[item_id, score], ...]
+    candidates: Mapped[list | None] = mapped_column(JSON)
+    resolution: Mapped[Resolution | None] = mapped_column(_enum(Resolution))
+
+    batch: Mapped[ImportBatch] = relationship(back_populates="lines")

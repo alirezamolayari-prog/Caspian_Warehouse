@@ -3,6 +3,7 @@ import shutil
 
 import pytest
 from argon2 import PasswordHasher
+from sqlalchemy import event
 
 from caspian.core import security
 from caspian.db.bootstrap import prepare
@@ -41,8 +42,17 @@ async def db(tmp_path, template_db):
     path = tmp_path / "test.db"
     shutil.copyfile(template_db, path)
     database = Database(f"sqlite+aiosqlite:///{path}")
+    event.listen(database.engine.sync_engine, "connect", _no_fsync)
     yield database
     await database.dispose()
+
+
+def _no_fsync(dbapi_conn, _record) -> None:
+    """Tests don't need crash safety; fsync per commit dominates runtime on slow disks."""
+    cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA synchronous=OFF")
+    cursor.execute("PRAGMA journal_mode=MEMORY")
+    cursor.close()
 
 
 ADMIN_PW = "Str0ngPass"
@@ -58,3 +68,31 @@ async def admin(db):
     await auth.change_password(db, actor, "admin", ADMIN_PW)
     await auth.set_pin(db, actor, ADMIN_PW, ADMIN_PIN)
     return actor
+
+
+@pytest.fixture(scope="session")
+def _session_themes(qapp):
+    from caspian.ui.theme import ThemeManager
+
+    return ThemeManager(qapp, "light")
+
+
+@pytest.fixture
+def themes(_session_themes):
+    """One ThemeManager per session: re-applying the app stylesheet per test is slow."""
+    _session_themes.set_mode("light")
+    return _session_themes
+
+
+@pytest.fixture(autouse=True)
+def _delete_widgets(request):
+    """Destroy windows left by a test; restyling hundreds of stale widgets slows the suite."""
+    yield
+    if "qapp" not in request.fixturenames and "qtbot" not in request.fixturenames:
+        return
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QApplication
+
+    for widget in QApplication.topLevelWidgets():
+        widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)

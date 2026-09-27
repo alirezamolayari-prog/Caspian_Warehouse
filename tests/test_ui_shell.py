@@ -10,7 +10,7 @@ from caspian.ui.app_context import AppContext
 from caspian.ui.fonts import FONT_FAMILY, load_fonts
 from caspian.ui.main_window import MainWindow
 from caspian.ui.pages import PAGES
-from caspian.ui.theme import DARK, LIGHT, ThemeManager
+from caspian.ui.theme import DARK, LIGHT
 
 ADMIN_PW = "Str0ngPass"
 
@@ -24,11 +24,10 @@ async def admin(db):
 
 
 @pytest.fixture
-def make_window(qtbot, qapp, tmp_path, monkeypatch, db):
+def make_window(qtbot, themes, tmp_path, monkeypatch, db):
     monkeypatch.setattr("caspian.core.settings.settings_path", lambda: tmp_path / "settings.json")
 
     def factory(actor):
-        themes = ThemeManager(qapp, "light")
         ctx = AppContext(db, DbConfig(), Settings(), themes, actor)
         win = MainWindow(ctx)
         qtbot.addWidget(win)

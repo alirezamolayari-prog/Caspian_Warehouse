@@ -16,6 +16,9 @@ dependencies = [
     "aiosqlite>=0.20",
     "keyring>=25",
     "argon2-cffi>=23.1",
+    "openpyxl>=3.1",
+    "python-docx>=1.1",
+    "rapidfuzz>=3.9",
 ]
 
 [project.scripts]
@@ -46,7 +49,7 @@ qt_api = "pyside6"
 asyncio_mode = "auto"
 
 [tool.ruff]
-line-length = 100
+line-length = 110  # Persian UI/error strings run long
 target-version = "py312"
 src = ["src", "tests"]
 

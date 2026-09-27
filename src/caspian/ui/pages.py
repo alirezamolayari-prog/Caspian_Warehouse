@@ -16,7 +16,7 @@ from qasync import asyncSlot
 from caspian.core import jalali
 from caspian.core.permissions import Perm
 from caspian.core.text import to_persian_digits
-from caspian.services import documents, items
+from caspian.services import documents, imports, items
 from caspian.ui.theme import ThemeManager
 from caspian.ui.widgets import Card, DataTable, EmptyState, StatCard
 
@@ -36,7 +36,7 @@ PAGES: tuple[PageSpec, ...] = (
     PageSpec("items", "کالاها", "package", perm=Perm.ITEMS_VIEW),
     PageSpec("master", "اطلاعات پایه", "database", perm=Perm.ITEMS_VIEW),
     PageSpec("documents", "اسناد انبار", "arrow-left-right", perm=Perm.DOCUMENTS_VIEW),
-    PageSpec("imports", "ورود اطلاعات", "file-input", "M5", Perm.IMPORT_RUN),
+    PageSpec("imports", "ورود اطلاعات", "file-input", perm=Perm.IMPORT_RUN),
     PageSpec("stocktake", "انبارگردانی", "clipboard-check", "M6", Perm.STOCKTAKE_RUN),
     PageSpec("reports", "گزارش‌ها", "chart-column", "M7", Perm.REPORTS_VIEW),
     PageSpec("assistant", "دستیار هوشمند", "sparkles", "M9", Perm.AI_USE),
@@ -88,7 +88,9 @@ class DashboardPage(QWidget):
         self.cards["items"].set_value(to_persian_digits(total))
         self.cards["low_stock"].set_value(to_persian_digits(low))
         drafts, loans = await documents.pending_counts(self._ctx.db)
-        self.cards["drafts"].set_value(to_persian_digits(drafts))
+        batches = await imports.open_batch_count(self._ctx.db)
+        hint = f"{to_persian_digits(drafts)} سند، {to_persian_digits(batches)} ورود اطلاعات"
+        self.cards["drafts"].set_value(to_persian_digits(drafts + batches), hint)
         self.cards["loans"].set_value(to_persian_digits(loans))
         if not self._ctx.actor.can(Perm.DOCUMENTS_VIEW):
             return

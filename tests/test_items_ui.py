@@ -11,7 +11,6 @@ from caspian.services.items import ItemInput
 from caspian.ui.app_context import AppContext
 from caspian.ui.items_page import ItemDialog, ItemsPage
 from caspian.ui.master_page import MasterDataPage, WarehouseDialog
-from caspian.ui.theme import ThemeManager
 from caspian.ui.widgets import QtyEdit
 
 
@@ -23,9 +22,9 @@ async def settle(dialog):
 
 
 @pytest.fixture
-def make_ctx(qapp, db):
+def make_ctx(themes, db):
     def factory(actor):
-        return AppContext(db, DbConfig(), Settings(), ThemeManager(qapp, "light"), actor)
+        return AppContext(db, DbConfig(), Settings(), themes, actor)
     return factory
 
 

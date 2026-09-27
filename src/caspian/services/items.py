@@ -177,11 +177,15 @@ async def lookup_barcode(db: Database, barcode: str) -> tuple[int, int | None] |
     return (row[0], row[1]) if row else None
 
 
-async def next_code(db: Database) -> str:
-    async with db.session() as s:
-        codes = (await s.scalars(select(Item.code))).all()
+async def next_code_in(s: AsyncSession) -> str:
+    codes = (await s.scalars(select(Item.code))).all()
     numeric = [int(c) for c in codes if c.isdigit()]
     return str(max(numeric, default=FIRST_CODE - 1) + 1)
+
+
+async def next_code(db: Database) -> str:
+    async with db.session() as s:
+        return await next_code_in(s)
 
 
 # ----- validation -----
@@ -278,17 +282,22 @@ def _snapshot(item: Item) -> dict:
 # ----- commands -----
 
 
-async def create_item(db: Database, actor: Actor, data: ItemInput) -> int:
+async def create_item_in(s: AsyncSession, actor: Actor, data: ItemInput) -> Item:
+    """Create inside the caller's transaction (used by imports)."""
     actor.require(Perm.ITEMS_EDIT)
+    data = await _validate(s, data, None)
+    item = Item(code=data.code, name=data.name, name_normalized="", base_unit_id=0)
+    _apply(item, data)
+    s.add(item)
+    await s.flush()
+    await s.refresh(item, ["units", "barcodes"])
+    audit.record(s, actor, "item.created", "item", item.id, _snapshot(item))
+    return item
+
+
+async def create_item(db: Database, actor: Actor, data: ItemInput) -> int:
     async with db.session(actor.user_id) as s:
-        data = await _validate(s, data, None)
-        item = Item(code=data.code, name=data.name, name_normalized="", base_unit_id=0)
-        _apply(item, data)
-        s.add(item)
-        await s.flush()
-        await s.refresh(item, ["units", "barcodes"])
-        audit.record(s, actor, "item.created", "item", item.id, _snapshot(item))
-        return item.id
+        return (await create_item_in(s, actor, data)).id
 
 
 async def update_item(

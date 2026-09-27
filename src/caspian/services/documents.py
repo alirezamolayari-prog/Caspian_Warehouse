@@ -431,22 +431,27 @@ async def pending_counts(db: Database) -> tuple[int, int]:
 # ----- commands -----
 
 
-async def create_document(db: Database, actor: Actor, data: DocumentInput) -> int:
+async def create_document_in(s: AsyncSession, actor: Actor, data: DocumentInput) -> Document:
+    """Create a draft inside the caller's transaction (used by imports)."""
     actor.require(Perm.DOCUMENTS_EDIT)
+    lines = await _validate(s, data)
+    year = jalali.fiscal_year_of(data.doc_date)
+    doc = Document(doc_type=data.doc_type, fiscal_year=year,
+                   number=await _next_number(s, data.doc_type, year),
+                   status=DocStatus.DRAFT, doc_date=data.doc_date,
+                   warehouse_id=data.warehouse_id)
+    _set_header(doc, data)
+    doc.lines = lines
+    s.add(doc)
+    await s.flush()
+    audit.record(s, actor, "document.created", "document", doc.id,
+                 {"type": doc.doc_type.value, "number": doc.number, "lines": len(lines)})
+    return doc
+
+
+async def create_document(db: Database, actor: Actor, data: DocumentInput) -> int:
     async with db.session(actor.user_id) as s:
-        lines = await _validate(s, data)
-        year = jalali.fiscal_year_of(data.doc_date)
-        doc = Document(doc_type=data.doc_type, fiscal_year=year,
-                       number=await _next_number(s, data.doc_type, year),
-                       status=DocStatus.DRAFT, doc_date=data.doc_date,
-                       warehouse_id=data.warehouse_id)
-        _set_header(doc, data)
-        doc.lines = lines
-        s.add(doc)
-        await s.flush()
-        audit.record(s, actor, "document.created", "document", doc.id,
-                     {"type": doc.doc_type.value, "number": doc.number, "lines": len(lines)})
-        return doc.id
+        return (await create_document_in(s, actor, data)).id
 
 
 async def update_document(db: Database, actor: Actor, doc_id: int, expected_version: int,

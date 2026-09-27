@@ -13,7 +13,6 @@ from caspian.services.documents import DocumentInput, LineInput
 from caspian.services.items import ItemInput
 from caspian.ui.app_context import AppContext
 from caspian.ui.documents_page import CancelDialog, DocumentDialog, DocumentsPage
-from caspian.ui.theme import ThemeManager
 
 
 async def settle(dialog):
@@ -24,7 +23,7 @@ async def settle(dialog):
 
 
 @pytest.fixture
-async def env(qapp, db, admin):
+async def env(themes, db, admin):
     u = {x.name: x.id for x in await master.list_units(db)}
     drill = await items.create_item(db, admin, ItemInput(
         "1001", "دریل بوش", u["عدد"], units=[(u["جعبه"], Decimal(24))],
@@ -33,7 +32,7 @@ async def env(qapp, db, admin):
     pallet = await items.create_item(db, admin, ItemInput("2001", "پالت", u["عدد"],
                                                           is_returnable=True))
     person = await master.save_person(db, admin, "علی رضایی", PersonKind.EMPLOYEE)
-    ctx = AppContext(db, DbConfig(), Settings(), ThemeManager(qapp, "light"), admin)
+    ctx = AppContext(db, DbConfig(), Settings(), themes, admin)
     return {"ctx": ctx, "u": u, "drill": drill, "pallet": pallet, "person": person}
 
 

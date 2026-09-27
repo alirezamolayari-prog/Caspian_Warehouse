@@ -57,7 +57,7 @@ Receipt, issue, transfer and adjustment documents; posting to the stock ledger; 
 per warehouse; UoM conversion on entry (box → piece); loaned/returnable assets
 (loan out, return, outstanding list).
 
-### M5 — Draft-first import pipeline
+### M5 — Draft-first import pipeline ✅
 Generic draft batch + lines with status NEW / EXISTING_MATCH / CONFLICT / ERROR / IGNORED.
 Sources: Excel/CSV (column mapping, saved mappings), Word tables (.docx), rapid barcode scan.
 Duplicate detection + fuzzy matching, review grid, approve → post (overwrite = protected).
