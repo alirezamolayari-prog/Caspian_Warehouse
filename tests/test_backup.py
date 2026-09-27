@@ -96,6 +96,9 @@ MARIADB_URL = os.environ.get("CASPIAN_TEST_MARIADB_URL")
 
 @pytest.mark.skipif(not MARIADB_URL, reason="CASPIAN_TEST_MARIADB_URL not set")
 async def test_mariadb_backup_and_restore(tmp_path):
+    from sqlalchemy import text
+
+    from caspian.db.base import Base
     from caspian.db.bootstrap import prepare
     from caspian.db.database import Database, DbConfig
     from caspian.services import auth
@@ -104,6 +107,10 @@ async def test_mariadb_backup_and_restore(tmp_path):
     config = DbConfig(url.host, url.port or 3306, url.database, url.username)
     db = Database(MARIADB_URL)
     try:
+        # Tests share this database: start clean so the default admin is admin/admin.
+        async with db.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
         await prepare(db)
         admin = (await auth.login(db, "admin", "admin")).actor
         unit = (await master.list_units(db))[0].id
