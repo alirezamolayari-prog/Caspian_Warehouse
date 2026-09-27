@@ -48,7 +48,7 @@ Login screen, argon2 hashing, default `admin/admin` with forced change, switch u
 roles/permissions, Admin PIN, `@protected_action` guard + PIN dialog, audit trail service,
 user management page.
 
-### M3 — Master data UI
+### M3 — Master data UI ✅
 Items (with barcodes, units, conversions, reorder point), categories, warehouses, persons.
 Fast normalized Persian search, activate/deactivate (protected).
 

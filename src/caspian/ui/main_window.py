@@ -23,6 +23,8 @@ from caspian.services.actor import Actor
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import ChangePasswordDialog, SetPinDialog, run_login
 from caspian.ui.icons import icon
+from caspian.ui.items_page import ItemsPage
+from caspian.ui.master_page import MasterDataPage
 from caspian.ui.messages import show_info
 from caspian.ui.pages import PAGES, DashboardPage, PageSpec, PlaceholderPage, SettingsPage
 from caspian.ui.theme import Theme
@@ -142,7 +144,11 @@ class MainWindow(QMainWindow):
         self._pages: dict[str, QWidget] = {}
         for spec in PAGES:
             if spec.key == "dashboard":
-                page = DashboardPage()
+                page = DashboardPage(self.ctx)
+            elif spec.key == "items":
+                page = ItemsPage(self.ctx)
+            elif spec.key == "master":
+                page = MasterDataPage(self.ctx)
             elif spec.key == "settings":
                 page = SettingsPage(self._themes)
             elif spec.key == "users":

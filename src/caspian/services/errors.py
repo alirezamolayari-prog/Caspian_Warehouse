@@ -24,3 +24,11 @@ class ApprovalError(ServiceError):
 
 class NotFound(ServiceError):
     pass
+
+
+class ConcurrencyError(ServiceError):
+    """The record changed (another user/PC) since it was loaded for editing."""
+
+    def __init__(self, message: str = "این رکورد در این فاصله توسط کاربر دیگری تغییر کرده است. "
+                 "لطفاً دوباره باز کنید و تغییرات را اعمال کنید.") -> None:
+        super().__init__(message)

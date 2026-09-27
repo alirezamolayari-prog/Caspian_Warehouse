@@ -191,6 +191,28 @@ QComboBox QAbstractItemView {{
     selection-color: {t.text};
 }}
 
+/* Check boxes & radios */
+QCheckBox, QRadioButton {{ spacing: 8px; }}
+QCheckBox::indicator {{
+    width: 16px; height: 16px; border: 1.5px solid {t.text_muted}; border-radius: 4px;
+    background: {t.surface};
+}}
+QCheckBox::indicator:hover {{ border-color: {t.primary}; }}
+QCheckBox::indicator:checked {{
+    background: {t.primary}; border-color: {t.primary};
+    image: url("{themed_svg('check', t.on_primary)}");
+}}
+QCheckBox::indicator:disabled {{ border-color: {t.border}; }}
+
+/* Tabs */
+QTabWidget::pane {{ border: none; top: 0; }}
+QTabBar::tab {{
+    background: transparent; color: {t.text_muted}; border: none;
+    padding: 8px 18px; margin-left: 4px; border-radius: 8px; font-weight: 500;
+}}
+QTabBar::tab:hover {{ background: {t.surface_alt}; color: {t.text}; }}
+QTabBar::tab:selected {{ background: {t.primary_soft}; color: {t.primary}; font-weight: 700; }}
+
 /* Tables */
 QTableView, QTreeView, QListView {{
     background: {t.surface}; border: 1px solid {t.border}; border-radius: 10px;

@@ -11,9 +11,12 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from qasync import asyncSlot
 
 from caspian.core import jalali
 from caspian.core.permissions import Perm
+from caspian.core.text import to_persian_digits
+from caspian.services import items
 from caspian.ui.theme import ThemeManager
 from caspian.ui.widgets import Card, EmptyState, StatCard
 
@@ -30,7 +33,8 @@ class PageSpec:
 
 PAGES: tuple[PageSpec, ...] = (
     PageSpec("dashboard", "داشبورد", "layout-dashboard"),
-    PageSpec("items", "کالاها", "package", "M3", Perm.ITEMS_VIEW),
+    PageSpec("items", "کالاها", "package", perm=Perm.ITEMS_VIEW),
+    PageSpec("master", "اطلاعات پایه", "database", perm=Perm.ITEMS_VIEW),
     PageSpec("documents", "اسناد انبار", "arrow-left-right", "M4", Perm.DOCUMENTS_VIEW),
     PageSpec("imports", "ورود اطلاعات", "file-input", "M5", Perm.IMPORT_RUN),
     PageSpec("stocktake", "انبارگردانی", "clipboard-check", "M6", Perm.STOCKTAKE_RUN),
@@ -42,8 +46,9 @@ PAGES: tuple[PageSpec, ...] = (
 
 
 class DashboardPage(QWidget):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, ctx, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._ctx = ctx
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(16)
@@ -72,6 +77,16 @@ class DashboardPage(QWidget):
             )
         )
         layout.addWidget(activity, 1)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.refresh()
+
+    @asyncSlot()
+    async def refresh(self) -> None:
+        total, low = await items.count_summary(self._ctx.db)
+        self.cards["items"].set_value(to_persian_digits(total))
+        self.cards["low_stock"].set_value(to_persian_digits(low))
 
 
 class PlaceholderPage(QWidget):

@@ -43,3 +43,18 @@ async def db(tmp_path, template_db):
     database = Database(f"sqlite+aiosqlite:///{path}")
     yield database
     await database.dispose()
+
+
+ADMIN_PW = "Str0ngPass"
+ADMIN_PIN = "4826"
+
+
+@pytest.fixture
+async def admin(db):
+    """The default admin after first-login setup (password changed, PIN set)."""
+    from caspian.services import auth
+
+    actor = (await auth.login(db, "admin", "admin")).actor
+    await auth.change_password(db, actor, "admin", ADMIN_PW)
+    await auth.set_pin(db, actor, ADMIN_PW, ADMIN_PIN)
+    return actor
