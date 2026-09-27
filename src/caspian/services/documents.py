@@ -37,6 +37,7 @@ from caspian.db.models import (
 from caspian.services import audit
 from caspian.services.actor import Actor
 from caspian.services.errors import ConcurrencyError, NotFound, ValidationError
+from caspian.services.fiscal_state import ensure_open_year
 
 DOC_TYPE_NAMES = {
     DocType.OPENING: "موجودی اول دوره",
@@ -175,6 +176,7 @@ def _item_factors(item: Item) -> dict[int, Decimal]:
 
 async def _validate(s: AsyncSession, data: DocumentInput) -> list[DocumentLine]:
     """Validate header + lines; returns ready DocumentLine objects (unattached)."""
+    await ensure_open_year(s, jalali.fiscal_year_of(data.doc_date))
     wh = await s.get(Warehouse, data.warehouse_id)
     if wh is None or not wh.is_active:
         raise ValidationError("انبار انتخاب‌شده نامعتبر یا غیرفعال است.")
@@ -483,6 +485,7 @@ async def delete_draft(db: Database, actor: Actor, doc_id: int) -> None:
         doc = await _load(s, doc_id)
         if doc.status != DocStatus.DRAFT:
             raise ValidationError("فقط سند پیش‌نویس قابل حذف است. سند ثبت‌شده را ابطال کنید.")
+        await ensure_open_year(s, doc.fiscal_year)
         audit.record(s, actor, "document.draft_deleted", "document", doc.id,
                      {"type": doc.doc_type.value, "number": doc.number})
         await s.delete(doc)
@@ -532,6 +535,7 @@ async def cancel_document(db: Database, actor: Actor, doc_id: int, reason: str =
         doc = await _load(s, doc_id)
         if doc.status != DocStatus.POSTED:
             raise ValidationError("فقط سند ثبت‌شده قابل ابطال است.")
+        await ensure_open_year(s, doc.fiscal_year)
         if doc.doc_type == DocType.LOAN_OUT:
             has_returns = await s.scalar(select(Document.id).where(
                 Document.related_document_id == doc.id, Document.status == DocStatus.POSTED))

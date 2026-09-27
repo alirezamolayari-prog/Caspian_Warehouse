@@ -27,6 +27,7 @@ from caspian.ui.dialogs import FormDialog, ltr_field, password_field
 from caspian.ui.messages import show_error, show_info
 from caspian.ui.theme import ThemeManager
 from caspian.ui.widgets import Card, DataTable
+from caspian.ui.year_end import FiscalTab
 
 
 class AppearanceTab(QWidget):
@@ -247,11 +248,13 @@ class SettingsPage(QWidget):
         self.messaging = MessagingTab(ctx)
         self.tasks = TasksTab(ctx)
         self.backup = BackupTab(ctx)
+        self.fiscal = FiscalTab(ctx)
         self.tabs.addTab(self.appearance, "ظاهر")
         self.ai_index = self.tabs.addTab(self.ai, "هوش مصنوعی")
         self.messaging_index = self.tabs.addTab(self.messaging, "پیام‌رسان‌ها")
         self.tasks_index = self.tabs.addTab(self.tasks, "کارهای زمان‌بندی‌شده")
         self.backup_index = self.tabs.addTab(self.backup, "پشتیبان‌گیری")
+        self.fiscal_index = self.tabs.addTab(self.fiscal, "سال مالی")
         layout.addWidget(self.tabs)
         ctx.user_changed.connect(self._apply_permissions)
         self._apply_permissions()
@@ -262,3 +265,4 @@ class SettingsPage(QWidget):
         self.tabs.setTabVisible(self.messaging_index, admin)
         self.tabs.setTabVisible(self.tasks_index, admin)
         self.tabs.setTabVisible(self.backup_index, self._ctx.actor.can(Perm.BACKUP_CREATE))
+        self.tabs.setTabVisible(self.fiscal_index, self._ctx.actor.can(Perm.YEAR_CLOSE))

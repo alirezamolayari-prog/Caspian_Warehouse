@@ -24,9 +24,12 @@ from caspian.core import jalali
 from caspian.core.numbers import format_qty
 from caspian.core.permissions import Perm
 from caspian.core.text import to_persian_digits
+from caspian.db.database import Database
 from caspian.services import items, master, reports, users
 from caspian.services.errors import ServiceError, ValidationError
 from caspian.services.excel_export import write_xlsx
+from caspian.services.fiscal import get_archive, open_archive
+from caspian.services.fiscal_state import load_state
 from caspian.services.reports import ReorderParams, ReportTable
 from caspian.ui.app_context import AppContext
 from caspian.ui.messages import show_error, show_info
@@ -163,8 +166,20 @@ class ReportsPage(QWidget):
         self._ctx = ctx
         self._loaded = False
         self._rates: dict[int, reports.BurnRate] = {}
+        self._archives: dict[int, Database] = {}
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        year_row = QHBoxLayout()
+        year_row.addWidget(QLabel("سال مالی:"))
+        self.year = QComboBox()
+        self.year.addItem("جاری", None)
+        self.year.currentIndexChanged.connect(self._on_year_changed)
+        year_row.addWidget(self.year)
+        self.archive_note = QLabel("نمایش از بایگانی فقط‌خواندنی", objectName="Muted")
+        self.archive_note.hide()
+        year_row.addWidget(self.archive_note)
+        year_row.addStretch(1)
+        layout.addLayout(year_row)
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
 
@@ -214,7 +229,7 @@ class ReportsPage(QWidget):
         self.tabs.addTab(self.burn, "تحلیل مصرف و سفارش")
 
         # loans
-        self.loans = ReportView(ctx, lambda: reports.loans_report(ctx.db, ctx.actor))
+        self.loans = ReportView(ctx, self._run_loans)
         self.loans.filters.addStretch(1)
         self.tabs.addTab(self.loans, "امانی‌های باز")
 
@@ -249,6 +264,12 @@ class ReportsPage(QWidget):
     @asyncSlot()
     async def load_filters(self) -> None:
         db = self._ctx.db
+        self.year.blockSignals(True)
+        self.year.clear()
+        self.year.addItem("جاری", None)
+        for archive in (await load_state(db)).archive_list():
+            self.year.addItem(f"{to_persian_digits(archive.year)} (بایگانی)", archive.year)
+        self.year.blockSignals(False)
         warehouses = await master.list_warehouses(db)
         for combo in (self.stock_wh, self.cardex_wh, self.burn_wh):
             combo.clear()
@@ -265,6 +286,37 @@ class ReportsPage(QWidget):
             for u in await users.list_users(db, self._ctx.actor):
                 self.activity_user.addItem(u.full_name or u.username, u.id)
 
+    # ----- fiscal year -----
+
+    async def _db(self) -> Database:
+        """The active database, or a read-only archive of a closed year."""
+        year = self.year.currentData()
+        if year is None:
+            return self._ctx.db
+        if year not in self._archives:
+            archive = await get_archive(self._ctx.db, year)
+            self._archives[year] = open_archive(self._ctx.db, self._ctx.db_config,
+                                                self._ctx.db_password, archive)
+        return self._archives[year]
+
+    def _on_year_changed(self, *_args) -> None:
+        year = self.year.currentData()
+        self.archive_note.setVisible(year is not None)
+        # Date filters follow the chosen year so an archive doesn't look empty.
+        if year is None:
+            start, end = dt.date.today() - dt.timedelta(days=90), dt.date.today()
+            act_start = dt.date.today() - dt.timedelta(days=7)
+        else:
+            start, end = jalali.fiscal_year_bounds(year)
+            act_start = start
+        self.cardex_from.set_date(start)
+        self.cardex_to.set_date(end)
+        self.activity_from.set_date(act_start)
+        self.activity_to.set_date(end)
+        for view in (self.stock, self.cardex, self.burn, self.loans, self.activity):
+            view.table.setRowCount(0)
+            view.report = None
+
     # ----- runners -----
 
     def _params(self) -> ReorderParams:
@@ -272,32 +324,35 @@ class ReportsPage(QWidget):
                              self.safety.value())
 
     async def _run_stock(self) -> ReportTable:
-        return await reports.stock_balance(self._ctx.db, self._ctx.actor, self.stock_wh.currentData(),
+        return await reports.stock_balance(await self._db(), self._ctx.actor, self.stock_wh.currentData(),
                                            self.stock_cat.currentData(), self.stock_zero.isChecked())
 
     async def _run_cardex(self) -> ReportTable:
         item_id = self.cardex_item.currentData()
         if item_id is None:
             raise ValidationError("ابتدا کالا را جستجو و انتخاب کنید.")
-        return await reports.cardex(self._ctx.db, self._ctx.actor, item_id,
+        return await reports.cardex(await self._db(), self._ctx.actor, item_id,
                                     self.cardex_wh.currentData(), self.cardex_from.date(),
                                     self.cardex_to.date())
 
     async def _run_burn(self) -> ReportTable:
         params = self._params()
-        rates = await reports.burn_rates(self._ctx.db, self._ctx.actor, params,
+        rates = await reports.burn_rates(await self._db(), self._ctx.actor, params,
                                          self.burn_wh.currentData(), self.only_order.isChecked())
         self._rates = {r.item_id: r for r in rates}
         return reports.burn_rate_table(rates, params)
 
+    async def _run_loans(self) -> ReportTable:
+        return await reports.loans_report(await self._db(), self._ctx.actor)
+
     async def _run_activity(self) -> ReportTable:
-        return await reports.user_activity(self._ctx.db, self._ctx.actor,
+        return await reports.user_activity(await self._db(), self._ctx.actor,
                                            self.activity_user.currentData(),
                                            self.activity_from.date(), self.activity_to.date())
 
     @asyncSlot()
     async def on_cardex_search(self) -> None:
-        rows = await items.search_items(self._ctx.db, self._ctx.actor, self.cardex_search.text(),
+        rows = await items.search_items(await self._db(), self._ctx.actor, self.cardex_search.text(),
                                         include_inactive=True, limit=50)
         self.cardex_item.clear()
         for r in rows:

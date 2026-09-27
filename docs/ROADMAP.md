@@ -90,8 +90,8 @@ Scheduler. `.md` instructions → proposed scheduled tasks → human approval �
 Encrypted backups (mariadb-dump + gzip + AES-256-GCM/scrypt, `.bak`), manual and scheduled, retention,
 verify, restore (protected).
 
-### M12 — Fiscal year-end & archives
-One schema per fiscal year. Year-end wizard: mandatory backup → choose carry-over (persons,
+### M12 — Fiscal year-end & archives ✅
+Active DB keeps its name; each closed year becomes a read-only archive DB (<name>_<year>). Year-end wizard: mandatory backup → choose carry-over (persons,
 items, opening stock) → purge stale items option → fresh-start option → export and wipe
 audit logs → previous year made read-only. Year switcher + archive queries for reports/AI.
 
