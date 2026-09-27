@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+.env
+*.log
+*.cwbak
+.vscode/
+.idea/
+.uv-cache/
+alembic_dev.db
