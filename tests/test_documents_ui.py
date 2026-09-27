@@ -1,4 +1,3 @@
-import asyncio
 import datetime as dt
 from decimal import Decimal
 
@@ -13,13 +12,7 @@ from caspian.services.documents import DocumentInput, LineInput
 from caspian.services.items import ItemInput
 from caspian.ui.app_context import AppContext
 from caspian.ui.documents_page import CancelDialog, DocumentDialog, DocumentsPage
-
-
-async def settle(dialog):
-    for _ in range(60):
-        await asyncio.sleep(0.02)
-        if dialog.submit_button.isEnabled():
-            break
+from helpers import settle, wait_until
 
 
 @pytest.fixture
@@ -119,7 +112,7 @@ async def test_loan_return_prefills_outstanding(qtbot, env):
     qtbot.addWidget(dlg)
     dlg.person.setCurrentIndex(dlg.person.findData(env["person"]))
     dlg.loan.setCurrentIndex(dlg.loan.findData(loan))
-    await asyncio.sleep(0.1)
+    await wait_until(lambda: len(dlg.lines) == 1)
     assert [(ln.name, ln.qty.value()) for ln in dlg.lines] == [("پالت", Decimal(7))]
 
 

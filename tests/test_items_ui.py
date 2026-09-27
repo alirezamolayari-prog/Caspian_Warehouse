@@ -12,13 +12,7 @@ from caspian.ui.app_context import AppContext
 from caspian.ui.items_page import ItemDialog, ItemsPage
 from caspian.ui.master_page import MasterDataPage, WarehouseDialog
 from caspian.ui.widgets import QtyEdit
-
-
-async def settle(dialog):
-    for _ in range(50):
-        await asyncio.sleep(0.02)
-        if dialog.submit_button.isEnabled():
-            break
+from helpers import settle, wait_until
 
 
 @pytest.fixture
@@ -89,7 +83,7 @@ async def test_barcode_enter_adds_row_instead_of_saving(qtbot, db, admin, make_c
     edit.setFocus()
     qtbot.keyClicks(edit, "111")
     qtbot.keyClick(edit, Qt.Key.Key_Return)
-    await asyncio.sleep(0.05)
+    await wait_until(lambda: len(dlg.barcodes.rows) == 2)
     assert dlg.isVisible()
     assert len(dlg.barcodes.rows) == 2
 
@@ -117,15 +111,17 @@ async def test_items_page_lists_and_filters(qtbot, db, admin, make_ctx):
     assert page.count_label.text() == "۲ کالا"
     page.search.setText("دريل")
     page.search.returnPressed.emit()
-    await asyncio.sleep(0.1)
+    assert await wait_until(lambda: page.table.rowCount() == 1)
     assert page.table.rowCount() == 1 and page.table.item(0, 1).text() == "دریل بوش"
     page.search.clear()
+    page.search.returnPressed.emit()
     page.low_only.setChecked(True)
-    await asyncio.sleep(0.1)
+    await wait_until(lambda: page.count_label.text() == "۱ کالا")
+    await asyncio.sleep(0.4)  # the cleared search box's debounce fires a refresh too
     assert page.table.rowCount() == 1
     page.search.setText("zzz")
     page.search.returnPressed.emit()
-    await asyncio.sleep(0.1)
+    assert await wait_until(lambda: page.table.isHidden())
     assert page.table.isHidden() and not page.empty.isHidden()
 
 

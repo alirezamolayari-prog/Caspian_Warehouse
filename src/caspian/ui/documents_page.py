@@ -445,6 +445,7 @@ class DocumentsList(QWidget):
         super().__init__(parent)
         self._ctx = ctx
         self._rows: dict[int, DocumentRow] = {}
+        self._seq = 0
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 12, 0, 0)
         layout.setSpacing(10)
@@ -520,12 +521,16 @@ class DocumentsList(QWidget):
 
     @asyncSlot()
     async def refresh(self) -> None:
+        self._seq += 1
+        seq = self._seq
         try:
             rows = await docs.list_documents(
                 self._ctx.db, self._ctx.actor, self.type_filter.currentData(),
                 self.status_filter.currentData(), self.search.text())
         except ServiceError as exc:
             show_error(self, exc.message)
+            return
+        if seq != self._seq:
             return
         self._rows = {r.id: r for r in rows}
         theme = self._ctx.themes.current

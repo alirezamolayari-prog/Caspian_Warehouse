@@ -215,6 +215,7 @@ class ItemsPage(QWidget):
         super().__init__(parent)
         self._ctx = ctx
         self._rows: dict[int, ItemRow] = {}
+        self._seq = 0
         self._categories: list[CategoryRow] = []
 
         layout = QVBoxLayout(self)
@@ -298,6 +299,8 @@ class ItemsPage(QWidget):
 
     @asyncSlot()
     async def refresh(self) -> None:
+        self._seq += 1
+        seq = self._seq
         try:
             rows = await items.search_items(
                 self._ctx.db, self._ctx.actor, self.search.text(),
@@ -307,6 +310,8 @@ class ItemsPage(QWidget):
             )
         except ServiceError as exc:
             show_error(self, exc.message)
+            return
+        if seq != self._seq:  # a newer search started while this one ran; drop stale results
             return
         self._rows = {r.id: r for r in rows}
         theme = self._ctx.themes.current

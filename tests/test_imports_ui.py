@@ -1,4 +1,3 @@
-import asyncio
 from decimal import Decimal
 
 import pytest
@@ -12,13 +11,7 @@ from caspian.services.import_files import TableData
 from caspian.services.items import ItemInput
 from caspian.ui.app_context import AppContext
 from caspian.ui.imports_page import FileImportDialog, ImportsPage, ReviewDialog, ScanDialog
-
-
-async def settle(dialog):
-    for _ in range(80):
-        await asyncio.sleep(0.02)
-        if dialog.submit_button.isEnabled():
-            break
+from helpers import settle, wait_until
 
 
 @pytest.fixture
@@ -86,10 +79,7 @@ async def test_review_resolve_and_apply(qtbot, env):
     labels = [combo.itemText(i) for i in range(combo.count())]
     assert any(t.startswith("استفاده از: دریل بوش") for t in labels)
     combo.setCurrentIndex(next(i for i, t in enumerate(labels) if t.startswith("استفاده از")))
-    for _ in range(100):
-        await asyncio.sleep(0.02)
-        if "نیازمند تصمیم: ۰" in dlg.summary.text():
-            break
+    await wait_until(lambda: "نیازمند تصمیم: ۰" in dlg.summary.text())
     assert "نیازمند تصمیم: ۰" in dlg.summary.text(), dlg.status.text()
     dlg.submit_button.click()
     await settle(dlg)

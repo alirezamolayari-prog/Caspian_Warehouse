@@ -203,6 +203,7 @@ class PersonsTab(_Tab):
     new_text = "شخص جدید"
 
     def build_filters(self) -> None:
+        self._seq = 0
         self.search = SearchBox("جستجو: نام، کد یا تلفن…")
         self.search.search.connect(lambda _: self.reload())
         self.toolbar.addWidget(self.search)
@@ -214,9 +215,13 @@ class PersonsTab(_Tab):
         self.toolbar.addWidget(self.show_inactive)
 
     async def refresh(self) -> None:
+        self._seq += 1
+        seq = self._seq
         rows = await master.search_persons(self.ctx.db, self.search.text(),
                                            self.kind.currentData(),
                                            self.show_inactive.isChecked())
+        if seq != self._seq:
+            return
         self.rows = {r.id: r for r in rows}
         self.table.set_rows(
             [(r.id, (r.code, r.name, r.kind_name, r.phone, r.address,
