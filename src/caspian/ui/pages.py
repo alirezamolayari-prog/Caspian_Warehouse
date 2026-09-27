@@ -16,9 +16,9 @@ from qasync import asyncSlot
 from caspian.core import jalali
 from caspian.core.permissions import Perm
 from caspian.core.text import to_persian_digits
-from caspian.services import items
+from caspian.services import documents, items
 from caspian.ui.theme import ThemeManager
-from caspian.ui.widgets import Card, EmptyState, StatCard
+from caspian.ui.widgets import Card, DataTable, EmptyState, StatCard
 
 
 @dataclass(frozen=True)
@@ -35,7 +35,7 @@ PAGES: tuple[PageSpec, ...] = (
     PageSpec("dashboard", "داشبورد", "layout-dashboard"),
     PageSpec("items", "کالاها", "package", perm=Perm.ITEMS_VIEW),
     PageSpec("master", "اطلاعات پایه", "database", perm=Perm.ITEMS_VIEW),
-    PageSpec("documents", "اسناد انبار", "arrow-left-right", "M4", Perm.DOCUMENTS_VIEW),
+    PageSpec("documents", "اسناد انبار", "arrow-left-right", perm=Perm.DOCUMENTS_VIEW),
     PageSpec("imports", "ورود اطلاعات", "file-input", "M5", Perm.IMPORT_RUN),
     PageSpec("stocktake", "انبارگردانی", "clipboard-check", "M6", Perm.STOCKTAKE_RUN),
     PageSpec("reports", "گزارش‌ها", "chart-column", "M7", Perm.REPORTS_VIEW),
@@ -62,20 +62,20 @@ class DashboardPage(QWidget):
             "items": StatCard("تعداد کالاها", hint="کالاهای فعال"),
             "low_stock": StatCard("زیر نقطه سفارش", hint="نیازمند خرید"),
             "loans": StatCard("امانی‌های باز", hint="در انتظار بازگشت"),
-            "drafts": StatCard("پیش‌نویس‌های در انتظار", hint="نیازمند تأیید"),
+            "drafts": StatCard("پیش‌نویس‌های در انتظار", hint="اسناد ثبت‌نشده"),
         }
         for i, card in enumerate(self.cards.values()):
             grid.addWidget(card, 0, i)
         layout.addLayout(grid)
 
         activity = Card()
-        activity.body.addWidget(QLabel("فعالیت‌های اخیر", objectName="CardTitle"))
-        activity.body.addWidget(
-            EmptyState(
-                "هنوز فعالیتی ثبت نشده",
-                "آخرین اسناد و تغییرات اینجا نمایش داده می‌شوند.",
-            )
-        )
+        activity.body.addWidget(QLabel("آخرین اسناد انبار", objectName="CardTitle"))
+        self.recent = DataTable(("شماره", "نوع سند", "تاریخ", "طرف حساب", "وضعیت"))
+        self.recent.hide()
+        activity.body.addWidget(self.recent)
+        self.empty = EmptyState("هنوز سندی ثبت نشده",
+                                "آخرین اسناد انبار اینجا نمایش داده می‌شوند.")
+        activity.body.addWidget(self.empty)
         layout.addWidget(activity, 1)
 
     def showEvent(self, event) -> None:
@@ -87,6 +87,17 @@ class DashboardPage(QWidget):
         total, low = await items.count_summary(self._ctx.db)
         self.cards["items"].set_value(to_persian_digits(total))
         self.cards["low_stock"].set_value(to_persian_digits(low))
+        drafts, loans = await documents.pending_counts(self._ctx.db)
+        self.cards["drafts"].set_value(to_persian_digits(drafts))
+        self.cards["loans"].set_value(to_persian_digits(loans))
+        if not self._ctx.actor.can(Perm.DOCUMENTS_VIEW):
+            return
+        rows = await documents.list_documents(self._ctx.db, self._ctx.actor, limit=10)
+        self.recent.set_rows([(r.id, (to_persian_digits(r.number), r.type_name,
+                                      jalali.format_date(r.doc_date), r.person or "—",
+                                      r.status_name)) for r in rows])
+        self.recent.setVisible(bool(rows))
+        self.empty.setVisible(not rows)
 
 
 class PlaceholderPage(QWidget):

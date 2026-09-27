@@ -68,7 +68,7 @@ class FormDialog(QDialog):
         self.status.hide()
         self._layout.addWidget(self.status)
 
-        buttons = QHBoxLayout()
+        self.buttons = buttons = QHBoxLayout()
         buttons.addStretch(1)
         self.cancel_button = QPushButton(cancel_text)
         self.cancel_button.clicked.connect(self.reject)

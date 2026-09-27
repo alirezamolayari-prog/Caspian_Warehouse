@@ -1,5 +1,6 @@
 """Small reusable widgets styled through object names in theme.py."""
 
+import datetime as dt
 from collections.abc import Sequence
 from decimal import Decimal
 
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from caspian.core import jalali
 from caspian.core.numbers import format_qty, parse_decimal
 
 
@@ -155,3 +157,23 @@ class QtyEdit(QLineEdit):
     def set_value(self, value: Decimal | None) -> None:
         self.setText(format_qty(value, persian=False).replace(",", "") if value is not None
                      else "")
+
+
+class JalaliDateEdit(QLineEdit):
+    """Jalali date typed as YYYY/MM/DD (any digit script). Defaults to today."""
+
+    def __init__(self, value: dt.date | None = None, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        self.setPlaceholderText("1405/01/01")
+        self.setInputMask("")
+        self.set_date(value or dt.date.today())
+
+    def date(self) -> dt.date | None:
+        try:
+            return jalali.parse_date(self.text())
+        except ValueError:
+            return None
+
+    def set_date(self, value: dt.date) -> None:
+        self.setText(jalali.format_date(value, persian_digits=False))

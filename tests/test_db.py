@@ -28,6 +28,7 @@ from caspian.db.models import (
     Warehouse,
 )
 from caspian.db.seed import DEFAULT_UNITS, seed_reference_data
+from caspian.services.errors import ValidationError
 
 # Set to a MariaDB URL (mariadb+aiomysql://user:pass@host/testdb) to also run the
 # integration test against a real server. That database will be wiped.
@@ -156,6 +157,23 @@ async def test_mariadb_full_schema():
         assert {"items", "documents", "stock_ledger", "audit_log"} <= set(tables)
         async with db.session() as s:
             item = await _make_item(s, name="كابينت")
-            assert item.id
+            wh_id = (await s.scalar(select(Warehouse))).id
+            box_id = item.units[0].unit_id
+
+        # Full business flow on the real server (row locks, numbering, Persian collation).
+        from caspian.services import auth, items
+        from caspian.services import documents as docs
+
+        admin = (await auth.login(db, "admin", "admin")).actor
+        assert [r.name for r in await items.search_items(db, admin, "کابینت")] == ["كابينت"]
+        await docs.create_and_post(db, admin, docs.DocumentInput(
+            DocType.RECEIPT, dt.date(2026, 9, 27), wh_id,
+            [docs.LineInput(item.id, box_id, Decimal(2))]))
+        issue = await docs.create_document(db, admin, docs.DocumentInput(
+            DocType.ISSUE, dt.date(2026, 9, 27), wh_id,
+            [docs.LineInput(item.id, item.base_unit_id, Decimal(50))]))
+        with pytest.raises(ValidationError):
+            await docs.post_document(db, admin, issue)  # 50 > 48
+        assert (await docs.stock_by_warehouse(db, item.id))[0][1] == Decimal(48)
     finally:
         await db.dispose()

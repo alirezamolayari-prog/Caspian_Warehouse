@@ -52,7 +52,7 @@ user management page.
 Items (with barcodes, units, conversions, reorder point), categories, warehouses, persons.
 Fast normalized Persian search, activate/deactivate (protected).
 
-### M4 — Inventory transactions
+### M4 — Inventory transactions ✅
 Receipt, issue, transfer and adjustment documents; posting to the stock ledger; balances
 per warehouse; UoM conversion on entry (box → piece); loaned/returnable assets
 (loan out, return, outstanding list).
