@@ -7,30 +7,37 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QPushButton,
     QStackedWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
+from qasync import asyncSlot
 
 from caspian import APP_DISPLAY_NAME, __version__
 from caspian.core import jalali
-from caspian.core.settings import Settings
-from caspian.db.database import Database, DbConfig
+from caspian.services import auth
+from caspian.services.actor import Actor
+from caspian.ui.app_context import AppContext, exec_dialog
+from caspian.ui.auth_dialogs import ChangePasswordDialog, SetPinDialog, run_login
 from caspian.ui.icons import icon
+from caspian.ui.messages import show_info
 from caspian.ui.pages import PAGES, DashboardPage, PageSpec, PlaceholderPage, SettingsPage
-from caspian.ui.theme import Theme, ThemeManager
+from caspian.ui.theme import Theme
+from caspian.ui.users_page import UsersPage
 
 
 class MainWindow(QMainWindow):
     closed = Signal()
 
-    def __init__(self, themes: ThemeManager, settings: Settings) -> None:
+    def __init__(self, ctx: AppContext) -> None:
         super().__init__()
-        self._themes = themes
-        self._settings = settings
-        self.db: Database | None = None
+        self.ctx = ctx
+        self._themes = ctx.themes
+        self._settings = ctx.settings
+        self._closing_for_logout = False
         self.setWindowTitle(APP_DISPLAY_NAME)
         self.setMinimumSize(1100, 700)
 
@@ -43,12 +50,12 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
         self._build_status_bar()
 
-        themes.theme_changed.connect(self._on_theme_changed)
-        self._on_theme_changed(themes.current)
-        self.navigate("dashboard")
+        self._themes.theme_changed.connect(self._on_theme_changed)
+        ctx.user_changed.connect(self._on_user_changed)
+        self._on_user_changed(ctx.actor)
 
-        if settings.window_geometry:
-            self.restoreGeometry(QByteArray.fromBase64(settings.window_geometry.encode()))
+        if self._settings.window_geometry:
+            self.restoreGeometry(QByteArray.fromBase64(self._settings.window_geometry.encode()))
 
     # ----- layout -----
 
@@ -74,11 +81,12 @@ class MainWindow(QMainWindow):
         self._nav_group.setExclusive(True)
         self._nav_buttons: dict[str, QPushButton] = {}
         for spec in PAGES:
-            if spec.key == "settings":
-                continue
-            col.addWidget(self._make_nav_button(spec))
+            if not spec.bottom:
+                col.addWidget(self._make_nav_button(spec))
         col.addStretch(1)
-        col.addWidget(self._make_nav_button(next(p for p in PAGES if p.key == "settings")))
+        for spec in PAGES:
+            if spec.bottom:
+                col.addWidget(self._make_nav_button(spec))
         return sidebar
 
     def _make_nav_button(self, spec: PageSpec) -> QPushButton:
@@ -115,8 +123,19 @@ class MainWindow(QMainWindow):
         self._theme_button.clicked.connect(self._themes.toggle)
         header.addWidget(self._theme_button)
 
-        self._user_chip = QLabel("کاربر: —", objectName="UserChip")
-        header.addWidget(self._user_chip)
+        self._user_button = QToolButton(objectName="UserChip")
+        self._user_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._user_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._user_button.setIconSize(QSize(16, 16))
+        self._user_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._user_menu = QMenu(self)
+        self._user_menu.addAction("تغییر رمز عبور", self.on_change_password)
+        self._pin_action = self._user_menu.addAction("تنظیم PIN مدیر", self.on_set_pin)
+        self._user_menu.addSeparator()
+        self._user_menu.addAction("تغییر کاربر", self.on_switch_user)
+        self._user_menu.addAction("خروج از حساب", self.on_logout)
+        self._user_button.setMenu(self._user_menu)
+        header.addWidget(self._user_button)
         col.addLayout(header)
 
         self._stack = QStackedWidget()
@@ -126,6 +145,8 @@ class MainWindow(QMainWindow):
                 page = DashboardPage()
             elif spec.key == "settings":
                 page = SettingsPage(self._themes)
+            elif spec.key == "users":
+                page = UsersPage(self.ctx)
             else:
                 page = PlaceholderPage(spec)
             self._pages[spec.key] = page
@@ -136,30 +157,78 @@ class MainWindow(QMainWindow):
     def _build_status_bar(self) -> None:
         bar = self.statusBar()
         bar.setSizeGripEnabled(False)
-        self._db_status = QLabel("پایگاه داده: پیکربندی نشده")
-        bar.addWidget(self._db_status)
+        config = self.ctx.db_config
+        bar.addWidget(QLabel(f"پایگاه داده: {config.name} @ {config.host}"))
         bar.addPermanentWidget(QLabel(jalali.format_date(dt.date.today())))
         bar.addPermanentWidget(QLabel(f"نسخه {__version__}"))
 
-    # ----- behavior -----
+    # ----- navigation & permissions -----
 
-    def set_database(self, db: Database, config: DbConfig) -> None:
-        self.db = db
-        self._db_status.setText(f"پایگاه داده: {config.name} @ {config.host}")
-
+    def is_allowed(self, key: str) -> bool:
+        spec = next(p for p in PAGES if p.key == key)
+        return spec.perm is None or self.ctx.actor.can(spec.perm)
 
     def navigate(self, key: str) -> None:
+        if not self.is_allowed(key):
+            key = "dashboard"
         self._stack.setCurrentWidget(self._pages[key])
         self._nav_buttons[key].setChecked(True)
         self._page_title.setText(next(p.title for p in PAGES if p.key == key))
-        self._refresh_nav_icons()
+        self._refresh_icons()
 
     @property
     def current_page(self) -> str:
         current = self._stack.currentWidget()
         return next(k for k, w in self._pages.items() if w is current)
 
+    def _on_user_changed(self, actor: Actor) -> None:
+        self._user_button.setText(actor.display_name)
+        self._user_button.setToolTip(f"{actor.username} — {actor.role_code}")
+        self._pin_action.setVisible(actor.is_admin)
+        for key, button in self._nav_buttons.items():
+            button.setVisible(self.is_allowed(key))
+        self._assistant_button.setVisible(self.is_allowed("assistant"))
+        current = self._stack.currentWidget()
+        self.navigate(self.current_page if current is not None else "dashboard")
+
+    # ----- user menu -----
+
+    @asyncSlot()
+    async def on_change_password(self) -> None:
+        if await exec_dialog(ChangePasswordDialog(self.ctx.db, self.ctx.actor, parent=self)):
+            show_info(self, "رمز عبور تغییر کرد.")
+
+    @asyncSlot()
+    async def on_set_pin(self) -> None:
+        if await exec_dialog(SetPinDialog(self.ctx.db, self.ctx.actor, parent=self)):
+            show_info(self, "کد PIN مدیر ذخیره شد.")
+
+    @asyncSlot()
+    async def on_switch_user(self) -> None:
+        actor = await run_login(self.ctx.db, cancel_text="انصراف", parent=self)
+        if actor is not None and actor != self.ctx.actor:
+            await auth.logout(self.ctx.db, self.ctx.actor)
+            self.ctx.set_actor(actor)
+
+    @asyncSlot()
+    async def on_logout(self) -> None:
+        await auth.logout(self.ctx.db, self.ctx.actor)
+        self.hide()
+        actor = await run_login(self.ctx.db)
+        if actor is None:
+            self.close()
+            return
+        self.ctx.set_actor(actor)
+        self.show()
+
+    # ----- theme -----
+
     def _on_theme_changed(self, theme: Theme) -> None:
+        self._refresh_icons()
+        self._settings.theme_mode = self._themes.mode
+
+    def _refresh_icons(self) -> None:
+        theme = self._themes.current
         for button in self._nav_buttons.values():
             name = button.property("icon_name")
             color = theme.primary if button.isChecked() else theme.text_muted
@@ -167,10 +236,7 @@ class MainWindow(QMainWindow):
         self._brand_icon.setPixmap(icon("boxes", theme.primary).pixmap(28, 28))
         self._assistant_button.setIcon(icon("sparkles", theme.text_muted))
         self._theme_button.setIcon(icon("sun" if theme.is_dark else "moon", theme.text_muted))
-        self._settings.theme_mode = self._themes.mode
-
-    def _refresh_nav_icons(self) -> None:
-        self._on_theme_changed(self._themes.current)
+        self._user_button.setIcon(icon("user", theme.text_muted))
 
     def closeEvent(self, event) -> None:
         self._settings.window_geometry = bytes(self.saveGeometry().toBase64()).decode()

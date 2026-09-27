@@ -10,9 +10,12 @@ log = logging.getLogger(__name__)
 
 
 async def prepare(db: Database) -> None:
+    from caspian.services.auth import ensure_default_admin
+
     await upgrade(db)
     async with db.session() as session:
         await seed_reference_data(session)
+        await ensure_default_admin(session)
 
 
 async def open_mariadb(config: DbConfig, password: str, create: bool = False) -> Database:

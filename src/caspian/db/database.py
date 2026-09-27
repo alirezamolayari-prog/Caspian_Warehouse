@@ -13,6 +13,9 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.orm import Session
+
+from caspian.db.base import CreatedByMixin
 
 log = logging.getLogger(__name__)
 
@@ -82,9 +85,13 @@ class Database:
         return self.url.get_backend_name() == "sqlite"
 
     @asynccontextmanager
-    async def session(self) -> AsyncIterator[AsyncSession]:
-        """Unit of work: commits on success, rolls back on any exception."""
+    async def session(self, actor_id: int | None = None) -> AsyncIterator[AsyncSession]:
+        """Unit of work: commits on success, rolls back on any exception.
+
+        `actor_id` is stamped as `created_by_id` on every new row that has one.
+        """
         async with self.sessionmaker() as session:
+            session.info["actor_id"] = actor_id
             try:
                 yield session
                 await session.commit()
@@ -121,6 +128,16 @@ def describe_error(exc: BaseException) -> str:
     if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
         return _ERROR_MESSAGES[2003]
     return f"خطای پایگاه داده: {orig}"
+
+
+@event.listens_for(Session, "before_flush")
+def _stamp_created_by(session: Session, _flush_context, _instances) -> None:
+    actor_id = session.info.get("actor_id")
+    if actor_id is None:
+        return
+    for obj in session.new:
+        if isinstance(obj, CreatedByMixin) and obj.created_by_id is None:
+            obj.created_by_id = actor_id
 
 
 def _sqlite_pragmas(dbapi_conn, _record) -> None:

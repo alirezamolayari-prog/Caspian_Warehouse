@@ -43,7 +43,7 @@ Async SQLAlchemy engine/session, Alembic migrations, first-run DB connection wiz
 warehouses, categories, units, unit conversions, items, barcodes, persons (supplier/customer/
 employee), documents + lines, stock ledger. `created_by`/`created_at` mixin.
 
-### M2 — Auth, users & protected actions
+### M2 — Auth, users & protected actions ✅
 Login screen, argon2 hashing, default `admin/admin` with forced change, switch user,
 roles/permissions, Admin PIN, `@protected_action` guard + PIN dialog, audit trail service,
 user management page.

@@ -15,6 +15,8 @@ from caspian.core.secrets import get_secret, set_secret
 from caspian.core.settings import Settings
 from caspian.db.bootstrap import open_mariadb
 from caspian.db.database import Database, DbConfig, describe_error
+from caspian.ui.app_context import AppContext, exec_dialog
+from caspian.ui.auth_dialogs import run_login
 from caspian.ui.db_setup_dialog import DbSetupDialog
 from caspian.ui.fonts import apply_app_font
 from caspian.ui.main_window import MainWindow
@@ -31,14 +33,6 @@ def create_app(argv: list[str] | None = None) -> QApplication:
     app.setQuitOnLastWindowClosed(False)
     apply_app_font(app)
     return app
-
-
-async def exec_dialog(dialog: QDialog) -> int:
-    """Await a modal dialog without blocking the asyncio loop."""
-    future: asyncio.Future[int] = asyncio.get_running_loop().create_future()
-    dialog.finished.connect(lambda result: future.done() or future.set_result(result))
-    dialog.open()
-    return await future
 
 
 async def connect_database(settings: Settings) -> tuple[Database, DbConfig] | None:
@@ -66,14 +60,18 @@ async def _main(settings: Settings, themes: ThemeManager) -> None:
     app = QApplication.instance()
     connected = await connect_database(settings)
     if connected is None:
+        app.quit()
         return
     db, config = connected
-    window = MainWindow(themes, settings)
-    window.set_database(db, config)
-    closed = asyncio.Event()
-    window.closed.connect(closed.set)
-    window.show()
     try:
+        actor = await run_login(db)
+        if actor is None:
+            return
+        ctx = AppContext(db, config, settings, themes, actor)
+        window = MainWindow(ctx)
+        closed = asyncio.Event()
+        window.closed.connect(closed.set)
+        window.show()
         await closed.wait()
     finally:
         await db.dispose()

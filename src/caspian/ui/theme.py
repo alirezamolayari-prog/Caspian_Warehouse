@@ -6,10 +6,15 @@ or read tokens from `ThemeManager.current` for custom painting.
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 
+from platformdirs import user_cache_dir
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QPalette
 from PySide6.QtWidgets import QApplication
+
+from caspian import APP_NAME
+from caspian.resources import ICONS_DIR
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +33,8 @@ class Theme:
     primary_soft: str
     on_primary: str
     danger: str
+    danger_hover: str
+    danger_soft: str
     warning: str
     success: str
     shadow: str
@@ -50,6 +57,8 @@ LIGHT = Theme(
     primary_soft="#DDF1EE",
     on_primary="#FFFFFF",
     danger="#DC2626",
+    danger_hover="#B91C1C",
+    danger_soft="#FEF2F2",
     warning="#B45309",
     success="#15803D",
     shadow="#1A1F2614",
@@ -68,6 +77,8 @@ DARK = Theme(
     primary_soft="#12332F",
     on_primary="#062522",
     danger="#F87171",
+    danger_hover="#FCA5A5",
+    danger_soft="#2A1517",
     warning="#FBBF24",
     success="#4ADE80",
     shadow="#00000066",
@@ -99,6 +110,16 @@ def build_palette(t: Theme) -> QPalette:
     return p
 
 
+def themed_svg(name: str, color: str) -> str:
+    """Path to a recolored copy of a bundled icon, for use in stylesheet url()s."""
+    target = Path(user_cache_dir(APP_NAME, appauthor=False)) / "icons" / f"{name}-{color[1:]}.svg"
+    if not target.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source = (ICONS_DIR / f"{name}.svg").read_text(encoding="utf-8")
+        target.write_text(source.replace("currentColor", color), encoding="utf-8")
+    return target.as_posix()
+
+
 def build_stylesheet(t: Theme) -> str:
     return f"""
 * {{ outline: none; }}
@@ -119,10 +140,12 @@ QMainWindow, #ContentArea {{ background: {t.bg}; }}
 /* Header */
 #Header {{ background: {t.bg}; }}
 #PageTitle {{ font-size: 16pt; font-weight: 700; }}
-#UserChip {{
+QToolButton#UserChip {{
     background: {t.surface}; border: 1px solid {t.border}; border-radius: 16px;
-    padding: 4px 12px; color: {t.text};
+    padding: 5px 12px; color: {t.text}; font-weight: 500;
 }}
+QToolButton#UserChip:hover {{ background: {t.surface_alt}; }}
+QToolButton#UserChip::menu-indicator {{ image: none; width: 0; }}
 
 /* Cards */
 #Card {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: 12px; }}
@@ -146,6 +169,8 @@ QPushButton[variant="primary"] {{
 }}
 QPushButton[variant="primary"]:hover {{ background: {t.primary_hover}; }}
 QPushButton[variant="danger"] {{ background: {t.danger}; border-color: {t.danger}; color: #FFFFFF; }}
+QPushButton[variant="danger"]:hover {{ background: {t.danger_hover}; }}
+#WarningBox {{ background: {t.danger_soft}; border: 1px solid {t.danger}; border-radius: 10px; }}
 QToolButton#IconButton {{
     background: transparent; border: none; border-radius: 8px; padding: 6px;
 }}
@@ -159,6 +184,8 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateEdit, QPlainTextEdit, QText
 }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus,
 QPlainTextEdit:focus, QTextEdit:focus {{ border: 1px solid {t.primary}; }}
+QComboBox::drop-down {{ border: none; width: 26px; subcontrol-origin: padding; subcontrol-position: center left; }}
+QComboBox::down-arrow {{ image: url("{themed_svg('chevron-down', t.text_muted)}"); width: 14px; height: 14px; }}
 QComboBox QAbstractItemView {{
     background: {t.surface}; border: 1px solid {t.border}; selection-background-color: {t.primary_soft};
     selection-color: {t.text};

@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from caspian.core import jalali
+from caspian.core.permissions import Perm
 from caspian.ui.theme import ThemeManager
 from caspian.ui.widgets import Card, EmptyState, StatCard
 
@@ -23,17 +24,20 @@ class PageSpec:
     title: str
     icon: str
     coming_in: str = ""  # milestone that implements the page, while it's a placeholder
+    perm: Perm | None = None  # hidden from users without this permission
+    bottom: bool = False  # pinned to the bottom of the sidebar
 
 
 PAGES: tuple[PageSpec, ...] = (
     PageSpec("dashboard", "داشبورد", "layout-dashboard"),
-    PageSpec("items", "کالاها", "package", "M3"),
-    PageSpec("documents", "اسناد انبار", "arrow-left-right", "M4"),
-    PageSpec("imports", "ورود اطلاعات", "file-input", "M5"),
-    PageSpec("stocktake", "انبارگردانی", "clipboard-check", "M6"),
-    PageSpec("reports", "گزارش‌ها", "chart-column", "M7"),
-    PageSpec("assistant", "دستیار هوشمند", "sparkles", "M9"),
-    PageSpec("settings", "تنظیمات", "settings"),
+    PageSpec("items", "کالاها", "package", "M3", Perm.ITEMS_VIEW),
+    PageSpec("documents", "اسناد انبار", "arrow-left-right", "M4", Perm.DOCUMENTS_VIEW),
+    PageSpec("imports", "ورود اطلاعات", "file-input", "M5", Perm.IMPORT_RUN),
+    PageSpec("stocktake", "انبارگردانی", "clipboard-check", "M6", Perm.STOCKTAKE_RUN),
+    PageSpec("reports", "گزارش‌ها", "chart-column", "M7", Perm.REPORTS_VIEW),
+    PageSpec("assistant", "دستیار هوشمند", "sparkles", "M9", Perm.AI_USE),
+    PageSpec("users", "کاربران", "users", perm=Perm.USERS_MANAGE, bottom=True),
+    PageSpec("settings", "تنظیمات", "settings", bottom=True),
 )
 
 

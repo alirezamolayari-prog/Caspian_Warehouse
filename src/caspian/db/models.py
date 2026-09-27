@@ -70,9 +70,11 @@ class User(IdMixin, TimestampMixin, VersionMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
     last_login_at: Mapped[dt.datetime | None]
+    failed_logins: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    locked_until: Mapped[dt.datetime | None]
     created_by_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("users.id"))
 
-    role: Mapped[Role] = relationship(lazy="joined")
+    role: Mapped[Role] = relationship(lazy="joined", foreign_keys=[role_id])
 
 
 class AuditLog(IdMixin, Base):
@@ -85,6 +87,8 @@ class AuditLog(IdMixin, Base):
     entity_type: Mapped[str | None] = mapped_column(String(64))
     entity_id: Mapped[int | None] = mapped_column(BigIntPK)
     details: Mapped[dict | None] = mapped_column(JSON)
+    # Admin who confirmed a protected action with their PIN.
+    approved_by_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("users.id"))
     machine: Mapped[str | None] = mapped_column(String(128))
 
 
