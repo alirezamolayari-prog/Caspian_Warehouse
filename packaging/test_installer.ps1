@@ -42,22 +42,25 @@ function RunWait($exe, $arguments, $timeoutSec) {
 }
 
 function Diagnostics {
-    $annotate = [bool]$env:GITHUB_ACTIONS
-    foreach ($file in $SetupLog, (Join-Path $UserData "Logs\caspian.log")) {
-        if (Test-Path $file) {
-            Write-Host "--- tail of $file"
-            # Annotations are readable without downloading the job log.
-            Get-Content $file -Tail 25 | ForEach-Object {
-                if ($annotate) { Write-Host "::warning::$(Split-Path $file -Leaf): $_" } else { Write-Host $_ }
-            }
+    # GitHub keeps only 10 annotations per step, so each log goes into ONE multi-line annotation.
+    $files = @($SetupLog, (Join-Path $UserData "Logs\caspian.log"))
+    $files += Get-ChildItem $env:TEMP -Recurse -Filter "mariadb-install.log" -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty FullName
+    foreach ($file in $files) {
+        if (-not (Test-Path $file)) { continue }
+        $tail = Get-Content $file -Tail 45 -ErrorAction SilentlyContinue
+        if ($env:GITHUB_ACTIONS) {
+            $text = ($tail | ForEach-Object { $_ -replace '%', '%25' }) -join '%0A'
+            Write-Host "::warning title=$(Split-Path $file -Leaf)::$text"
+        } else {
+            Write-Host "--- tail of $file"; $tail | ForEach-Object { Write-Host $_ }
         }
     }
 }
-
 function Install($exe, $extra = "") {
     $exe = (Resolve-Path $exe).Path
     $setupArgs = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=`"$SetupLog`" /DIR=`"$InstallDir`" $extra"
-    $code = RunWait $exe $setupArgs 1200
+    $code = RunWait $exe $setupArgs 900
     Check ($code -eq 0) "install $(Split-Path $exe -Leaf) (exit $code; -999 = timed out)"
     if ($code -ne 0) { Diagnostics }
 }
