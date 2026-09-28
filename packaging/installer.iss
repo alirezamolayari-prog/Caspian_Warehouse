@@ -143,6 +143,10 @@ var
   Problem: String;
 begin
   Result := True;
+  { Silent installs never show pages (and a plain MsgBox would wait forever there);
+    PrepareToInstall validates /DBPASSWORD instead. }
+  if WizardSilent then
+    Exit;
   if (CurPageID = DbPage.ID) and DbTaskSelected then
   begin
     Problem := PasswordProblem(DbPage.Values[0]);
