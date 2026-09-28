@@ -51,7 +51,7 @@ def test_provision_then_check_db(tmp_path, monkeypatch):
     root_user, root_password = MARIADB_ROOT.split(":", 1)
     assert root_user == setup_cli.ADMIN_USER
     pw_file = tmp_path / "pw.txt"
-    pw_file.write_text(root_password + "\n", encoding="utf-8")
+    pw_file.write_text(root_password + "\n", encoding="utf-8-sig")  # as Inno Setup writes it
     try:
         code = setup_cli.run(["caspian", "--provision", str(pw_file),
                               "--db-name", "caspian_inst_test", "--db-user", "caspian_inst"])

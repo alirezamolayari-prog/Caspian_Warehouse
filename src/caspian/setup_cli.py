@@ -52,7 +52,8 @@ async def _wait_for_server(config: DbConfig, admin_password: str) -> None:
 
 async def provision(password_file: Path, db_name: str = DEFAULT_DB_NAME,
                     db_user: str = "caspian") -> None:
-    admin_password = password_file.read_text(encoding="utf-8").strip()
+    # utf-8-sig: Inno Setup writes the file with a byte-order mark.
+    admin_password = password_file.read_text(encoding="utf-8-sig").strip()
     if not admin_password:
         raise ValueError("empty administrator password")
     config = DbConfig(name=db_name, user=db_user)
