@@ -23,7 +23,9 @@ $Marker = Join-Path $UserData "installer-test-marker.txt"
 $failures = 0
 
 function Check($ok, $what) {
-    if ($ok) { Write-Host "  PASS  $what" } else { Write-Host "  FAIL  $what"; $script:failures++ }
+    if ($ok) { Write-Host "  PASS  $what"; return }
+    $script:failures++
+    if ($env:GITHUB_ACTIONS) { Write-Host "::error::FAIL $what" } else { Write-Host "  FAIL  $what" }
 }
 
 $SetupLog = Join-Path $env:TEMP "caspian-setup-test.log"
@@ -44,8 +46,9 @@ function Diagnostics {
     foreach ($file in $SetupLog, (Join-Path $UserData "Logs\caspian.log")) {
         if (Test-Path $file) {
             Write-Host "--- tail of $file"
-            Get-Content $file -Tail 40 | ForEach-Object {
-                if ($annotate -and $_ -match '(?i)error|fail|exception|exit code') { Write-Host "::error::$_" } else { Write-Host $_ }
+            # Annotations are readable without downloading the job log.
+            Get-Content $file -Tail 25 | ForEach-Object {
+                if ($annotate) { Write-Host "::warning::$(Split-Path $file -Leaf): $_" } else { Write-Host $_ }
             }
         }
     }
@@ -96,7 +99,8 @@ Check ((RunApp "--smoke-test") -eq 0) "installed app smoke test"
 
 if ($WithDatabase) {
     $svc = Get-Service MariaDB -ErrorAction SilentlyContinue
-    Check ($svc -and $svc.Status -eq "Running") "MariaDB service running"
+    Check ($svc -and $svc.Status -eq "Running") "MariaDB service running (status: $($svc.Status))"
+    if (-not $svc) { Diagnostics }
     $dbOk = (RunApp "--check-db") -eq 0
     Check $dbOk "app connects to the provisioned database"
     if (-not $dbOk) { Diagnostics }
@@ -116,7 +120,9 @@ $code = RunWait (Join-Path $InstallDir "unins000.exe") "/VERYSILENT /SUPPRESSMSG
 for ($i = 0; $i -lt 120 -and (Test-Path (Join-Path $InstallDir "CaspianWarehouse.exe")); $i++) { Start-Sleep 1 }
 Start-Sleep 2
 Check ($code -eq 0) "uninstall (exit $code)"
-Check (-not (Test-Path (Join-Path $InstallDir "CaspianWarehouse.exe"))) "program files removed"
+$removed = -not (Test-Path (Join-Path $InstallDir "CaspianWarehouse.exe"))
+Check $removed "program files removed"
+if (-not $removed) { Get-ChildItem $InstallDir -Recurse -File | Select-Object -First 10 | ForEach-Object { Write-Host "::warning::left behind: $($_.FullName)" } }
 Check ($null -eq (Get-ItemProperty $AppKey -ErrorAction SilentlyContinue)) "Apps & Features entry removed"
 Check (Test-Path $Marker) "user data kept after uninstall"
 Remove-Item $Marker -ErrorAction SilentlyContinue  # our own test file only
