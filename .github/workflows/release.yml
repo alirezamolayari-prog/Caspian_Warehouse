@@ -50,6 +50,7 @@ jobs:
         run: powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -DownloadMariaDb
 
       - name: Test installer (install with database server, run, uninstall)
+        timeout-minutes: 25
         shell: pwsh
         run: |
           $exe = Get-ChildItem dist\installer\CaspianWarehouse-Setup-*.exe | Select-Object -First 1

@@ -26,11 +26,37 @@ function Check($ok, $what) {
     if ($ok) { Write-Host "  PASS  $what" } else { Write-Host "  FAIL  $what"; $script:failures++ }
 }
 
+$SetupLog = Join-Path $env:TEMP "caspian-setup-test.log"
+
+# Wait for exactly this process (Start-Process -Wait would also wait for anything it
+# leaves running, e.g. a database server), with a timeout.
+function RunWait($exe, $arguments, $timeoutSec) {
+    $p = Start-Process $exe -ArgumentList $arguments -PassThru
+    if (-not $p.WaitForExit($timeoutSec * 1000)) {
+        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+        return -999
+    }
+    return $p.ExitCode
+}
+
+function Diagnostics {
+    $annotate = [bool]$env:GITHUB_ACTIONS
+    foreach ($file in $SetupLog, (Join-Path $UserData "Logs\caspian.log")) {
+        if (Test-Path $file) {
+            Write-Host "--- tail of $file"
+            Get-Content $file -Tail 40 | ForEach-Object {
+                if ($annotate -and $_ -match '(?i)error|fail|exception|exit code') { Write-Host "::error::$_" } else { Write-Host $_ }
+            }
+        }
+    }
+}
+
 function Install($exe, $extra = "") {
     $exe = (Resolve-Path $exe).Path
-    $setupArgs = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$InstallDir`" $extra"
-    $p = Start-Process $exe -ArgumentList $setupArgs -Wait -PassThru
-    Check ($p.ExitCode -eq 0) "install $(Split-Path $exe -Leaf) (exit $($p.ExitCode))"
+    $setupArgs = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=`"$SetupLog`" /DIR=`"$InstallDir`" $extra"
+    $code = RunWait $exe $setupArgs 1200
+    Check ($code -eq 0) "install $(Split-Path $exe -Leaf) (exit $code; -999 = timed out)"
+    if ($code -ne 0) { Diagnostics }
 }
 
 function ExpectedVersion($exe) {
@@ -39,9 +65,9 @@ function ExpectedVersion($exe) {
 
 function RunApp($arguments) {
     $env:QT_QPA_PLATFORM = "offscreen"
-    $p = Start-Process (Join-Path $InstallDir "CaspianWarehouse.exe") -ArgumentList $arguments -Wait -PassThru
+    $code = RunWait (Join-Path $InstallDir "CaspianWarehouse.exe") $arguments 300
     $env:QT_QPA_PLATFORM = $null
-    return $p.ExitCode
+    return $code
 }
 
 New-Item -ItemType Directory -Force $UserData | Out-Null
@@ -71,7 +97,9 @@ Check ((RunApp "--smoke-test") -eq 0) "installed app smoke test"
 if ($WithDatabase) {
     $svc = Get-Service MariaDB -ErrorAction SilentlyContinue
     Check ($svc -and $svc.Status -eq "Running") "MariaDB service running"
-    Check ((RunApp "--check-db") -eq 0) "app connects to the provisioned database"
+    $dbOk = (RunApp "--check-db") -eq 0
+    Check $dbOk "app connects to the provisioned database"
+    if (-not $dbOk) { Diagnostics }
 }
 
 if ($UpgradeFrom) {
@@ -83,9 +111,11 @@ if ($UpgradeFrom) {
 
 Write-Host "== uninstall"
 "kept after uninstall?" | Out-File $Marker -Encoding utf8
-$p = Start-Process (Join-Path $InstallDir "unins000.exe") -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait -PassThru
-Start-Sleep 3  # the uninstaller finishes removing files from a helper process
-Check ($p.ExitCode -eq 0) "uninstall (exit $($p.ExitCode))"
+$code = RunWait (Join-Path $InstallDir "unins000.exe") "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" 600
+# The uninstaller relaunches itself from a temporary copy: wait until the files are gone.
+for ($i = 0; $i -lt 120 -and (Test-Path (Join-Path $InstallDir "CaspianWarehouse.exe")); $i++) { Start-Sleep 1 }
+Start-Sleep 2
+Check ($code -eq 0) "uninstall (exit $code)"
 Check (-not (Test-Path (Join-Path $InstallDir "CaspianWarehouse.exe"))) "program files removed"
 Check ($null -eq (Get-ItemProperty $AppKey -ErrorAction SilentlyContinue)) "Apps & Features entry removed"
 Check (Test-Path $Marker) "user data kept after uninstall"
