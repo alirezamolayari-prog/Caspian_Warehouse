@@ -5,15 +5,31 @@
 
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules
+import re
+import tomllib
+
+from PyInstaller.utils.hooks import collect_submodules, copy_metadata
 
 ROOT = Path(SPECPATH).parent
 SRC = ROOT / "src"
+
+# Version: single source of truth is pyproject.toml.
+VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+numbers = [int(n) for n in re.findall(r"\d+", VERSION)[:4]]
+VERSION_TUPLE = tuple(numbers + [0] * (4 - len(numbers)))
+template = (ROOT / "packaging" / "version_info.txt").read_text(encoding="utf-8")
+VERSION_FILE = ROOT / "build" / "version_info.txt"
+VERSION_FILE.parent.mkdir(exist_ok=True)
+VERSION_FILE.write_text("\n".join(line for line in template.splitlines() if not line.startswith("#"))
+                        .replace("{VERSION_TUPLE}", str(VERSION_TUPLE)).replace("{VERSION}", VERSION),
+                        encoding="utf-8")
 
 datas = [
     (str(SRC / "caspian" / "resources"), "caspian/resources"),
     # Alembic loads migration scripts from disk, so they ship as files.
     (str(SRC / "caspian" / "db" / "migrations"), "caspian/db/migrations"),
+    # Package metadata, so caspian.__version__ works in the frozen app.
+    *copy_metadata("caspian-warehouse"),
 ]
 hiddenimports = [
     *collect_submodules("keyring.backends"),
@@ -41,7 +57,7 @@ mcp = analysis(ROOT / "packaging" / "run_mcp.py")
 
 app_exe = EXE(PYZ(app.pure), app.scripts, [], exclude_binaries=True, name="CaspianWarehouse",
               console=False, icon=str(ROOT / "packaging" / "caspian.ico"),
-              version=str(ROOT / "packaging" / "version_info.txt"))
+              version=str(VERSION_FILE))
 mcp_exe = EXE(PYZ(mcp.pure), mcp.scripts, [], exclude_binaries=True, name="caspian-mcp",
               console=True, icon=str(ROOT / "packaging" / "caspian.ico"))
 

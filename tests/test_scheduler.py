@@ -4,6 +4,7 @@ import json
 import httpx
 import pytest
 
+from caspian.core import jalali
 from caspian.core.cron import Cron, CronError, describe
 from caspian.db.models import TaskKind, TaskStatus
 from caspian.services import messaging, scheduler
@@ -120,7 +121,8 @@ async def test_report_task_runs_and_sends_to_configured_chats(db, admin, secrets
     assert await scheduler.run_due(db, messenger, now=SAT) == 0  # not yet 09:00 tomorrow
     ran = await scheduler.run_due(db, messenger, now=dt.datetime(2026, 9, 27, 9, 0))
     assert ran == 1 and len(sent) == 2
-    assert b"stock_balance-1405-07-05.xlsx" in sent[0]
+    stamp = jalali.format_date(dt.date.today(), persian_digits=False).replace("/", "-")
+    assert f"stock_balance-{stamp}.xlsx".encode() in sent[0]  # file named after today (Jalali)
     [row] = await scheduler.list_tasks(db, admin)
     assert row.last_ok and row.next_run_at == dt.datetime(2026, 9, 28, 9, 0)
 

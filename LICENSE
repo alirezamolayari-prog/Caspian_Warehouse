@@ -1,0 +1,34 @@
+Caspian Warehouse — Proprietary License
+
+Copyright (c) 2026 Caspian Furniture Market. All rights reserved.
+
+1. Use of official releases
+   You may download the official installers published on this repository's GitHub
+   Releases page and install and use the software, free of charge, on any number of
+   computers for your own internal business or personal purposes.
+
+2. Source code
+   The source code in this repository is published for transparency and review only.
+   No license is granted to copy, modify, merge, publish, distribute, sublicense, sell,
+   or create derivative works of the source code or of the software, in whole or in
+   part, except with prior written permission from Caspian Furniture Market.
+
+3. Redistribution
+   You may not redistribute, rent, lease or sell the software or the installers, or
+   host them for download elsewhere, without prior written permission. Sharing a link to
+   this repository or its Releases page is permitted.
+
+4. Third-party components
+   The software includes third-party components (for example Qt/PySide6, MariaDB,
+   the Vazirmatn font and the Lucide icons) that are licensed under their own terms,
+   listed in THIRD_PARTY_NOTICES.md. Nothing in this license limits your rights under
+   those licenses.
+
+5. No warranty
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+   INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+   PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE
+   LIABLE FOR ANY CLAIM, DAMAGES (INCLUDING LOSS OF DATA) OR OTHER LIABILITY ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR ITS USE. KEEP REGULAR BACKUPS.
+
+Contact: alireza.molayari@gmail.com
