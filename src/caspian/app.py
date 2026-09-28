@@ -9,7 +9,7 @@ import qasync
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
-from caspian import APP_DISPLAY_NAME, APP_NAME, __version__
+from caspian import APP_DISPLAY_NAME, APP_NAME, __version__, setup_cli
 from caspian.core.logging_setup import setup_logging
 from caspian.core.secrets import get_secret, set_secret
 from caspian.core.settings import Settings
@@ -127,6 +127,8 @@ async def _main(settings: Settings, themes: ThemeManager) -> None:
 def run() -> int:
     setup_logging()
     log.info("Starting %s %s", APP_NAME, __version__)
+    if (code := setup_cli.run(sys.argv)) is not None:  # installer helper modes, no GUI
+        return code
     app = create_app()
     if "--smoke-test" in sys.argv:
         qasync.run(_smoke_test(ThemeManager(app, "light")))
