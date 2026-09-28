@@ -24,34 +24,3 @@ jobs:
           Select-String -Path pytest.log -Pattern '^(FAILED|ERROR) |^E:\\|^[A-Za-z]:\\.*:\d+: ' |
             Select-Object -First 30 | ForEach-Object { Write-Output "::error::$($_.Line)" }
           exit $code
-
-  package:
-    needs: test
-    if: github.event_name == 'push'
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - run: uv sync
-      - name: MariaDB client tools (for backups)
-        shell: pwsh
-        run: |
-          $r = Invoke-RestMethod "https://downloads.mariadb.org/rest-api/mariadb/11.8/latest/"
-          $files = $r.releases.PSObject.Properties | Select-Object -First 1 | ForEach-Object { $_.Value.files }
-          $zip = $files | Where-Object { $_.file_name -like "*winx64.zip" } | Select-Object -First 1
-          Invoke-WebRequest ($zip.file_download_url -replace '^http:', 'https:') -OutFile mariadb.zip
-          Expand-Archive mariadb.zip mariadb
-          $bin = Get-ChildItem mariadb -Recurse -Filter mariadb-dump.exe | Select-Object -First 1
-          "MARIADB_BIN=$($bin.DirectoryName)" | Out-File -Append $env:GITHUB_ENV
-      - name: Inno Setup
-        shell: pwsh
-        run: |
-          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
-      - name: Build
-        shell: pwsh
-        run: powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -MariaDbBin $env:MARIADB_BIN
-      - uses: actions/upload-artifact@v4
-        with:
-          name: CaspianWarehouse-installer
-          path: dist/installer/*.exe
-          if-no-files-found: error
