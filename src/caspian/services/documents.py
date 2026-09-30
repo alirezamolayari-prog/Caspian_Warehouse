@@ -20,7 +20,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from caspian.core import jalali
 from caspian.core.numbers import format_qty
 from caspian.core.permissions import Perm
-from caspian.core.text import normalize, to_ascii_digits
+from caspian.core.text import normalize, to_ascii_digits, to_persian_digits
 from caspian.db.database import Database
 from caspian.db.models import (
     AppSetting,
@@ -64,6 +64,19 @@ _SOURCE_SIGN = {
     DocType.ADJUSTMENT: 1, DocType.LOAN_OUT: -1, DocType.LOAN_RETURN: 1,
 }
 NEEDS_PERSON = {DocType.LOAN_OUT, DocType.LOAN_RETURN}
+# Shown before the number so two «سند ۱» of different types can't be confused (ر-۱، ح-۱ …).
+DOC_PREFIX = {
+    DocType.RECEIPT: "ر", DocType.ISSUE: "ح", DocType.TRANSFER: "ت", DocType.ADJUSTMENT: "ص",
+    DocType.OPENING: "م", DocType.LOAN_OUT: "ا", DocType.LOAN_RETURN: "ب",
+}
+PERSON_LABELS = {
+    DocType.RECEIPT: "تأمین‌کننده", DocType.ISSUE: "تحویل‌گیرنده", DocType.LOAN_OUT: "تحویل‌گیرنده",
+    DocType.LOAN_RETURN: "برگشت‌دهنده",
+}
+
+
+def number_text(doc_type: DocType, number: int) -> str:
+    return f"{DOC_PREFIX[doc_type]}-{to_persian_digits(number)}"
 
 
 @dataclass
@@ -101,6 +114,11 @@ class DocumentRow:
     line_count: int
     created_by: str
     description: str
+    print_count: int = 0
+
+    @property
+    def number_text(self) -> str:
+        return number_text(self.doc_type, self.number)
 
     @property
     def type_name(self) -> str:
@@ -350,7 +368,7 @@ async def list_documents(
         rows = (await s.execute(stmt)).all()
     return [
         DocumentRow(d.id, d.doc_type, d.number, d.fiscal_year, d.doc_date, d.status, wh,
-                    dwh or "", person or "", n, creator or "", d.description)
+                    dwh or "", person or "", n, creator or "", d.description, d.print_count)
         for d, wh, dwh, person, n, creator in rows
     ]
 
@@ -373,6 +391,95 @@ async def get_document(db: Database, actor: Actor, doc_id: int) -> DocumentDetai
         )
         return DocumentDetail(doc.id, doc.version_id, doc.number, doc.fiscal_year, doc.status,
                               data, views)
+
+
+@dataclass(frozen=True)
+class PrintLine:
+    code: str
+    name: str
+    unit: str
+    qty: Decimal
+    unit_price: Decimal | None
+    notes: str
+
+    @property
+    def amount(self) -> Decimal | None:
+        return None if self.unit_price is None else self.qty * self.unit_price
+
+
+@dataclass(frozen=True)
+class PrintSheet:
+    """Everything the printed receipt/issue form shows."""
+
+    id: int
+    doc_type: DocType
+    number_text: str
+    type_name: str
+    status: DocStatus
+    doc_date: dt.date
+    warehouse: str
+    dest_warehouse: str
+    person: str
+    person_label: str
+    description: str
+    lines: list[PrintLine]
+    company: str
+    created_by: str
+    posted_by: str
+    print_count: int  # copies issued so far
+    last_printed_by: str
+
+    @property
+    def total_amount(self) -> Decimal | None:
+        amounts = [ln.amount for ln in self.lines if ln.amount is not None]
+        return sum(amounts, Decimal(0)) if amounts else None
+
+    @property
+    def trackable(self) -> bool:
+        """Drafts can be printed for checking, but only final documents count as issued copies."""
+        return self.status != DocStatus.DRAFT
+
+
+async def print_sheet(db: Database, actor: Actor, doc_id: int) -> PrintSheet:
+    actor.require(Perm.DOCUMENTS_VIEW)
+    async with db.session() as s:
+        doc = await _load(s, doc_id)
+
+        async def name_of(model, pk, attr="name") -> str:
+            row = await s.get(model, pk) if pk else None
+            return getattr(row, attr) if row else ""
+
+        lines = []
+        for ln in doc.lines:
+            item = await s.get(Item, ln.item_id)
+            lines.append(PrintLine(item.code, item.name, await name_of(Unit, ln.unit_id), ln.qty,
+                                   ln.unit_price, ln.notes))
+        company = await s.get(AppSetting, "company_name")
+        return PrintSheet(
+            doc.id, doc.doc_type, number_text(doc.doc_type, doc.number), DOC_TYPE_NAMES[doc.doc_type],
+            doc.status, doc.doc_date, await name_of(Warehouse, doc.warehouse_id),
+            await name_of(Warehouse, doc.dest_warehouse_id), await name_of(Person, doc.person_id),
+            PERSON_LABELS.get(doc.doc_type, "طرف حساب"), doc.description, lines,
+            str(company.value) if company and company.value else "",
+            await name_of(User, doc.created_by_id, "username"),
+            await name_of(User, doc.posted_by_id, "username"), doc.print_count,
+            await name_of(User, doc.last_printed_by_id, "username"))
+
+
+async def record_print(db: Database, actor: Actor, doc_id: int, kind: str) -> int:
+    """Count one issued copy (kind: "printer" or "pdf"); returns its copy number."""
+    actor.require(Perm.DOCUMENTS_VIEW)
+    async with db.session(actor.user_id) as s:
+        doc = await _load(s, doc_id)
+        if doc.status == DocStatus.DRAFT:
+            raise ValidationError("چاپ پیش‌نویس ثبت نمی‌شود؛ ابتدا سند را ثبت نهایی کنید.")
+        doc.print_count += 1
+        doc.last_printed_at = dt.datetime.now()
+        doc.last_printed_by_id = actor.user_id
+        audit.record(s, actor, "document.printed", "document", doc.id,
+                     {"type": doc.doc_type.value, "number": doc.number, "copy": doc.print_count,
+                      "kind": kind})
+        return doc.print_count
 
 
 async def stock_by_warehouse(db: Database, item_id: int) -> list[tuple[str, Decimal]]:

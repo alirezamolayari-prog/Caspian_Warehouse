@@ -43,6 +43,7 @@ from caspian.services.errors import ServiceError, ValidationError
 from caspian.services.items import ItemRow
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.dialogs import FormDialog
+from caspian.ui.document_print import document_print_menu
 from caspian.ui.messages import show_error
 from caspian.ui.widgets import Card, DataTable, JalaliDateEdit, QtyEdit, SearchBox
 
@@ -196,6 +197,11 @@ class DocumentDialog(FormDialog):
         self.draft_button = QPushButton("ذخیره پیش‌نویس")
         self.draft_button.clicked.connect(self.on_save_draft)
         self.buttons.insertWidget(self.buttons.count() - 1, self.draft_button)
+        # Prints the saved document (a draft is printed as «پیش‌نویس — فاقد اعتبار»).
+        self.print_button = QPushButton("چاپ / پیش‌نمایش")
+        self.print_button.setMenu(document_print_menu(self, ctx, lambda: self.saved_id))
+        self.print_button.setEnabled(self.saved_id is not None)
+        self.buttons.insertWidget(1, self.print_button)
         self._inputs += [self.date, self.warehouse, self.dest, self.person, self.loan,
                          self.description, self.item_input, self.draft_button]
         if self._read_only:
@@ -401,6 +407,7 @@ class DocumentDialog(FormDialog):
             await docs.update_document(db, actor, self.saved_id, version, data)
         # Later saves in this dialog must compare against the new version.
         self._detail = await docs.get_document(db, actor, self.saved_id)
+        self.print_button.setEnabled(True)
         return self.saved_id
 
     async def submit(self) -> None:
@@ -439,6 +446,12 @@ class CancelDialog(FormDialog):
 
 
 # ----- page -----
+
+
+def _status_text(row: DocumentRow) -> str:
+    if row.print_count:
+        return f"{row.status_name} — چاپ‌شده ({to_persian_digits(row.print_count)})"
+    return row.status_name
 
 
 class DocumentsList(QWidget):
@@ -486,11 +499,14 @@ class DocumentsList(QWidget):
         self.post_button = QPushButton("ثبت نهایی")
         self.cancel_button = QPushButton("ابطال")
         self.delete_button = QPushButton("حذف پیش‌نویس")
+        self.print_button = QPushButton("چاپ / پیش‌نمایش")
+        self.print_button.setMenu(document_print_menu(self, ctx, self.table_selected_id, self.refresh))
         self.open_button.clicked.connect(self.on_open)
         self.post_button.clicked.connect(self.on_post)
         self.cancel_button.clicked.connect(self.on_cancel)
         self.delete_button.clicked.connect(self.on_delete)
-        for b in (self.open_button, self.post_button, self.cancel_button, self.delete_button):
+        for b in (self.print_button, self.open_button, self.post_button, self.cancel_button,
+                  self.delete_button):
             actions.addWidget(b)
         layout.addLayout(actions)
 
@@ -508,6 +524,9 @@ class DocumentsList(QWidget):
         row_id = self.table.selected_id()
         return self._rows.get(row_id) if row_id is not None else None
 
+    def table_selected_id(self) -> int | None:
+        return self.table.selected_id()
+
     def _update_buttons(self, *_args) -> None:
         row, actor = self.selected(), self._ctx.actor
         self.new_button.setVisible(actor.can(Perm.DOCUMENTS_EDIT))
@@ -515,6 +534,7 @@ class DocumentsList(QWidget):
         self.post_button.setVisible(actor.can(Perm.DOCUMENTS_POST))
         self.cancel_button.setVisible(actor.can(Perm.DOCUMENTS_POST))
         self.open_button.setEnabled(row is not None)
+        self.print_button.setEnabled(row is not None)
         draft = row is not None and row.status == DocStatus.DRAFT
         self.post_button.setEnabled(draft)
         self.delete_button.setEnabled(draft)
@@ -539,7 +559,7 @@ class DocumentsList(QWidget):
         self.table.set_rows(
             [(r.id, (to_persian_digits(r.number), r.type_name, jalali.format_date(r.doc_date),
                      r.warehouse + (f" ← {r.dest_warehouse}" if r.dest_warehouse else ""),
-                     r.person or "—", to_persian_digits(r.line_count), r.status_name,
+                     r.person or "—", to_persian_digits(r.line_count), _status_text(r),
                      r.created_by or "—")) for r in rows],
             muted=[r.status == DocStatus.CANCELLED for r in rows],
             highlight={(i, 6): status_color[r.status] for i, r in enumerate(rows)

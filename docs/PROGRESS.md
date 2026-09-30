@@ -41,3 +41,17 @@ Plan: Phase 1 (baseline + bug-class audit) → units U1–U13 (P0 → P1 → P2)
   the table rebuild cascaded and deleted `import_lines` (proven by a probe; caught by the new round-trip test).
 - Tests: `test_imports.py::test_deleting_import_draft_reopens_batch`, `test_migrations.py` (up→down→up keeps all
   rows on SQLite and MariaDB, schema matches models, DB-level SET NULL, delete_draft on MariaDB).
+
+### U2 — document print/preview + print tracking (#4, #5)
+- Migration `8d31f0a6c2e4`: `documents.print_count` (default 0), `last_printed_at`, `last_printed_by_id`.
+- Service: `documents.print_sheet()`, `record_print()` (audit `document.printed` with copy no. and printer/pdf;
+  drafts refused), `DOC_PREFIX` / `number_text()` (ر ح ت ص م ا ب — also used later by #26).
+- `ui/document_print.py`: A5/A4 form (header, company, type + number, date, warehouses, party, lines, amounts,
+  totals, three signature boxes), «کپی / المثنی (نسخه n)» from the 2nd copy, «پیش‌نویس — فاقد اعتبار» for drafts,
+  «ابطال شده» for cancelled; QPrintPreviewDialog awaited (counted only if printed); PDF export counted.
+- «چاپ / پیش‌نمایش» menu in the documents list and the document dialog; list status shows «چاپ‌شده (n)».
+- Found while checking the rendering: QTextDocument always lays table columns out left-to-right, so every
+  printed report had its columns mirrored. `printing.rtl_cells()` emits cells in visual order (reports, stocktake
+  sheets, document forms); report tables now span the page. A test fails if Qt ever starts mirroring itself.
+- Tests: `test_documents.py` (sheet, record_print, drafts), `test_document_print_ui.py`, `test_printing_ui.py`.
+- Note: CI runs only on `main`/pull requests; it will run when a PR is opened for this branch.

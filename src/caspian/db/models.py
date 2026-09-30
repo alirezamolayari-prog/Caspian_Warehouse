@@ -236,6 +236,10 @@ class Document(IdMixin, TimestampMixin, CreatedByMixin, VersionMixin, Base):
     description: Mapped[str] = mapped_column(Text, default="")
     posted_at: Mapped[dt.datetime | None]
     posted_by_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("users.id"))
+    # Paper/PDF copies issued; from the second one the sheet is stamped as a duplicate.
+    print_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    last_printed_at: Mapped[dt.datetime | None]
+    last_printed_by_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("users.id"))
 
     lines: Mapped[list["DocumentLine"]] = relationship(
         back_populates="document",

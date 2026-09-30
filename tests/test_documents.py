@@ -261,3 +261,54 @@ async def test_number_collision_retries(env, monkeypatch):
         DocType.RECEIPT, env["wh1"], (env["drill"], env["u"]["عدد"], Decimal(1))))
     assert len(calls) == 2
     assert (await docs.get_document(db, admin, doc_id)).number == 2
+
+
+# ----- printing (#4, #5) -----
+
+
+async def test_print_sheet_has_everything_for_the_form(env):
+    db, admin = env["db"], env["admin"]
+    await receive(env, Decimal(1))  # 24 pieces in stock
+    doc_id = await docs.create_and_post(db, admin, doc(
+        DocType.ISSUE, env["wh1"], (env["drill"], env["u"]["عدد"], Decimal(3), Decimal(1000), "یدکی"),
+        person_id=env["person"], description="برای کارگاه"))
+    sheet = await docs.print_sheet(db, admin, doc_id)
+    assert sheet.number_text == "ح-۱" and sheet.type_name == "حواله خروج"
+    assert sheet.person == "علی رضایی" and sheet.person_label == "تحویل‌گیرنده"
+    assert sheet.warehouse and sheet.description == "برای کارگاه"
+    assert [(ln.code, ln.name, ln.unit, ln.qty, ln.notes) for ln in sheet.lines] == [
+        ("1001", "دریل", "عدد", Decimal(3), "یدکی")]
+    assert sheet.lines[0].amount == Decimal(3000) and sheet.total_amount == Decimal(3000)
+    assert sheet.company == "بازار مبلمان کاسپین"
+    assert sheet.print_count == 0 and sheet.trackable
+
+
+async def test_record_print_counts_copies_and_audits(env):
+    db, admin = env["db"], env["admin"]
+    doc_id = await receive(env)
+    assert await docs.record_print(db, admin, doc_id, "printer") == 1
+    assert await docs.record_print(db, admin, doc_id, "pdf") == 2
+    sheet = await docs.print_sheet(db, admin, doc_id)
+    assert sheet.print_count == 2 and sheet.last_printed_by == "admin"
+    [row] = [r for r in await docs.list_documents(db, admin) if r.id == doc_id]
+    assert row.print_count == 2
+    from caspian.db.models import AuditLog
+
+    async with db.session() as s:
+        actions = (await s.scalars(select(AuditLog.details).where(
+            AuditLog.action == "document.printed"))).all()
+    assert [a["copy"] for a in actions] == [1, 2] and actions[1]["kind"] == "pdf"
+
+
+async def test_drafts_are_not_tracked(env):
+    db, admin = env["db"], env["admin"]
+    draft = await docs.create_document(db, admin, doc(DocType.RECEIPT, env["wh1"],
+                                                      (env["drill"], env["u"]["عدد"], Decimal(1))))
+    assert not (await docs.print_sheet(db, admin, draft)).trackable
+    with pytest.raises(ValidationError):
+        await docs.record_print(db, admin, draft, "printer")
+
+
+def test_number_text_prefixes():
+    assert docs.number_text(DocType.RECEIPT, 12) == "ر-۱۲"
+    assert len({docs.DOC_PREFIX[t] for t in DocType}) == len(DocType)  # all distinct
