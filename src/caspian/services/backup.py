@@ -6,6 +6,10 @@ The plaintext is a gzip-compressed SQL dump from `mariadb-dump` (or SQLite's ite
 development). The key comes from the backup password via scrypt; the header (unencrypted)
 records creation time, database, app version and schema revision.
 
+Without a backup password on the PC the payload is the gzip stream itself (header
+"cipher": "none", no tag): readable by anyone who gets the file, but a backup instead of none
+(#33). gzip's CRC still detects damage. The UI warns while backups are unencrypted.
+
 Everything streams in chunks, so large databases never need to fit in memory. Work runs in
 a worker thread (subprocess pipes) so the UI stays responsive.
 """
@@ -185,6 +189,7 @@ class BackupInfo:
     schema_revision: str | None
     label: str
     size: int
+    encrypted: bool = True
 
     @property
     def name(self) -> str:
@@ -205,17 +210,40 @@ def _info(path: Path) -> BackupInfo:
     header, _ = read_header(path)
     return BackupInfo(path, dt.datetime.fromisoformat(header["created_at"]), header["database"],
                       header.get("app_version", ""), header.get("schema_revision"),
-                      header.get("label", ""), path.stat().st_size)
+                      header.get("label", ""), path.stat().st_size, _encrypted(header))
 
 
-def write_backup(dumper: Dumper, path: Path, password: str, header_extra: dict) -> None:
-    """Dump -> gzip -> AES-GCM -> file, streaming. Removes the partial file on failure."""
-    salt, nonce = os.urandom(16), os.urandom(12)
+def _encrypted(header: dict) -> bool:
+    return header.get("cipher", "AES-256-GCM") != "none"
+
+
+class _Plain:
+    """Stand-in encryptor for backups made without a password."""
+
+    tag = b""
+
+    @staticmethod
+    def update(data: bytes) -> bytes:
+        return data
+
+    @staticmethod
+    def finalize() -> bytes:
+        return b""
+
+
+def write_backup(dumper: Dumper, path: Path, password: str | None, header_extra: dict) -> None:
+    """Dump -> gzip -> AES-GCM (or nothing without a password) -> file, streaming.
+    Removes the partial file on failure."""
     header = {"format": 1, "created_at": dt.datetime.now().isoformat(timespec="seconds"),
-              "database": dumper.db_name, "cipher": "AES-256-GCM", "kdf": "scrypt",
-              "scrypt": SCRYPT, "salt": salt.hex(), "nonce": nonce.hex(), "compression": "gzip",
-              **header_extra}
-    encryptor = Cipher(algorithms.AES(_key(password, salt)), modes.GCM(nonce)).encryptor()
+              "database": dumper.db_name, "compression": "gzip", **header_extra}
+    if password:
+        salt, nonce = os.urandom(16), os.urandom(12)
+        header.update({"cipher": "AES-256-GCM", "kdf": "scrypt", "scrypt": SCRYPT, "salt": salt.hex(),
+                       "nonce": nonce.hex()})
+        encryptor = Cipher(algorithms.AES(_key(password, salt)), modes.GCM(nonce)).encryptor()
+    else:
+        header["cipher"] = "none"
+        encryptor = _Plain()
     header_bytes = json.dumps(header, ensure_ascii=False).encode("utf-8")
     partial = path.with_suffix(".partial")
     try:
@@ -237,10 +265,15 @@ def write_backup(dumper: Dumper, path: Path, password: str, header_extra: dict) 
         raise
 
 
-def iter_plaintext(path: Path, password: str) -> Iterator[bytes]:
-    """Decrypt + gunzip in chunks. The GCM tag is checked at the end: callers must fully
-    consume the iterator before trusting (or committing) the data."""
+def iter_plaintext(path: Path, password: str | None) -> Iterator[bytes]:
+    """Decrypt + gunzip in chunks. The GCM tag (or, unencrypted, gzip's CRC) is checked at the
+    end: callers must fully consume the iterator before trusting (or committing) the data."""
     header, offset = read_header(path)
+    if not _encrypted(header):
+        yield from _iter_gzip(path, offset)
+        return
+    if not password:
+        raise BackupError("این نسخه پشتیبان رمزدار است؛ رمز آن را وارد کنید.")
     total = path.stat().st_size
     decryptor = Cipher(algorithms.AES(_key(password, bytes.fromhex(header["salt"]))),
                        modes.GCM(bytes.fromhex(header["nonce"]))).decryptor()
@@ -267,7 +300,23 @@ def iter_plaintext(path: Path, password: str) -> Iterator[bytes]:
         yield tail
 
 
-def verify_backup_file(path: Path, password: str) -> BackupInfo:
+def _iter_gzip(path: Path, offset: int) -> Iterator[bytes]:
+    decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    try:
+        with path.open("rb") as f:
+            f.seek(offset)
+            while chunk := f.read(CHUNK):
+                if data := decompressor.decompress(chunk):
+                    yield data
+        if tail := decompressor.flush():
+            yield tail
+    except zlib.error as exc:
+        raise BackupError("فایل پشتیبان آسیب دیده است.") from exc
+    if not decompressor.eof:
+        raise BackupError("فایل پشتیبان ناقص یا آسیب دیده است.")
+
+
+def verify_backup_file(path: Path, password: str | None) -> BackupInfo:
     """Full decrypt/decompress pass without writing anything."""
     size = 0
     for chunk in iter_plaintext(path, password):
@@ -318,11 +367,13 @@ async def _schema_revision(db: Database) -> str | None:
         return None
 
 
-async def create_backup(db: Database, actor: Actor | None, dumper: Dumper, password: str,
+async def create_backup(db: Database, actor: Actor | None, dumper: Dumper, password: str | None,
                         directory: str | Path, label: str = "", keep: int = 0) -> BackupInfo:
+    """`password` None/empty: an unencrypted backup (#33); otherwise it must be strong enough."""
     if actor is not None:
         actor.require(Perm.BACKUP_CREATE)
-    _check_password(password)
+    if password:
+        _check_password(password)
     folder = Path(directory)
     try:
         folder.mkdir(parents=True, exist_ok=True)
@@ -339,17 +390,17 @@ async def create_backup(db: Database, actor: Actor | None, dumper: Dumper, passw
         await asyncio.to_thread(prune, folder, keep)
     async with db.session() as s:
         audit.record(s, actor, "backup.created", details={"file": info.name, "size": info.size,
-                                                         "label": label})
+                                                         "label": label, "encrypted": info.encrypted})
     log.info("Backup written: %s (%s bytes)", path, info.size)
     return info
 
 
-async def verify_backup(path: str | Path, password: str) -> BackupInfo:
+async def verify_backup(path: str | Path, password: str | None) -> BackupInfo:
     return await asyncio.to_thread(verify_backup_file, Path(path), password)
 
 
 async def restore_backup(db: Database, actor: Actor, dumper: Dumper, path: str | Path,
-                         password: str, approval: Approval | None, safety_dir: str | Path,
+                         password: str | None, approval: Approval | None, safety_dir: str | Path,
                          after_restore: Callable | None = None) -> BackupInfo:
     """Replace the current database with a backup. Protected: admin PIN approval required.
 
@@ -359,6 +410,7 @@ async def restore_backup(db: Database, actor: Actor, dumper: Dumper, path: str |
     approver_id = consume(approval, ProtectedAction.RESTORE_BACKUP, actor)
     path = Path(path)
     info = await verify_backup(path, password)
+    # The safety copy of the current data is protected like the backup being restored.
     safety = await create_backup(db, actor, dumper, password, safety_dir, label="pre-restore")
     await db.dispose()  # no open connections into the database we are about to drop
     await asyncio.to_thread(dumper.load, iter_plaintext(path, password))
@@ -395,12 +447,11 @@ def make_scheduled_handler(db: Database, config: DbConfig, app_password: str, se
     from caspian.core.settings import default_backup_dir
 
     async def handler(_db: Database, _params: dict) -> str:
-        password = backup_password()
-        if not password:
-            raise BackupError("رمز پشتیبان روی این رایانه تنظیم نشده است (تنظیمات ← پشتیبان‌گیری).")
+        password = backup_password()  # none: an unencrypted backup beats no backup (#33)
         info = await create_backup(
             db, None, make_dumper(db, config, app_password, settings.mariadb_tools_dir), password,
             settings.backup_dir or default_backup_dir(), "زمان‌بندی‌شده", keep=settings.backup_keep)
-        return f"{info.name} ({info.size / 1_048_576:.1f} MB)"
+        warning = "" if info.encrypted else " — بدون رمز! رمز پشتیبان را در تنظیمات تعیین کنید"
+        return f"{info.name} ({info.size / 1_048_576:.1f} MB){warning}"
 
     return handler

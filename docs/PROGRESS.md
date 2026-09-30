@@ -186,3 +186,16 @@ Plan: Phase 1 (baseline + bug-class audit) → units U1–U13 (P0 → P1 → P2)
 - Tests: `test_documents.py` (prefix + search, pending summary), `test_items.py` (code order), `test_widgets_ui.py`
   (sort, empty text, digits, calendar), `test_ui_shell.py` (dashboard card, filter reset), `test_reports_ui.py`
   (column modes). One existing QtyEdit test now expects the Persian display.
+
+### U13 — backups without a password (#33)
+- No password on the PC → unencrypted backup (header `"cipher": "none"`, plain gzip; its CRC still detects damage)
+  instead of no backup at all; encrypted backups unchanged. `BackupInfo.encrypted`; verify/restore handle both
+  (no password dialog for plain files); the pre-restore safety copy is protected like the file being restored.
+- Backup settings: red warning while no password, «رمز» column (دارد / بدون رمز), «پشتیبان‌گیری اکنون» works and
+  says the copy is unencrypted; scheduled backups report «بدون رمز!» in their result.
+- First admin sign-in on a PC without a password: «رمز نسخه‌های پشتیبان» dialog with «بعداً، بدون رمز»; asked once
+  (`Settings.backup_password_prompted` in settings.json).
+- Kept on purpose: the fiscal year-end wizard still requires a backup password (its backup is the permanent
+  record of the closed year).
+- Tests: `test_backup.py` (plain round trip + damage detection, restore from plain, scheduled warning),
+  `test_backup_ui.py` (warning, column, no password prompt for plain, first-run once + skip remembered + set).

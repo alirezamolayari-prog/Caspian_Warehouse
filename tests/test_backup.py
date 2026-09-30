@@ -136,3 +136,46 @@ async def test_mariadb_backup_and_restore(tmp_path):
         assert "BK1" in codes and "BK2" not in codes
     finally:
         await db.dispose()
+
+
+# ----- backups without a password (#33) -----
+
+
+async def test_backup_without_password_is_plain_but_checked(db, admin, env):
+    """No password set → an unencrypted (gzip) backup instead of no backup at all."""
+    import gzip
+
+    info = await backup.create_backup(db, admin, env["dumper"], None, env["dir"])
+    assert not info.encrypted
+    header, offset = backup.read_header(info.path)
+    assert header["cipher"] == "none"
+    dump = gzip.decompress(info.path.read_bytes()[offset:])
+    assert "دریل".encode() in dump  # readable without a password: that's the trade-off
+    assert (await backup.verify_backup(info.path, None)).name == info.name
+    raw = bytearray(info.path.read_bytes())
+    raw[-10] ^= 0xFF  # gzip CRC/size catch damage
+    info.path.write_bytes(bytes(raw))
+    with pytest.raises(BackupError):
+        await backup.verify_backup(info.path, None)
+    encrypted = await backup.create_backup(db, admin, env["dumper"], PASSWORD, env["dir"])
+    assert encrypted.encrypted
+
+
+async def test_restore_from_a_plain_backup(db, admin, env):
+    info = await backup.create_backup(db, admin, env["dumper"], None, env["dir"])
+    await items.create_item(db, admin, ItemInput("2002", "بعد از بکاپ", env["unit"]))
+    approval = await protected.approve(db, admin, protected.ProtectedAction.RESTORE_BACKUP, "admin", "4826")
+    await backup.restore_backup(db, admin, env["dumper"], info.path, None, approval, env["dir"])
+    assert [r.code for r in await items.search_items(db, admin)] == ["1001"]
+
+
+async def test_scheduled_backup_without_password_warns(db, admin, env, monkeypatch):
+    from caspian.core.settings import Settings
+    from caspian.db.database import DbConfig
+
+    monkeypatch.setattr(backup, "get_secret", lambda k, n: None)
+    monkeypatch.setattr(backup, "make_dumper", lambda *a, **k: env["dumper"])
+    handler = backup.make_scheduled_handler(db, DbConfig(), "", Settings(backup_dir=str(env["dir"])))
+    result = await handler(db, {})
+    assert "بدون رمز" in result
+    assert [b.encrypted for b in backup.list_backups(env["dir"])] == [False]

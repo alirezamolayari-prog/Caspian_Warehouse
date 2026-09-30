@@ -20,11 +20,13 @@ from caspian.services.backup import make_scheduled_handler
 from caspian.services.scheduler import HANDLERS, SchedulerRunner
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import run_login
+from caspian.ui.backup_settings import first_run_backup_prompt
 from caspian.ui.db_setup_dialog import DbSetupDialog
 from caspian.ui.fonts import apply_app_font
 from caspian.ui.icons import icon
 from caspian.ui.main_window import MainWindow
 from caspian.ui.messages import show_unexpected_error
+from caspian.ui.tasks import spawn
 from caspian.ui.theme import LIGHT, ThemeManager
 
 log = logging.getLogger(__name__)
@@ -115,6 +117,7 @@ async def _main(settings: Settings, themes: ThemeManager) -> None:
         closed = asyncio.Event()
         window.closed.connect(closed.set)
         window.show()
+        spawn(first_run_backup_prompt(ctx, window))  # asked once per PC (#33)
         await closed.wait()
         await runner.stop()
     finally:

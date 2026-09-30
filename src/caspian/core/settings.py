@@ -29,6 +29,8 @@ class Settings:
     backup_dir: str = ""
     backup_keep: int = 30
     mariadb_tools_dir: str = ""
+    # The first-run «رمز پشتیبان» question was answered (set, or «بعداً، بدون رمز»).
+    backup_password_prompted: bool = False
     # Folder of the last Excel/PDF export (the save dialog starts there).
     last_export_dir: str = ""
     # MCP over HTTP on this PC (the token itself is in Credential Manager).
