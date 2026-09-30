@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
     QComboBox,
-    QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -54,6 +53,7 @@ from caspian.services.protected import ProtectedAction
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import request_approval
 from caspian.ui.dialogs import FormDialog, ltr_field
+from caspian.ui.file_dialogs import ask_open_path
 from caspian.ui.messages import show_error, show_info
 from caspian.ui.widgets import Card, DataTable, QtyEdit
 
@@ -171,8 +171,8 @@ class FileImportDialog(FormDialog):
 
     @asyncSlot()
     async def on_browse(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "انتخاب فایل", "", "فایل‌های پشتیبانی‌شده (*.xlsx *.csv *.docx);;همه فایل‌ها (*)")
+        path = await ask_open_path(
+            self, "انتخاب فایل", "فایل‌های پشتیبانی‌شده (*.xlsx *.csv *.docx);;همه فایل‌ها (*)")
         if not path:
             return
         try:

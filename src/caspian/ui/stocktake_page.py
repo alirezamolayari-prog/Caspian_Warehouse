@@ -146,7 +146,8 @@ class CountDialog(FormDialog):
         self.save_button.clicked.connect(self.on_save)
         self.print_button = QPushButton("برگه شمارش")
         self.print_button.setMenu(output_menu(self, self._sheet_html,
-                                              lambda: f"count-sheet-{sheet.row.number}.pdf"))
+                                              lambda: f"count-sheet-{sheet.row.number}.pdf",
+                                              ctx.settings))
         self.buttons.insertWidget(1, self.print_button)
         self.buttons.insertWidget(self.buttons.count() - 1, self.save_button)
         self._inputs += [self.scan, self.save_button]
@@ -235,7 +236,7 @@ class ReportDialog(FormDialog):
         self.body.addWidget(self.summary)
         self.pdf_button = QPushButton("چاپ / PDF")
         self.pdf_button.setMenu(output_menu(
-            self, self._html, lambda: f"stocktake-{report.row.number}.pdf"))
+            self, self._html, lambda: f"stocktake-{report.row.number}.pdf", ctx.settings))
         self.buttons.insertWidget(1, self.pdf_button)
         can_approve = (row.status == StocktakeStatus.COUNTED
                        and ctx.actor.can(Perm.STOCKTAKE_APPROVE) and ctx.actor.can(Perm.DOCUMENTS_POST))
@@ -279,7 +280,8 @@ class StocktakePage(QWidget):
         toolbar.addWidget(intro, 1)
         self.count_button = QPushButton("شمارش")
         self.print_button = QPushButton("برگه شمارش")
-        self.print_button.setMenu(output_menu(self, self._selected_sheet_html, self._sheet_name))
+        self.print_button.setMenu(output_menu(self, self._selected_sheet_html, self._sheet_name,
+                                              ctx.settings))
         self.report_button = QPushButton("گزارش مغایرت")
         self.cancel_button = QPushButton("لغو")
         self.new_button = QPushButton("انبارگردانی جدید")

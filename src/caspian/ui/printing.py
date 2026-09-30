@@ -6,11 +6,13 @@ from collections.abc import Sequence
 
 from PySide6.QtCore import QMarginsF, QSizeF, Qt
 from PySide6.QtGui import QFont, QPageLayout, QPageSize, QPdfWriter, QTextDocument, QTextOption
-from PySide6.QtWidgets import QFileDialog, QMenu, QWidget
+from PySide6.QtWidgets import QMenu, QWidget
 
 from caspian import APP_DISPLAY_NAME
 from caspian.core import jalali
+from caspian.core.settings import Settings
 from caspian.core.text import to_persian_digits
+from caspian.ui.file_dialogs import ask_print, ask_save_path
 from caspian.ui.fonts import FONT_FAMILY
 from caspian.ui.messages import show_info
 from caspian.ui.tasks import callback
@@ -77,35 +79,36 @@ def save_pdf(html_text: str, path: str) -> None:
     doc.print_(writer)
 
 
-def print_html(html_text: str, parent: QWidget | None = None) -> bool:
+async def print_html(html_text: str, parent: QWidget | None = None) -> bool:
     """Show the system print dialog. Returns False if cancelled."""
-    from PySide6.QtPrintSupport import QPrintDialog, QPrinter
+    from PySide6.QtPrintSupport import QPrinter
 
     printer = QPrinter(QPrinter.PrinterMode.HighResolution)
     printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
-    dialog = QPrintDialog(printer, parent)
-    if dialog.exec() != QPrintDialog.DialogCode.Accepted:
+    if not await ask_print(printer, parent):
         return False
     build_document(html_text).print_(printer)
     return True
 
 
-async def export_pdf(parent: QWidget, html_text: str, default_name: str) -> None:
-    path, _ = QFileDialog.getSaveFileName(parent, "ذخیره PDF", default_name, "PDF (*.pdf)")
+async def export_pdf(parent: QWidget, html_text: str, default_name: str,
+                     settings: Settings) -> str | None:
+    path = await ask_save_path(parent, "ذخیره PDF", settings, default_name, "PDF (*.pdf)")
     if path:
         save_pdf(html_text, path)
         show_info(parent, "فایل PDF ذخیره شد.")
+    return path
 
 
-def output_menu(parent: QWidget, make_html, default_name) -> QMenu:
+def output_menu(parent: QWidget, make_html, default_name, settings: Settings) -> QMenu:
     """Print / Save-PDF menu. make_html is an async callable returning the HTML."""
     menu = QMenu(parent)
 
     async def do_print() -> None:
-        print_html(await make_html(), parent)
+        await print_html(await make_html(), parent)
 
     async def do_pdf() -> None:
-        await export_pdf(parent, await make_html(), default_name())
+        await export_pdf(parent, await make_html(), default_name(), settings)
 
     # Closures can't be @asyncSlot (see caspian.ui.tasks).
     menu.addAction("چاپ…", callback(do_print))

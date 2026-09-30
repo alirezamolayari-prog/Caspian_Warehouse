@@ -1,5 +1,6 @@
 from PySide6.QtWidgets import QWidget
 
+from caspian.core.settings import Settings
 from caspian.ui import printing
 from helpers import wait_until
 
@@ -8,11 +9,11 @@ async def test_every_output_menu_action_runs(qtbot, monkeypatch):
     """Clicking «چاپ…» / «ذخیره PDF…» must reach the print/PDF code (#1)."""
     calls = []
 
-    def fake_print(html_text, parent=None):
+    async def fake_print(html_text, parent=None):
         calls.append(("print", html_text))
         return True
 
-    async def fake_pdf(parent, html_text, default_name):
+    async def fake_pdf(parent, html_text, default_name, settings):
         calls.append(("pdf", html_text, default_name))
 
     monkeypatch.setattr(printing, "print_html", fake_print)
@@ -23,7 +24,7 @@ async def test_every_output_menu_action_runs(qtbot, monkeypatch):
     async def make_html():
         return "<p>گزارش</p>"
 
-    menu = printing.output_menu(parent, make_html, lambda: "report.pdf")
+    menu = printing.output_menu(parent, make_html, lambda: "report.pdf", Settings())
     actions = menu.actions()
     assert [a.text() for a in actions] == ["چاپ…", "ذخیره PDF…"]
     for action in actions:

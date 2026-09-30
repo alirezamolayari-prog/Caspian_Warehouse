@@ -39,3 +39,46 @@ def test_async_slots_are_methods():
             if not is_method and any(_is_async_slot(d) for d in func.decorator_list):
                 offenders.append(f"{path.name}:{func.lineno} {func.name}()")
     assert not offenders, "@asyncSlot on non-method functions: " + ", ".join(offenders)
+
+
+MODAL_CLASSES = {"QFileDialog", "QInputDialog", "QMessageBox", "QColorDialog", "QFontDialog"}
+STATIC_MODALS = {"getSaveFileName", "getOpenFileName", "getOpenFileNames", "getExistingDirectory",
+                 "getText", "getInt", "getDouble", "getItem", "getColor", "getFont", "question",
+                 "warning", "critical", "information", "about"}
+
+
+def _is_blocking(call: ast.Call) -> bool:
+    func = call.func
+    if not isinstance(func, ast.Attribute):
+        return False
+    if func.attr in ("exec", "exec_"):  # any dialog/menu/event loop
+        return True
+    return (func.attr in STATIC_MODALS and isinstance(func.value, ast.Name)
+            and func.value.id in MODAL_CLASSES)
+
+
+def _calls_in(func: ast.AsyncFunctionDef):
+    """Calls executed by the coroutine itself (not by nested functions/lambdas)."""
+    stack = list(func.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+            continue
+        if isinstance(node, ast.Call):
+            yield node
+        stack.extend(ast.iter_child_nodes(node))
+
+
+def test_no_blocking_dialogs_inside_coroutines():
+    """A modal exec()/static dialog inside a running task spins a nested event loop in which qasync
+    steps other tasks: "Cannot enter into task … SchedulerRunner._loop … while another task"
+    (#35). Use caspian.ui.file_dialogs / app_context.exec_dialog instead."""
+    offenders = []
+    for path, tree in _modules():
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.AsyncFunctionDef):
+                continue
+            for call in _calls_in(node):
+                if _is_blocking(call):
+                    offenders.append(f"{path.name}:{call.lineno} {node.name}() -> .{call.func.attr}()")
+    assert not offenders, "blocking dialogs inside async functions: " + ", ".join(offenders)

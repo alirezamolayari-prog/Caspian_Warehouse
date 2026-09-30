@@ -7,7 +7,6 @@ from decimal import Decimal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -32,6 +31,7 @@ from caspian.services.fiscal import get_archive, open_archive
 from caspian.services.fiscal_state import load_state
 from caspian.services.reports import ReorderParams, ReportTable
 from caspian.ui.app_context import AppContext
+from caspian.ui.file_dialogs import ask_save_path
 from caspian.ui.messages import show_error, show_info
 from caspian.ui.printing import output_menu, report_html
 from caspian.ui.widgets import Card, DataTable, JalaliDateEdit
@@ -88,7 +88,7 @@ class ReportView(QWidget):
         self.excel_button = QPushButton("خروجی اکسل")
         self.excel_button.clicked.connect(self.on_excel)
         self.print_button = QPushButton("چاپ / PDF")
-        self.print_button.setMenu(output_menu(self, self._html, self._file_name))
+        self.print_button.setMenu(output_menu(self, self._html, self._file_name, ctx.settings))
         for b in (self.excel_button, self.print_button, self.show_button):
             self.extra_actions.addWidget(b)
         layout.addLayout(self.extra_actions)
@@ -137,8 +137,8 @@ class ReportView(QWidget):
     async def on_excel(self) -> None:
         if self.report is None:
             return
-        path, _ = QFileDialog.getSaveFileName(self, "ذخیره اکسل", f"{self.report.title}.xlsx",
-                                              "Excel (*.xlsx)")
+        path = await ask_save_path(self, "ذخیره اکسل", self._ctx.settings, f"{self.report.title}.xlsx",
+                                   "Excel (*.xlsx)")
         if path:
             write_xlsx(self.report, path)
             show_info(self, "فایل اکسل ذخیره شد.")

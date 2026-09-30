@@ -75,3 +75,20 @@ async def test_viewer_sees_only_permitted_tabs(qtbot, themes, db, admin):
     assert p.tabs.isTabVisible(p.tabs.indexOf(p.stock))
     assert not p.tabs.isTabVisible(p.activity_index)
     assert p.apply_rp.isHidden()
+
+
+async def test_excel_export_uses_awaitable_dialog(page, tmp_path, monkeypatch):
+    from caspian.ui import reports_page
+
+    target = tmp_path / "stock.xlsx"
+    asked = {}
+
+    async def fake_ask(parent, title, settings, default_name, name_filter):
+        asked["name"] = default_name
+        return str(target)
+
+    monkeypatch.setattr(reports_page, "ask_save_path", fake_ask)
+    await page.stock.refresh()
+    await page.stock.on_excel()
+    assert await wait_until(target.exists)
+    assert asked["name"] == f"{page.stock.report.title}.xlsx"
