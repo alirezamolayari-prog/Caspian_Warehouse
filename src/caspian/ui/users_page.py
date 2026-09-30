@@ -1,5 +1,6 @@
 """User management (requires users.manage)."""
 
+import dataclasses
 import logging
 
 from PySide6.QtCore import Qt
@@ -52,6 +53,15 @@ class NewUserDialog(FormDialog):
         self.full_name.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.role = self.add_row("نقش:", _role_combo(roles, "storekeeper"))
         self.password = self.add_row("رمز عبور موقت:", password_field("حداقل ۶ کاراکتر"))
+        self.username.editingFinished.connect(self.check_username)
+
+    @asyncSlot()
+    async def check_username(self) -> None:
+        """Say a name is taken as soon as it's typed, not after the password (#15)."""
+        if self.username.text().strip() and await users.username_taken(self._ctx.db, self.username.text()):
+            self.show_status(users.TAKEN)
+        elif self.status.text() == users.TAKEN:
+            self.show_status("")
 
     async def submit(self) -> None:
         role = self.role.currentData()
@@ -70,13 +80,21 @@ class NewUserDialog(FormDialog):
 
 
 class EditNameDialog(FormDialog):
+    """Login name and full name. A new login name must be unique (audited as user.renamed)."""
+
     def __init__(self, ctx: AppContext, user: UserRow, parent=None) -> None:
         super().__init__(f"ویرایش کاربر «{user.username}»", submit_text="ذخیره", parent=parent)
         self._ctx, self._user = ctx, user
+        self.username = self.add_row("نام کاربری:", ltr_field(user.username))
         self.full_name = self.add_row("نام و نام خانوادگی:", ltr_field(user.full_name))
         self.full_name.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
 
     async def submit(self) -> None:
+        if self.username.text().strip().lower() != self._user.username:
+            await users.rename_user(self._ctx.db, self._ctx.actor, self._user.id, self.username.text())
+            if self._user.id == self._ctx.actor.user_id:  # keep the header chip in sync
+                self._ctx.set_actor(dataclasses.replace(
+                    self._ctx.actor, username=self.username.text().strip().lower()))
         await users.update_user(self._ctx.db, self._ctx.actor, self._user.id,
                                 self.full_name.text())
 
@@ -133,7 +151,7 @@ class UsersPage(QWidget):
         self.new_button.clicked.connect(self.on_new)
         toolbar.addWidget(self.new_button)
         toolbar.addStretch(1)
-        self.edit_button = QPushButton("ویرایش نام")
+        self.edit_button = QPushButton("ویرایش کاربر")
         self.reset_button = QPushButton("بازنشانی رمز")
         self.role_button = QPushButton("تغییر نقش")
         self.active_button = QPushButton("غیرفعال‌سازی")
@@ -213,6 +231,8 @@ class UsersPage(QWidget):
 
     @asyncSlot()
     async def on_new(self) -> None:
+        if not self._roles:
+            self._roles = await users.list_roles(self._ctx.db)
         await self._run(NewUserDialog(self._ctx, self._roles, self))
 
     @asyncSlot()

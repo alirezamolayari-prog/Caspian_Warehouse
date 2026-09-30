@@ -19,12 +19,14 @@ from qasync import asyncSlot
 
 from caspian import APP_DISPLAY_NAME, __version__
 from caspian.core import jalali
+from caspian.core.permissions import DEFAULT_ROLES
 from caspian.services import auth
 from caspian.services.actor import Actor
 from caspian.ui.about import AboutDialog
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.assistant_page import AssistantPage
 from caspian.ui.auth_dialogs import ChangePasswordDialog, SetPinDialog, run_login
+from caspian.ui.dialogs import FormDialog
 from caspian.ui.documents_page import DocumentsPage
 from caspian.ui.icons import icon
 from caspian.ui.imports_page import ImportsPage
@@ -37,6 +39,22 @@ from caspian.ui.settings_page import SettingsPage
 from caspian.ui.stocktake_page import StocktakePage
 from caspian.ui.theme import Theme
 from caspian.ui.users_page import UsersPage
+
+
+class ProfileDialog(FormDialog):
+    """«پروفایل من»: who is signed in, with a shortcut to change the password."""
+
+    def __init__(self, ctx, parent=None) -> None:
+        actor = ctx.actor
+        super().__init__("پروفایل من", submit_text="تغییر رمز عبور", cancel_text="بستن", parent=parent)
+        role = DEFAULT_ROLES.get(actor.role_code, (actor.role_code,))[0]
+        for label, value in (("نام کاربری:", actor.username), ("نام:", actor.full_name or "—"),
+                             ("نقش:", role)):
+            self.form.addRow(label, QLabel(value))
+        self.wants_password_change = False
+
+    async def submit(self) -> None:
+        self.wants_password_change = True
 
 
 class MainWindow(QMainWindow):
@@ -140,8 +158,11 @@ class MainWindow(QMainWindow):
         self._user_button.setIconSize(QSize(16, 16))
         self._user_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._user_menu = QMenu(self)
+        self._user_menu.addAction("پروفایل من", self.on_profile)
         self._user_menu.addAction("تغییر رمز عبور", self.on_change_password)
         self._pin_action = self._user_menu.addAction("تنظیم PIN مدیر", self.on_set_pin)
+        self._users_action = self._user_menu.addAction("مدیریت کاربران", lambda: self.navigate("users"))
+        self._new_user_action = self._user_menu.addAction("کاربر جدید", self.on_new_user)
         self._user_menu.addSeparator()
         self._user_menu.addAction("تغییر کاربر", self.on_switch_user)
         self._user_menu.addAction("خروج از حساب", self.on_logout)
@@ -245,6 +266,8 @@ class MainWindow(QMainWindow):
         self._user_button.setText(actor.display_name)
         self._user_button.setToolTip(f"{actor.username} — {actor.role_code}")
         self._pin_action.setVisible(actor.is_admin)
+        for action in (self._users_action, self._new_user_action):
+            action.setVisible(self.is_allowed("users"))
         for key, button in self._nav_buttons.items():
             button.setVisible(self.is_allowed(key))
         self._assistant_button.setVisible(self.is_allowed("assistant"))
@@ -252,6 +275,17 @@ class MainWindow(QMainWindow):
         self.navigate(self.current_page if current is not None else "dashboard")
 
     # ----- user menu -----
+
+    @asyncSlot()
+    async def on_profile(self) -> None:
+        dialog = ProfileDialog(self.ctx, self)
+        if await exec_dialog(dialog) and dialog.wants_password_change:
+            await self.on_change_password()
+
+    @asyncSlot()
+    async def on_new_user(self) -> None:
+        self.navigate("users")
+        await self._pages["users"].on_new()
 
     @asyncSlot()
     async def on_change_password(self) -> None:

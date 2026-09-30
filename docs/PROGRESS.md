@@ -100,3 +100,13 @@ Plan: Phase 1 (baseline + bug-class audit) → units U1–U13 (P0 → P1 → P2)
 - Deferred (optional in the spec): structured `brand` / `size` fields on items (would need a migration).
 - Tests: `test_imports.py` (manual source, match code + alternatives, variant), `test_imports_ui.py` (grid,
   matched code, variant flow; labels updated in the existing review test).
+
+### U7 — user administration from the «مدیر سیستم» menu (#15)
+- Header menu: «پروفایل من» (username, name, role + change password), «تغییر رمز عبور», «مدیریت کاربران» and
+  «کاربر جدید» (users.manage only), PIN, switch user, «خروج از حساب», about.
+- `users.rename_user` (unique, validated, audited `user.renamed`); «ویرایش کاربر» edits login name + full name;
+  renaming yourself updates the header.
+- `create_user` reports a taken name before password rules and no longer burns an admin approval on a duplicate;
+  `users.username_taken`; the new-user form warns as soon as the name is typed.
+- Last-admin guards already existed (`set_active`, `change_role`); added a test for deactivation by another manager.
+- Tests: `test_auth.py` (rename, duplicate first, last admin), `test_ui_shell.py` (menu, profile, rename, early check).

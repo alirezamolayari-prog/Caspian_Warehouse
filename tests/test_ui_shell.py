@@ -145,3 +145,57 @@ def test_about_dialog(qtbot):
     qtbot.addWidget(dialog)
     text = " ".join(label.text() for label in dialog.findChildren(QLabel))
     assert __version__ in text and "Vazirmatn" in text and "MariaDB" in text
+
+
+async def test_admin_menu_offers_user_management(make_window, db, admin):
+    """Clicking «مدیر سیستم» opens profile / password / users / new user / logout (#15)."""
+    win = make_window(admin)
+    texts = [a.text() for a in win._user_menu.actions() if a.text()]
+    for expected in ("پروفایل من", "تغییر رمز عبور", "مدیریت کاربران", "کاربر جدید", "خروج از حساب"):
+        assert expected in texts, expected
+    assert win._users_action.isVisible() and win._new_user_action.isVisible()
+    win._users_action.trigger()
+    assert win.current_page == "users"
+
+    await users.create_user(db, admin, "neda", "ندا", "Neda#2026", "viewer")
+    win.ctx.set_actor((await auth.login(db, "neda", "Neda#2026")).actor)
+    assert not win._users_action.isVisible() and not win._new_user_action.isVisible()
+
+
+async def test_profile_dialog_shows_the_signed_in_user(qtbot, themes, db, admin):
+    from caspian.ui.main_window import ProfileDialog
+
+    ctx = AppContext(db, DbConfig(), Settings(), themes, admin)
+    dlg = ProfileDialog(ctx)
+    qtbot.addWidget(dlg)
+    labels = [dlg.form.itemAt(i).widget().text() for i in range(dlg.form.count())
+              if dlg.form.itemAt(i).widget() is not None]
+    assert "admin" in labels and "مدیر سیستم" in labels
+
+
+async def test_rename_user_from_users_page(qtbot, window, db, admin):
+    from caspian.ui.users_page import EditNameDialog, NewUserDialog
+    from helpers import settle, wait_until
+
+    await users.create_user(db, admin, "neda", "ندا", "Neda#2026", "viewer")
+    [neda] = [u for u in await users.list_users(db, admin) if u.username == "neda"]
+    dlg = EditNameDialog(window.ctx, neda)
+    qtbot.addWidget(dlg)
+    dlg.username.setText("neda.r")
+    dlg.submit_button.click()
+    await settle(dlg)
+    assert (await auth.login(db, "neda.r", "Neda#2026")).actor.user_id == neda.id
+
+    [me] = [u for u in await users.list_users(db, admin) if u.username == "admin"]
+    dlg = EditNameDialog(window.ctx, me)
+    qtbot.addWidget(dlg)
+    dlg.username.setText("boss")
+    dlg.submit_button.click()
+    await settle(dlg)
+    assert window.ctx.actor.username == "boss"  # header follows a rename of yourself
+
+    new = NewUserDialog(window.ctx, await users.list_roles(db))
+    qtbot.addWidget(new)
+    new.username.setText("NEDA.R")
+    await new.check_username()
+    assert await wait_until(lambda: new.status.text() == users.TAKEN)
