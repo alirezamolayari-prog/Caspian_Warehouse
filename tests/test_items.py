@@ -258,3 +258,9 @@ async def test_code_is_locked_once_used_in_a_document(db, admin):
     data.code = "1001-B"
     data.name = "دریل بوش جدید"
     await items.update_item(db, admin, item_id, detail.version_id, data)  # other fields still editable
+
+
+async def test_items_are_listed_by_code(db, admin):
+    for code, name in (("30", "الف"), ("10", "ی"), ("20", "ب")):
+        await _drill(db, admin, code=code, name=name)
+    assert [r.code for r in await items.search_items(db, admin)] == ["10", "20", "30"]

@@ -170,3 +170,19 @@ Plan: Phase 1 (baseline + bug-class audit) → units U1–U13 (P0 → P1 → P2)
 - Tests: `test_documents_ui.py` (decline/accept, success, «مشاهده», focus, unsaved-changes flow),
   `test_stocktake_ui.py` (approval asks). Existing tests that post/approve get an auto-«بله» fixture.
   Note for tests: QTest `keyClicks` with Persian text kills the test process, so tests type Latin text.
+
+### U12 — lists & display (#25, #26, #28, #29, #30, #31, #32)
+- #26 numbers shown with the type prefix everywhere (ر-۱، ح-۱، ت، ص، م، ا، ب — lists, dashboard, titles, loans);
+  the documents search accepts «ر-۱۲», «ر12», «ر 12».
+- #25 `documents.pending_summary()` gives the drafts card its number and hint from one query, a stale refresh can no
+  longer mix two moments, and the card opens the draft documents (or the imports when only those are pending).
+- #28 quantity and date fields show Persian digits like the tables (both scripts still accepted); date fields
+  have a Jalali month-grid picker (Saturday first, future days disabled).
+- #29 every `DataTable` sorts on header click (numbers — Persian digits and separators — by value; Jalali dates
+  as text); rows keep the service order until clicked; items are listed by code by default.
+- #30 the «فقط زیر نقطه سفارش» filter resets when the Items page is left.
+- #31 report text columns share the width, numbers fit their content; wider group filter (U4).
+- #32 empty-table messages for documents, loans, imports, stocktakes, groups/master tabs and reports.
+- Tests: `test_documents.py` (prefix + search, pending summary), `test_items.py` (code order), `test_widgets_ui.py`
+  (sort, empty text, digits, calendar), `test_ui_shell.py` (dashboard card, filter reset), `test_reports_ui.py`
+  (column modes). One existing QtyEdit test now expects the Persian display.

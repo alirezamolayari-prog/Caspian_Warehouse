@@ -121,3 +121,16 @@ async def test_excel_export_uses_awaitable_dialog(page, tmp_path, monkeypatch):
     await page.stock.on_excel()
     assert await wait_until(target.exists)
     assert asked["name"] == f"{page.stock.report.title}.xlsx"
+
+
+async def test_stock_report_uses_the_width(page):
+    """#31: text columns stretch, numbers fit their content."""
+    from PySide6.QtWidgets import QHeaderView
+
+    await page.stock.refresh()
+    header = page.stock.table.horizontalHeader()
+    kinds = [c.kind for c in page.stock.report.columns]
+    for i, kind in enumerate(kinds):
+        mode = QHeaderView.ResizeMode
+        assert header.sectionResizeMode(i) == (mode.Stretch if kind == "text" else mode.ResizeToContents)
+    assert page.stock_cat.minimumWidth() >= 180 and page.stock_cat.itemText(0) == "همه گروه‌ها"

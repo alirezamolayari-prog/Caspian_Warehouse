@@ -37,7 +37,7 @@ def test_qty_edit_accepts_persian_digits(qtbot):
     edit.insert("abc")
     assert edit.text() == "12"  # letters rejected by the validator
     edit.set_value(Decimal("24.0000"))
-    assert edit.text() == "24"
+    assert edit.text() == "۲۴" and edit.value() == Decimal(24)  # shown like the tables (#28)
 
 
 async def test_item_dialog_creates_item(qtbot, db, admin, make_ctx):

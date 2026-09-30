@@ -20,6 +20,7 @@ from qasync import asyncSlot
 from caspian import APP_DISPLAY_NAME, __version__
 from caspian.core import jalali
 from caspian.core.permissions import DEFAULT_ROLES
+from caspian.db.models import DocStatus
 from caspian.services import auth
 from caspian.services.actor import Actor
 from caspian.ui.about import AboutDialog
@@ -235,6 +236,11 @@ class MainWindow(QMainWindow):
         elif option == "loans":
             documents = self._pages["documents"]
             documents.tabs.setCurrentWidget(documents.loans)
+        elif option == "drafts":
+            documents = self._pages["documents"]
+            documents.tabs.setCurrentWidget(documents.documents)
+            documents.documents.status_filter.setCurrentIndex(
+                documents.documents.status_filter.findData(DocStatus.DRAFT))
 
     def _install_shortcuts(self) -> None:
         visible = [p.key for p in PAGES]

@@ -318,6 +318,11 @@ class ItemsPage(QWidget):
             b.setVisible(can_edit)
         self._update_buttons()
 
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        # Set from the dashboard's «زیر نقطه سفارش» card; it must not stick after leaving (#30).
+        self.low_only.setChecked(False)
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self.reload_all()

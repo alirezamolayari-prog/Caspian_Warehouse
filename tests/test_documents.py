@@ -382,3 +382,29 @@ async def test_decimals_only_for_units_that_allow_them(env):
     await master.save_unit(db, admin, "عدد", u["عدد"], allow_decimal=True)  # the admin decides
     await docs.create_document(db, admin, doc(DocType.RECEIPT, env["wh1"],
                                               (env["drill"], u["عدد"], Decimal("2.5"))))
+
+
+# ----- numbering display and search (#26) -----
+
+
+async def test_prefixed_numbers_in_lists_and_search(env):
+    db, admin = env["db"], env["admin"]
+    receipt = await receive(env)
+    issue = await docs.create_document(db, admin, doc(DocType.ISSUE, env["wh1"],
+                                                      (env["drill"], env["u"]["عدد"], Decimal(1))))
+    rows = {r.id: r for r in await docs.list_documents(db, admin)}
+    assert rows[receipt].number_text == "ر-۱" and rows[issue].number_text == "ح-۱"
+    for query in ("ر-۱", "ر-1", "ر 1", "ر1"):
+        assert [r.id for r in await docs.list_documents(db, admin, query=query)] == [receipt], query
+    assert [r.id for r in await docs.list_documents(db, admin, query="ح-۱")] == [issue]
+    assert len(await docs.list_documents(db, admin, query="1")) == 2  # plain number: any type
+
+
+async def test_pending_summary_is_one_consistent_source(env):
+    """#25: the dashboard's number and its «n سند، m ورود اطلاعات» come from the same counts."""
+    db, admin = env["db"], env["admin"]
+    await docs.create_document(db, admin, doc(DocType.RECEIPT, env["wh1"],
+                                              (env["drill"], env["u"]["عدد"], Decimal(1))))
+    summary = await docs.pending_summary(db)
+    assert (summary.draft_documents, summary.open_imports, summary.total) == (1, 0, 1)
+    assert summary.hint == "۱ سند، ۰ ورود اطلاعات"

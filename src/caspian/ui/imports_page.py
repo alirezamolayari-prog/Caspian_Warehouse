@@ -586,6 +586,8 @@ class ImportsPage(QWidget):
         card = Card()
         card.body.setContentsMargins(0, 0, 0, 0)
         self.table = DataTable(BATCH_COLUMNS)
+        self.table.set_empty_text("پیش‌نویسی نیست. از «ورود از فایل»، «ورود دستی»، «اسکن» یا «از متن» "
+                                  "شروع کنید.")
         self.table.itemSelectionChanged.connect(self._update_buttons)
         self.table.doubleClicked.connect(lambda _: self.on_review())
         card.body.addWidget(self.table)

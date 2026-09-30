@@ -62,3 +62,60 @@ async def test_add_entry_creates_and_selects(qtbot):
     assert await wait_until(lambda: combo.currentData() == 9)
     assert asked == ["رضا"]
     assert combo.itemText(combo.count() - 1) == "+ افزودن شخص جدید"
+
+
+def test_table_sorts_numbers_and_keeps_ids(qtbot):
+    """#29: clicking a header sorts; Persian-digit numbers sort by value, ids follow their rows."""
+    from caspian.ui.widgets import DataTable
+
+    table = DataTable(("شماره", "نام"))
+    qtbot.addWidget(table)
+    table.set_rows([(1, ("۱۰", "ب")), (2, ("۹", "الف")), (3, ("۱٬۰۰۰", "پ"))])
+    assert [table.item(r, 0).text() for r in range(3)] == ["۱۰", "۹", "۱٬۰۰۰"]  # service order kept
+    table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
+    assert [table.item(r, 0).text() for r in range(3)] == ["۹", "۱۰", "۱٬۰۰۰"]
+    table.select_id(1)
+    assert table.selected_id() == 1
+    table.set_rows([(4, ("۵", "ت")), (1, ("۲", "ث"))])  # refresh keeps the user's sort column
+    assert [table.item(r, 0).text() for r in range(2)] == ["۲", "۵"]
+
+
+def test_empty_tables_explain_themselves(qtbot):
+    from caspian.ui.widgets import DataTable
+
+    table = DataTable(("الف",))
+    qtbot.addWidget(table)
+    table.set_empty_text("چیزی نیست")
+    assert table.showing_empty_text()
+    table.set_rows([(1, ("x",))])
+    assert not table.showing_empty_text()
+
+
+def test_inputs_show_persian_digits_and_jalali_picker(qtbot):
+    """#28: forms show digits like the tables; the date field has a Jalali calendar."""
+    import datetime as dt
+    from decimal import Decimal
+
+    from caspian.ui.widgets import JalaliDateEdit, QtyEdit
+
+    qty = QtyEdit(Decimal("12.5"))
+    qtbot.addWidget(qty)
+    assert qty.text() == "۱۲٫۵" and qty.value() == Decimal("12.5")
+    date = JalaliDateEdit(dt.date(2026, 9, 27))
+    qtbot.addWidget(date)
+    assert date.text() == "۱۴۰۵/۰۷/۰۵" and date.date() == dt.date(2026, 9, 27)
+    popup = date.open_calendar()
+    assert "مهر" in popup.title.text()
+    days = popup.day_buttons()
+    assert len(days) == 30
+    days[1].click()
+    assert date.date() == dt.date(2026, 9, 23)  # 1405/07/01
+    popup = date.open_calendar()
+    popup._move(-7)  # Mehr 1405 -> Esfand 1404
+    assert "اسفند" in popup.title.text()
+    import jdatetime
+
+    assert len(popup.day_buttons()) == (30 if jdatetime.date(1404, 1, 1).isleap() else 29)
+    assert all(b.isEnabled() for b in popup.day_buttons().values())  # the past is selectable
+    popup._move(20)
+    assert not any(b.isEnabled() for b in popup.day_buttons().values())  # the future is not (#18)

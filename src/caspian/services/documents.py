@@ -7,6 +7,7 @@ never supplies the factor.
 
 import datetime as dt
 import logging
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -77,6 +78,9 @@ PERSON_LABELS = {
     DocType.RECEIPT: "تأمین‌کننده", DocType.ISSUE: "تحویل‌گیرنده", DocType.LOAN_OUT: "تحویل‌گیرنده",
     DocType.LOAN_RETURN: "برگشت‌دهنده",
 }
+
+
+_PREFIXED = re.compile(r"^([رحتصمآاب])\s*-?\s*(\d+)$")
 
 
 def number_text(doc_type: DocType, number: int) -> str:
@@ -398,7 +402,10 @@ async def list_documents(
     if date_to is not None:
         stmt = stmt.where(Document.doc_date <= date_to)
     raw = to_ascii_digits(query.strip())
-    if raw:
+    if prefixed := _PREFIXED.match(raw):
+        doc_type = next((t for t, p in DOC_PREFIX.items() if p == prefixed[1]), None)
+        stmt = stmt.where(Document.doc_type == doc_type, Document.number == int(prefixed[2]))
+    elif raw:
         conds = [Person.name_normalized.contains(normalize(query), autoescape=True),
                  Document.description.contains(query.strip(), autoescape=True)]
         if raw.isdigit():
@@ -611,6 +618,34 @@ async def outstanding_loans(db: Database, actor: Actor, person_id: int | None = 
     actor.require(Perm.DOCUMENTS_VIEW)
     async with db.session() as s:
         return [r for r in await _loan_rows(s, person_id, loan_id) if r.outstanding > 0]
+
+
+@dataclass(frozen=True)
+class PendingSummary:
+    """What the dashboard's «پیش‌نویس‌های در انتظار» card shows: value and hint from one query."""
+
+    draft_documents: int
+    open_imports: int
+
+    @property
+    def total(self) -> int:
+        return self.draft_documents + self.open_imports
+
+    @property
+    def hint(self) -> str:
+        return (f"{to_persian_digits(self.draft_documents)} سند، "
+                f"{to_persian_digits(self.open_imports)} ورود اطلاعات")
+
+
+async def pending_summary(db: Database) -> PendingSummary:
+    from caspian.db.models import BatchStatus, ImportBatch
+
+    async with db.session() as s:
+        drafts = await s.scalar(select(func.count()).select_from(Document)
+                                .where(Document.status == DocStatus.DRAFT))
+        batches = await s.scalar(select(func.count()).select_from(ImportBatch)
+                                 .where(ImportBatch.status == BatchStatus.OPEN))
+    return PendingSummary(drafts or 0, batches or 0)
 
 
 async def pending_counts(db: Database) -> tuple[int, int]:

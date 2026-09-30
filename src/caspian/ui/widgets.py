@@ -5,16 +5,20 @@ from collections.abc import Awaitable, Callable, Iterable, Sequence
 from decimal import Decimal
 from typing import Any
 
+import jdatetime
 from PySide6.QtCore import QModelIndex, QRegularExpression, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QRegularExpressionValidator
+from PySide6.QtGui import QAction, QColor, QPainter, QRegularExpressionValidator
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QCompleter,
     QFrame,
+    QGridLayout,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -23,7 +27,7 @@ from PySide6.QtWidgets import (
 
 from caspian.core import jalali
 from caspian.core.numbers import format_qty, parse_decimal
-from caspian.core.text import normalize
+from caspian.core.text import normalize, to_ascii_digits, to_persian_digits
 
 
 class Card(QFrame):
@@ -77,6 +81,21 @@ class EmptyState(QWidget):
         layout.addStretch(2)
 
 
+def sort_key(text: str) -> tuple:
+    """Numbers (Persian or Latin digits, with separators) sort by value; everything else as text
+    (Jalali dates like ۱۴۰۵/۰۷/۰۸ sort correctly as zero-padded text)."""
+    raw = to_ascii_digits(text).replace("٬", "").replace(",", "").replace("٫", ".").strip()
+    try:
+        return (0, Decimal(raw), "")
+    except ArithmeticError:
+        return (1, Decimal(0), normalize(text))
+
+
+class _SortItem(QTableWidgetItem):
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        return sort_key(self.text()) < sort_key(other.text())
+
+
 class DataTable(QTableWidget):
     """Read-only, row-selecting table. Rows carry an id retrievable via `selected_id()`."""
 
@@ -94,6 +113,27 @@ class DataTable(QTableWidget):
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.horizontalHeader().setHighlightSections(False)
         self._ids: list[object] = []
+        self._empty_text = ""
+        # Click a header to sort (#29); rows keep the service's order until then.
+        self.horizontalHeader().setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
+        self.setSortingEnabled(True)
+
+    def set_empty_text(self, text: str) -> None:
+        """Shown in the middle of the table while it has no rows (#32)."""
+        self._empty_text = text
+        self.viewport().update()
+
+    def showing_empty_text(self) -> bool:
+        return bool(self._empty_text) and self.rowCount() == 0
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if self.showing_empty_text():
+            painter = QPainter(self.viewport())
+            painter.setPen(self.palette().placeholderText().color())
+            painter.drawText(self.viewport().rect().adjusted(16, 16, -16, -16),
+                             Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self._empty_text)
+            painter.end()
 
     def set_rows(self, rows: Sequence[tuple[object, Sequence[str]]],
                  muted: Sequence[bool] | None = None,
@@ -106,15 +146,17 @@ class DataTable(QTableWidget):
         muted_color = self.palette().placeholderText().color()
         for r, (_, cells) in enumerate(rows):
             for c, text in enumerate(cells):
-                item = QTableWidgetItem(text)
+                item = _SortItem(text)
                 item.setData(Qt.ItemDataRole.UserRole, r)
                 if muted and muted[r]:
                     item.setForeground(muted_color)
                 if highlight and (r, c) in highlight:
                     item.setForeground(QColor(highlight[(r, c)]))
                 self.setItem(r, c, item)
+        self.setSortingEnabled(True)  # re-applies the user's sort column, if any
+        self.viewport().update()
         if keep is not None and keep in self._ids:
-            self.selectRow(self._ids.index(keep))
+            self.select_id(keep)
 
     def selected_id(self) -> object | None:
         model = self.selectionModel()
@@ -136,8 +178,15 @@ class DataTable(QTableWidget):
         return ids
 
     def select_id(self, row_id: object) -> None:
-        if row_id in self._ids:
-            self.selectRow(self._ids.index(row_id))
+        """Select by id, wherever sorting has moved that row."""
+        if row_id not in self._ids:
+            return
+        data_row = self._ids.index(row_id)
+        for view_row in range(self.rowCount()):
+            item = self.item(view_row, 0)
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) == data_row:
+                self.selectRow(view_row)
+                return
 
 
 class SearchBox(QLineEdit):
@@ -332,8 +381,76 @@ class QtyEdit(QLineEdit):
             return None
 
     def set_value(self, value: Decimal | None) -> None:
-        self.setText(format_qty(value, persian=False).replace(",", "") if value is not None
-                     else "")
+        # Shown with Persian digits like the tables; typing either script works (#28).
+        self.setText(to_persian_digits(format_qty(value, persian=False).replace(",", "")
+                                       .replace(".", "٫")) if value is not None else "")
+
+
+class JalaliCalendar(QFrame):
+    """Month grid of the Jalali calendar (Saturday first), shown as a popup under a date field."""
+
+    picked = Signal(object)  # dt.date
+
+    WEEKDAYS = ("ش", "ی", "د", "س", "چ", "پ", "ج")
+
+    def __init__(self, value: dt.date, parent: QWidget | None = None) -> None:
+        super().__init__(parent, Qt.WindowType.Popup)
+        self.setObjectName("Calendar")
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        layout = QVBoxLayout(self)
+        head = QHBoxLayout()
+        self.prev_button = QPushButton("‹")
+        self.next_button = QPushButton("›")
+        self.title = QLabel(objectName="CardTitle")
+        self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.prev_button.clicked.connect(lambda: self._move(-1))
+        self.next_button.clicked.connect(lambda: self._move(1))
+        head.addWidget(self.prev_button)
+        head.addWidget(self.title, 1)
+        head.addWidget(self.next_button)
+        layout.addLayout(head)
+        self.grid = QGridLayout()
+        layout.addLayout(self.grid)
+        self._selected = value
+        j = jalali.to_jalali(value)
+        self.year, self.month = j.year, j.month
+        self._fill()
+
+    def _move(self, months: int) -> None:
+        index = self.year * 12 + self.month - 1 + months
+        self.year, self.month = divmod(index, 12)
+        self.month += 1
+        self._fill()
+
+    def day_buttons(self) -> dict[int, QPushButton]:
+        return self._days
+
+    def _fill(self) -> None:
+        while self.grid.count():
+            self.grid.takeAt(0).widget().deleteLater()
+        self.title.setText(f"{jalali.MONTH_NAMES[self.month - 1]} {to_persian_digits(self.year)}")
+        for col, name in enumerate(self.WEEKDAYS):
+            label = QLabel(name, objectName="Muted")
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.grid.addWidget(label, 0, col)
+        first = jdatetime.date(self.year, self.month, 1)
+        length = jdatetime.j_days_in_month[self.month - 1] + (1 if self.month == 12 and first.isleap() else 0)
+        self._days = {}
+        today = dt.date.today()
+        for day in range(1, length + 1):
+            index = first.weekday() + day - 1  # jdatetime: Saturday = 0
+            gregorian = jdatetime.date(self.year, self.month, day).togregorian()
+            button = QPushButton(to_persian_digits(day))
+            button.setFlat(gregorian != self._selected)
+            button.setEnabled(gregorian <= today)  # documents can't be dated in the future (#18)
+            button.clicked.connect(lambda _c=False, d=gregorian: self._pick(d))
+            self.grid.addWidget(button, 1 + index // 7, index % 7)
+            self._days[day] = button
+
+    def _pick(self, value: dt.date) -> None:
+        self.picked.emit(value)
+        self.close()
 
 
 class JalaliDateEdit(QLineEdit):
@@ -342,9 +459,21 @@ class JalaliDateEdit(QLineEdit):
     def __init__(self, value: dt.date | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-        self.setPlaceholderText("1405/01/01")
+        self.setPlaceholderText("۱۴۰۵/۰۱/۰۱")
         self.setInputMask("")
         self.set_date(value or dt.date.today())
+        self.calendar_action = QAction("تقویم", self)
+        self.calendar_action.setToolTip("انتخاب از تقویم")
+        self.calendar_action.triggered.connect(self.open_calendar)
+        self.addAction(self.calendar_action, QLineEdit.ActionPosition.TrailingPosition)
+        self.popup: JalaliCalendar | None = None
+
+    def open_calendar(self, *_args) -> JalaliCalendar:
+        self.popup = JalaliCalendar(self.date() or dt.date.today(), self)
+        self.popup.picked.connect(self.set_date)
+        self.popup.move(self.mapToGlobal(self.rect().bottomLeft()))
+        self.popup.show()
+        return self.popup
 
     def date(self) -> dt.date | None:
         try:
@@ -353,4 +482,4 @@ class JalaliDateEdit(QLineEdit):
             return None
 
     def set_date(self, value: dt.date) -> None:
-        self.setText(jalali.format_date(value, persian_digits=False))
+        self.setText(jalali.format_date(value))  # Persian digits, like the tables (#28)

@@ -95,6 +95,7 @@ class ReportView(QWidget):
         card = Card()
         card.body.setContentsMargins(0, 0, 0, 0)
         self.table = DataTable([], multi_select=multi_select)
+        self.table.set_empty_text("فیلترها را انتخاب کنید و «نمایش گزارش» را بزنید.")
         card.body.addWidget(self.table)
         layout.addWidget(card, 1)
         self.totals = QLabel(objectName="Muted")
@@ -126,9 +127,13 @@ class ReportView(QWidget):
         self.table.set_rows([(ids[i], [format_cell(v, c.kind) for v, c in zip(row, cols, strict=False)])
                              for i, row in enumerate(report.rows)])
         self.meta.setText(" | ".join(report.meta))
+        # Text columns share the free width; numbers and dates fit their content (#31).
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        header.setStretchLastSection(True)
+        header.setStretchLastSection(False)
+        for i, column in enumerate(cols):
+            header.setSectionResizeMode(i, QHeaderView.ResizeMode.Stretch if column.kind == "text"
+                                        else QHeaderView.ResizeMode.ResizeToContents)
+        self.table.set_empty_text("موردی برای این گزارش پیدا نشد.")
         self.totals.setText(" — ".join(f"{cols[i].title}: {format_cell(v, cols[i].kind)}"
                                        for i, v in report.totals.items()))
         self._set_export_enabled(True)

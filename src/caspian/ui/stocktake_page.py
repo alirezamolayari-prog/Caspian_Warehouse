@@ -304,6 +304,7 @@ class StocktakePage(QWidget):
         card = Card()
         card.body.setContentsMargins(0, 0, 0, 0)
         self.table = DataTable(LIST_COLUMNS)
+        self.table.set_empty_text("هنوز انبارگردانی‌ای انجام نشده. «انبارگردانی جدید» را بزنید.")
         self.table.itemSelectionChanged.connect(self._update_buttons)
         self.table.doubleClicked.connect(lambda _: self.on_count())
         card.body.addWidget(self.table)

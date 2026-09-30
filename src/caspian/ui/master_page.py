@@ -29,6 +29,7 @@ class _Tab(QWidget):
     perm: Perm = Perm.ITEMS_EDIT
     columns: tuple[str, ...] = ()
     new_text = "جدید"
+    empty_text = "موردی تعریف نشده است."
     toggles_active = True  # False: the second button deletes instead
 
     def __init__(self, ctx: AppContext, parent: QWidget | None = None) -> None:
@@ -55,6 +56,7 @@ class _Tab(QWidget):
         card = Card()
         card.body.setContentsMargins(0, 0, 0, 0)
         self.table = DataTable(self.columns)
+        self.table.set_empty_text(self.empty_text)
         self.table.itemSelectionChanged.connect(self.update_buttons)
         self.table.doubleClicked.connect(lambda _: self.on_edit())
         card.body.addWidget(self.table)
@@ -284,6 +286,7 @@ class CategoryDialog(FormDialog):
 class CategoriesTab(_Tab):
     columns = ("نام گروه", "زیرمجموعه", "تعداد کالا")
     new_text = "گروه جدید"
+    empty_text = "هنوز گروهی تعریف نشده. با «گروه جدید» کالاها را دسته‌بندی کنید."
     toggles_active = False
 
     async def refresh(self) -> None:

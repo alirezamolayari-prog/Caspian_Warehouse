@@ -73,7 +73,7 @@ async def with_stocktake_override(ctx: AppContext, parent, action):
 
 def doc_title(row_type: DocType, number: int | None) -> str:
     name = DOC_TYPE_NAMES[row_type]
-    return f"{name} شماره {to_persian_digits(number)}" if number else f"{name} جدید"
+    return f"{name} {docs.number_text(row_type, number)}" if number else f"{name} جدید"
 
 
 # ----- item chooser -----
@@ -259,7 +259,7 @@ class DocumentDialog(FormDialog):
         for r in self._loans:
             if r.person_id == person_id and r.document_id not in seen:
                 seen.add(r.document_id)
-                self.loan.addItem(f"شماره {to_persian_digits(r.number)} — "
+                self.loan.addItem(f"{docs.number_text(DocType.LOAN_OUT, r.number)} — "
                                   f"{jalali.format_date(r.doc_date)}", r.document_id)
         index = self.loan.findData(selected)
         self.loan.setCurrentIndex(max(index, 0))
@@ -495,7 +495,7 @@ class DocumentsList(QWidget):
         layout.setSpacing(10)
 
         toolbar = QHBoxLayout()
-        self.search = SearchBox("جستجو: شماره، طرف حساب یا توضیحات…")
+        self.search = SearchBox("جستجو: شماره (مثل ر-۱۲)، طرف حساب یا توضیحات…")
         self.search.search.connect(lambda _: self.refresh())
         toolbar.addWidget(self.search)
         self.type_filter = QComboBox()
@@ -543,6 +543,7 @@ class DocumentsList(QWidget):
         card = Card()
         card.body.setContentsMargins(0, 0, 0, 0)
         self.table = DataTable(LIST_COLUMNS)
+        self.table.set_empty_text("سندی با این شرایط پیدا نشد. برای شروع «سند جدید» را بزنید.")
         self.table.itemSelectionChanged.connect(self._update_buttons)
         self.table.doubleClicked.connect(lambda _: self.on_open())
         card.body.addWidget(self.table)
@@ -588,7 +589,7 @@ class DocumentsList(QWidget):
         theme = self._ctx.themes.current
         status_color = {DocStatus.DRAFT: theme.warning, DocStatus.CANCELLED: theme.danger}
         self.table.set_rows(
-            [(r.id, (to_persian_digits(r.number), r.type_name, jalali.format_date(r.doc_date),
+            [(r.id, (r.number_text, r.type_name, jalali.format_date(r.doc_date),
                      r.warehouse + (f" ← {r.dest_warehouse}" if r.dest_warehouse else ""),
                      r.person or "—", to_persian_digits(r.line_count), _status_text(r),
                      r.created_by or "—")) for r in rows],
@@ -696,6 +697,7 @@ class LoansList(QWidget):
         card = Card()
         card.body.setContentsMargins(0, 0, 0, 0)
         self.table = DataTable(LOAN_COLUMNS)
+        self.table.set_empty_text("امانی بازی وجود ندارد؛ همه اقلام امانی برگشته‌اند.")
         self.table.itemSelectionChanged.connect(
             lambda: self.return_button.setEnabled(self.table.selected_id() is not None))
         card.body.addWidget(self.table)
@@ -709,7 +711,7 @@ class LoansList(QWidget):
         warn = self._ctx.themes.current.warning
         self.table.set_rows(
             [((r.document_id, r.item_id),
-              (to_persian_digits(r.number), jalali.format_date(r.doc_date), r.person,
+              (docs.number_text(DocType.LOAN_OUT, r.number), jalali.format_date(r.doc_date), r.person,
                r.item_name, f"{format_qty(r.outstanding)} {r.base_unit}",
                to_persian_digits(r.days_out))) for r in rows],
             highlight={(i, 5): warn for i, r in enumerate(rows) if r.days_out > 30},

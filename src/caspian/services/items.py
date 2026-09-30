@@ -118,7 +118,8 @@ async def search_items(
         stmt = stmt.where(Item.reorder_point.is_not(None), qty <= Item.reorder_point)
     raw = to_ascii_digits(query.strip())
     # Exact code matches first, then by name.
-    stmt = stmt.order_by((Item.code == raw).desc(), Item.name).limit(limit)
+    # Exact code match first, then by code (#29: items are listed by code by default).
+    stmt = stmt.order_by((Item.code == raw).desc(), Item.code).limit(limit)
     if only_below_reorder:
         actor.require(Perm.STOCK_VIEW)
     show_stock = actor.can(Perm.STOCK_VIEW)

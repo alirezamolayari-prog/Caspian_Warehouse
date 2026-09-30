@@ -199,3 +199,38 @@ async def test_rename_user_from_users_page(qtbot, window, db, admin):
     new.username.setText("NEDA.R")
     await new.check_username()
     assert await wait_until(lambda: new.status.text() == users.TAKEN)
+
+
+async def test_dashboard_drafts_card_opens_the_drafts(window, db, admin):
+    """#25: one source for value and hint; the card leads to the draft documents."""
+    import datetime as dt
+    from decimal import Decimal
+
+    from caspian.db.models import DocStatus, DocType
+    from caspian.services import documents as docs
+    from caspian.services import items, master
+    from caspian.services.items import ItemInput
+    from helpers import wait_until
+
+    unit = (await master.list_units(db))[0].id
+    item = await items.create_item(db, admin, ItemInput("1", "x", unit))
+    wh = (await master.list_warehouses(db))[0].id
+    await docs.create_document(db, admin, docs.DocumentInput(
+        DocType.RECEIPT, dt.date.today(), wh, [docs.LineInput(item, unit, Decimal(1))]))
+    dash = window._pages["dashboard"]
+    await dash.refresh()
+    card = dash.cards["drafts"]
+    assert card.value.text() == "۱" and card.hint.text() == "۱ سند، ۰ ورود اطلاعات"
+    card.clicked.emit()
+    assert await wait_until(lambda: window.current_page == "documents")
+    lst = window._pages["documents"].documents
+    assert lst.status_filter.currentData() == DocStatus.DRAFT
+
+
+async def test_low_stock_filter_resets_after_leaving(window):
+    """#30: the filter the dashboard switched on must not stick."""
+    window.open_from_dashboard("items", "low_stock")
+    items_page = window._pages["items"]
+    assert items_page.low_only.isChecked()
+    window.navigate("dashboard")
+    assert not items_page.low_only.isChecked()
