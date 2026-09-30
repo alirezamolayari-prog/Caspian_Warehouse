@@ -29,6 +29,8 @@ class Settings:
     backup_dir: str = ""
     backup_keep: int = 30
     mariadb_tools_dir: str = ""
+    # Folder of the last Excel/PDF export (the save dialog starts there).
+    last_export_dir: str = ""
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Settings":
