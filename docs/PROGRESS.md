@@ -3,6 +3,62 @@
 Source list: [CASPIAN_FIXES.md](CASPIAN_FIXES.md) (manual QA of v1.0.0, 8 Mehr 1405).
 Plan: Phase 1 (baseline + bug-class audit) → units U1–U13 (P0 → P1 → P2).
 
+## Summary (2026-09-30) — ready for review
+
+**Done — all 35 items**, one tested commit per unit (details in the log below):
+P0 #1 #2 #3 #4 #5 #6 #7 #8 #9 · P1 #10 #11 #12 #13 #14 #15 #16 #17 · P2 #18–#35.
+Tests: 228 → **343 passing** (SQLite + local MariaDB 11.8), `ruff check .` clean, `caspian --smoke-test` OK,
+frozen build: see "Finish" at the end of the log. Three schema migrations, each with a working downgrade and an
+up → down → up test on SQLite and MariaDB: `5b7e2c41d9a3` (FK SET NULL), `8d31f0a6c2e4` (print tracking),
+`c4a9e1f07b52` (units.allow_decimal). No business data is rewritten.
+
+Found and fixed beyond the list:
+- Every printed table (reports, stocktake sheets) had mirrored columns — Qt lays tables out left-to-right.
+- A SQLite migration rebuild could cascade-delete `import_lines` (now foreign keys are off during migrations).
+- #1's real cause was broader than the log suggested (any `@asyncSlot` closure could never run).
+
+**Deferred / not done**
+- GitHub Models preset: GitHub retired the service on 2026-07-30, so there is nothing to connect to.
+- #14 optional structured `brand` / `size` fields on items (needs a migration; variants are named instead).
+- CI only runs on `main` and pull requests; it will run when you open the PR for this branch.
+- Not verified against real services (no keys here): Gemini/OpenRouter/Cerebras/Mistral calls, 403 from Iran,
+  an external agent over MCP HTTP from another PC.
+
+**Needs your decision**
+- Replacement for GitHub Models, if you want one (e.g. Azure AI Foundry — paid, needs its own key).
+- Year-end wizard still insists on a backup password (kept on purpose); say if it should allow unencrypted too.
+- Issues need a recipient only when **posted**; drafts (imports, AI, MCP) may lack one. Say if drafts must too.
+
+**Manual test checklist (installed build)**
+1. Printing: Reports → Stock → «چاپ / PDF» → «چاپ…» shows the print dialog; «ذخیره PDF…» suggests
+   `Documents\<title>.pdf` (a cardex title with «:» must save fine) and the next save starts in the last folder.
+   Columns read right-to-left on paper/PDF.
+2. Document print: post a receipt → list → «چاپ / پیش‌نمایش» → A5 preview → print. Status becomes
+   «ثبت نهایی — چاپ‌شده (۱)»; print again → sheet says «کپی / المثنی (نسخه ۲)». Save as PDF also counts.
+3. Errors: any failure shows a Persian dialog with the log path (no more silent buttons).
+4. Stocktake with a carton barcode: item with unit «کارتن = ۱۲» and a carton barcode → start a stocktake → scan the
+   carton barcode twice → count shows ۲۴. While it is open, posting a receipt of that item in that warehouse is
+   refused and offers an admin-PIN override; approving the stocktake itself works.
+5. Import → finalize → issue: «ورود از فایل» (or «ورود دستی…») → review (codes of matched items shown, «همان کالا /
+   کالای جدید / نسخه جدید از …») → «اعمال» → choose «ثبت نهایی همین حالا» → stock updated. Also try «بعداً»:
+   a new issue for that item shows «… در پیش‌نویس ر-n منتظر ثبت نهایی است»; posting the issue needs a recipient.
+   Delete the import-created draft → works and the batch is back under «پیش‌نویس‌های باز».
+6. Pickers: type «كيان» (Arabic letters) in the recipient field → Persian name found; «+ افزودن شخص جدید».
+   Cardex: one field for code / name / barcode.
+7. New item with «موجودی اولیه» → an OPENING document «م-n» appears and the cardex starts with it.
+8. Users: header menu «مدیر سیستم» → profile, users, new user; rename a login name; a duplicate name is reported
+   before password rules.
+9. AI: Settings → AI → add «Google Gemini» / «OpenRouter» with a key → «دریافت لیست مدل‌ها» (OpenRouter «فقط رایگان»)
+   → «تست اتصال»: 401 and 403 give different messages with the server's text (403 mentions VPN).
+10. MCP: Settings → AI → «تست MCP» lists the tools; «کپی تنظیمات MCP» includes the `claude mcp add …` line; «شروع»
+    HTTP → status «در حال اجرا — http://127.0.0.1:8765/mcp»; a request without the token gets 401; see
+    `%LOCALAPPDATA%\CaspianWarehouse\Logs\mcp-audit.log`.
+11. Validation/UX: future date refused; «۲٫۵ عدد» refused, «۲٫۵ متر» accepted; item code locked after first use;
+    confirmations before post / delete / stocktake approval; Esc on a changed form asks; «مشاهده» on final
+    documents; header click sorts tables; date fields have a calendar; low-stock filter resets after leaving Items.
+12. Backups: on a PC without a backup password the first admin login asks once («بعداً، بدون رمز» possible);
+    Backup settings then show a red warning and backups are marked «بدون رمز».
+
 ## Decisions (from the user, 2026-09-30)
 - AI presets: Google Gemini, OpenRouter, Cerebras, Mistral, GitHub Models + "Custom (OpenAI-compatible)".
 - MCP HTTP: separate `caspian-mcp --http` process, bearer token in Credential Manager, 127.0.0.1 unless LAN;
@@ -199,3 +255,10 @@ Plan: Phase 1 (baseline + bug-class audit) → units U1–U13 (P0 → P1 → P2)
   record of the closed year).
 - Tests: `test_backup.py` (plain round trip + damage detection, restore from plain, scheduled warning),
   `test_backup_ui.py` (warning, column, no password prompt for plain, first-run once + skip remembered + set).
+
+### Finish (2026-09-30)
+- Full suite with local MariaDB: **343 passed**; `ruff check .` clean; `uv run caspian --smoke-test` OK.
+- `packaging\build.ps1 -SkipServer`: PyInstaller build OK, frozen `CaspianWarehouse.exe --smoke-test` OK, Inno Setup
+  installer built (`dist\installer\CaspianWarehouse-Setup-1.0.0.exe`, 65 MB, app-only; not published).
+  Frozen `caspian-mcp.exe --help` shows the new `--http/--port/--lan`; uvicorn and starlette are bundled.
+- The version is still 1.0.0: bump it in `pyproject.toml` when you release this branch.
