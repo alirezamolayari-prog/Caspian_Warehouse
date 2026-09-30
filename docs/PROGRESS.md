@@ -110,3 +110,20 @@ Plan: Phase 1 (baseline + bug-class audit) → units U1–U13 (P0 → P1 → P2)
   `users.username_taken`; the new-user form warns as soon as the name is typed.
 - Last-admin guards already existed (`set_active`, `change_role`); added a test for deactivation by another manager.
 - Tests: `test_auth.py` (rename, duplicate first, last admin), `test_ui_shell.py` (menu, profile, rename, early check).
+
+### U8 — AI providers (#16)
+- Checked against official docs on 2026-09-30: Gemini `https://generativelanguage.googleapis.com/v1beta/openai`
+  (`gemini-3.8-flash`), OpenRouter `https://openrouter.ai/api/v1` (`openrouter/free` = free-model router; optional
+  `HTTP-Referer` / `X-Title` sent), Cerebras `https://api.cerebras.ai/v1` (`gpt-oss-120b`), Mistral
+  `https://api.mistral.ai/v1` (`mistral-small-latest`); Groq `llama-3.3-70b-versatile` + `whisper-large-v3` still
+  production. **GitHub Models was not added: GitHub retired it on 2026-07-30** (catalog + inference API gone).
+- New `ProviderKind`s GEMINI, OPENROUTER, CEREBRAS, MISTRAL, CUSTOM («سفارشی (سازگار با OpenAI)», key optional); no
+  DDL needed (non-native enum, VARCHAR(20)); free-tier presets listed first.
+- 401 → «کلید API نامعتبر است (401)», 403 → «دسترسی از منطقه شما مسدود است؛ VPN…», 404 → address/model; the test
+  connection shows the server's own message with the key masked.
+- «دریافت لیست مدل‌ها» (`Gateway.list_models`, GET /models) fills a searchable, still free-typed model field;
+  OpenRouter «فقط رایگان» filter (`:free`, zero pricing, `openrouter/free`). Empty AI tab explains how to start.
+- "List was empty at test time": no code defect found; the log shows no save attempt. Every preset now has a
+  save → list regression test.
+- Tests: `test_ai_gateway.py` (401 vs 403 + server text + key masked, presets, save/list all kinds, OpenRouter headers,
+  model list + free flag, list errors, dialog fetch + filter + save).

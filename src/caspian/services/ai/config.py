@@ -23,8 +23,19 @@ class Preset:
     stt_model: str = ""
 
 
+# Base URLs and default models checked against each provider's documentation on 2026-09-30.
+# GitHub Models was requested too, but GitHub retired it on 2026-07-30 (no API left to call).
 PRESETS: dict[ProviderKind, Preset] = {
-    ProviderKind.OPENAI: Preset("سازگار با OpenAI", "https://api.openai.com/v1", "gpt-4o-mini", True,
+    ProviderKind.GEMINI: Preset("Google Gemini (سطح رایگان)",
+                                "https://generativelanguage.googleapis.com/v1beta/openai",
+                                "gemini-3.8-flash", True),
+    ProviderKind.OPENROUTER: Preset("OpenRouter (مدل‌های رایگان :free)", "https://openrouter.ai/api/v1",
+                                    "openrouter/free", True),
+    ProviderKind.CEREBRAS: Preset("Cerebras (سطح رایگان)", "https://api.cerebras.ai/v1", "gpt-oss-120b",
+                                  True),
+    ProviderKind.MISTRAL: Preset("Mistral (سطح رایگان محدود)", "https://api.mistral.ai/v1",
+                                 "mistral-small-latest", True),
+    ProviderKind.OPENAI: Preset("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini", True,
                                 "whisper-1"),
     ProviderKind.GROQ: Preset("Groq", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile",
                               True, "whisper-large-v3"),
@@ -32,6 +43,7 @@ PRESETS: dict[ProviderKind, Preset] = {
                                      "meta-llama/Llama-3.1-8B-Instruct", True),
     ProviderKind.OLLAMA: Preset("مدل محلی (Ollama / GGUF)", "http://localhost:11434/v1",
                                 "qwen2.5:7b", False),
+    ProviderKind.CUSTOM: Preset("سفارشی (سازگار با OpenAI)", "", "", False),
 }
 
 

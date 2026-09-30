@@ -447,6 +447,11 @@ class ProviderKind(enum.StrEnum):
     GROQ = "GROQ"
     HUGGINGFACE = "HUGGINGFACE"
     OLLAMA = "OLLAMA"  # local models (GGUF via Ollama / llama.cpp server)
+    GEMINI = "GEMINI"
+    OPENROUTER = "OPENROUTER"
+    CEREBRAS = "CEREBRAS"
+    MISTRAL = "MISTRAL"
+    CUSTOM = "CUSTOM"  # any other OpenAI-compatible server (key optional)
 
 
 class AIProvider(IdMixin, TimestampMixin, CreatedByMixin, Base):

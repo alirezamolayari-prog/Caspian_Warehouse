@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 import httpx
 
 from caspian.db.database import Database
+from caspian.db.models import ProviderKind
 from caspian.services.ai.config import ProviderConfig, get_key, list_providers
 from caspian.services.errors import ServiceError
 
@@ -42,7 +43,15 @@ class ChatResult:
 @dataclass
 class Attempt:
     provider: str
-    outcome: str  # ok | rate_limited | timeout | unreachable | server_error | auth_error | error
+    # ok | rate_limited | timeout | unreachable | server_error | auth_error (401) | forbidden (403) | error
+    outcome: str
+    detail: str = ""  # the server's explanation, key removed
+
+
+@dataclass(frozen=True)
+class ModelInfo:
+    id: str
+    free: bool
 
 
 @dataclass
@@ -95,13 +104,44 @@ class Gateway:
     # ----- chat -----
 
     def _client(self, provider: ProviderConfig, timeout: float | None = None) -> httpx.AsyncClient:
+        return self._http(provider.kind, provider.base_url, get_key(provider.id),
+                          timeout or provider.timeout_seconds)
+
+    def _http(self, kind: ProviderKind, base_url: str, key: str | None,
+              timeout: float) -> httpx.AsyncClient:
         headers = {"Content-Type": "application/json"}
-        key = get_key(provider.id)
         if key:
             headers["Authorization"] = f"Bearer {key}"
-        return httpx.AsyncClient(base_url=provider.base_url, headers=headers,
-                                 timeout=timeout or provider.timeout_seconds,
+        if kind == ProviderKind.OPENROUTER:  # optional attribution, see openrouter.ai/docs
+            headers["HTTP-Referer"] = APP_URL
+            headers["X-Title"] = "Caspian Warehouse"
+        return httpx.AsyncClient(base_url=base_url, headers=headers, timeout=timeout,
                                  transport=self._transport)
+
+    async def list_models(self, kind: ProviderKind, base_url: str, key: str | None) -> list[ModelInfo]:
+        """GET {base_url}/models for the settings dialog; free models are flagged (OpenRouter)."""
+        try:
+            async with self._http(kind, base_url.strip().rstrip("/"), key, 20) as client:
+                response = await client.get("/models")
+        except httpx.HTTPError as exc:
+            raise AIUnavailable(f"دریافت فهرست مدل‌ها ممکن نشد: {_OUTCOME_TEXT['unreachable']}") from exc
+        if response.status_code != 200:
+            outcome = _status_outcome(response.status_code)
+            raise AIUnavailable(_explain(outcome, _server_detail(response, key)))
+        try:
+            rows = response.json().get("data") or response.json().get("models") or []
+        except (ValueError, AttributeError):
+            rows = []
+        models = {}
+        for row in rows:
+            model_id = str(row.get("id") or row.get("name") or "").removeprefix("models/")
+            if model_id:
+                pricing = row.get("pricing") or {}
+                free = model_id.endswith(":free") or model_id == "openrouter/free" or (
+                    bool(pricing) and all(str(pricing.get(k, "1")) in ("0", "0.0")
+                                          for k in ("prompt", "completion")))
+                models[model_id] = ModelInfo(model_id, free)
+        return sorted(models.values(), key=lambda m: m.id)
 
     async def chat(self, messages: list[dict], tools: list[dict] | None = None,
                    temperature: float = 0.2, max_tokens: int = 1500,
@@ -153,7 +193,8 @@ class Gateway:
         elapsed = self._clock() - started
         if isinstance(outcome, dict):
             return True, "اتصال برقرار است.", elapsed
-        return False, _OUTCOME_TEXT.get(outcome, "خطا"), elapsed
+        detail = self.last_attempts[-1].detail if self.last_attempts else ""
+        return False, _explain(outcome, detail), elapsed
 
     async def _try(self, provider: ProviderConfig, path: str, json_headers: bool = True,
                    record_cooldown: bool = True, **kwargs) -> dict | str:
@@ -183,14 +224,14 @@ class Gateway:
                 if record_cooldown:
                     wait = _retry_after(response) or DEFAULT_COOLDOWN
                     self._state.cooldown_until[provider.id] = self._clock() + wait
-            elif response.status_code in (401, 403):
-                outcome = "auth_error"
-            elif response.status_code >= 500:
-                outcome = "server_error"
             else:
-                outcome = "error"
+                outcome = _status_outcome(response.status_code)
+                detail = _server_detail(response, get_key(provider.id))
                 log.warning("AI provider %s returned %s: %s", provider.name,
-                            response.status_code, response.text[:300])
+                            response.status_code, detail)
+                self.last_attempts.append(Attempt(provider.name, outcome, detail))
+                log.info("AI provider %s -> %s; trying next", provider.name, outcome)
+                return outcome
         self.last_attempts.append(Attempt(provider.name, outcome))
         log.info("AI provider %s -> %s; trying next", provider.name, outcome)
         return outcome
@@ -211,9 +252,44 @@ _OUTCOME_TEXT = {
     "timeout": "زمان انتظار به پایان رسید.",
     "unreachable": "سرور در دسترس نیست.",
     "server_error": "خطای سرور سرویس‌دهنده.",
-    "auth_error": "کلید API نامعتبر است یا دسترسی ندارد.",
+    "auth_error": "کلید API نامعتبر است (401). کلید را دوباره از سایت سرویس کپی کنید.",
+    "forbidden": "دسترسی رد شد (403): معمولاً یعنی دسترسی از منطقه شما مسدود است؛ VPN را روشن کنید. "
+                 "ممکن است کلید هم مجوز این مدل را نداشته باشد.",
+    "not_found": "آدرس یا نام مدل پیدا نشد (404). آدرس API و نام مدل را بررسی کنید.",
     "error": "پاسخ نامعتبر از سرویس.",
 }
+APP_URL = "https://github.com/alirezamolayari-prog/Caspian_Warehouse"
+
+
+def _status_outcome(status: int) -> str:
+    if status == 401:
+        return "auth_error"
+    if status == 403:
+        return "forbidden"
+    if status == 404:
+        return "not_found"
+    if status == 429:
+        return "rate_limited"
+    return "server_error" if status >= 500 else "error"
+
+
+def _server_detail(response: httpx.Response, key: str | None) -> str:
+    """The server's own explanation (JSON error message or text), never including the key."""
+    try:
+        data = response.json()
+        error = data.get("error", data) if isinstance(data, dict) else data
+        text = error.get("message") if isinstance(error, dict) else str(error)
+    except ValueError:
+        text = response.text
+    text = " ".join(str(text or "").split())[:300]
+    if key:
+        text = text.replace(key, "***")
+    return text
+
+
+def _explain(outcome: str, detail: str) -> str:
+    text = _OUTCOME_TEXT.get(outcome, "خطا")
+    return f"{text}\nپاسخ سرور: {detail}" if detail else text
 
 
 def _retry_after(response: httpx.Response) -> float | None:

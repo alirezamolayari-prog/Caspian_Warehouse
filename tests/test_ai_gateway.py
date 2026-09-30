@@ -200,3 +200,119 @@ async def test_settings_ai_tab(qtbot, themes, db, admin, keys):
     await page.ai.refresh()
     assert page.ai.table.rowCount() == 1
     assert "اینترنت: قطع" in page.ai.status.text()
+
+
+# ----- #16: clearer errors, new presets, model lists -----
+
+
+async def _one(db, admin, kind=ProviderKind.GEMINI, key="sk-SECRET-123"):
+    preset = config.PRESETS[kind]
+    pid = await config.save_provider(db, admin, preset.label, kind, preset.base_url or "https://x.example/v1",
+                                     preset.model or "m", api_key=key)
+    return next(p for p in await config.list_providers(db) if p.id == pid)
+
+
+@pytest.mark.parametrize(("status", "expected"), [(401, "کلید API نامعتبر"), (403, "VPN")])
+async def test_401_and_403_are_reported_separately_with_server_text(db, admin, keys, status, expected):
+    """Iranian IPs get 403 (region blocked) from Groq/Gemini/OpenAI: that is not a bad key (#16)."""
+    provider = await _one(db, admin)
+
+    def handler(request):
+        return httpx.Response(status, json={"error": {"message": "User location is not supported "
+                                                                  "(key sk-SECRET-123)"}})
+
+    gw = Gateway(db, httpx.MockTransport(handler), online_check=lambda: True)
+    ok, message, _ = await gw.test_provider(provider)
+    assert not ok and expected in message
+    assert "User location is not supported" in message  # the server's own explanation
+    assert "sk-SECRET-123" not in message  # never echo the key
+    other = "VPN" if status == 401 else "کلید API نامعتبر"
+    assert other not in message
+
+
+def test_presets_cover_the_requested_free_providers():
+    kinds = {k.value for k in config.PRESETS}
+    assert {"GEMINI", "OPENROUTER", "CEREBRAS", "MISTRAL", "CUSTOM"} <= kinds
+    assert config.PRESETS[ProviderKind.GEMINI].base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
+    assert config.PRESETS[ProviderKind.OPENROUTER].base_url == "https://openrouter.ai/api/v1"
+    assert config.PRESETS[ProviderKind.CEREBRAS].base_url == "https://api.cerebras.ai/v1"
+    assert config.PRESETS[ProviderKind.MISTRAL].base_url == "https://api.mistral.ai/v1"
+    assert all(len(k.value) <= 20 for k in ProviderKind)  # VARCHAR(20) column
+    assert not config.PRESETS[ProviderKind.CUSTOM].needs_key  # key optional for self-hosted servers
+
+
+async def test_every_preset_can_be_saved_and_listed(db, admin, keys):
+    """The provider list must not come back empty after saving (reported in QA)."""
+    for kind in config.PRESETS:
+        await _one(db, admin, kind)
+    assert {p.kind for p in await config.list_providers(db)} == set(config.PRESETS)
+
+
+async def test_openrouter_sends_attribution_headers(db, admin, keys):
+    provider = await _one(db, admin, ProviderKind.OPENROUTER)
+    seen = {}
+
+    def handler(request):
+        seen.update(request.headers)
+        return _answer()
+
+    gw = Gateway(db, httpx.MockTransport(handler), online_check=lambda: True)
+    assert (await gw.test_provider(provider))[0]
+    assert seen["x-title"] == "Caspian Warehouse" and seen["http-referer"].startswith("https://")
+
+
+async def test_list_models_and_free_filter(db, admin, keys):
+    def handler(request):
+        assert request.url.path.endswith("/models")
+        assert request.headers["authorization"] == "Bearer typed-key"
+        return httpx.Response(200, json={"data": [
+            {"id": "openrouter/free", "pricing": {"prompt": "0", "completion": "0"}},
+            {"id": "meta-llama/llama-3.3-70b-instruct:free"},
+            {"id": "openai/gpt-5", "pricing": {"prompt": "0.000002", "completion": "0.00001"}},
+            {"id": "models/gemini-3.8-flash"},
+        ]})
+
+    gw = Gateway(db, httpx.MockTransport(handler), online_check=lambda: True)
+    models = await gw.list_models(ProviderKind.OPENROUTER, "https://openrouter.ai/api/v1", "typed-key")
+    assert [(m.id, m.free) for m in models] == [
+        ("gemini-3.8-flash", False), ("meta-llama/llama-3.3-70b-instruct:free", True),
+        ("openai/gpt-5", False), ("openrouter/free", True)]
+
+
+async def test_list_models_errors_are_explained(db, admin, keys):
+    gw = Gateway(db, httpx.MockTransport(lambda r: httpx.Response(403, text="blocked")),
+                 online_check=lambda: True)
+    with pytest.raises(AIUnavailable, match="VPN"):
+        await gw.list_models(ProviderKind.GROQ, "https://api.groq.com/openai/v1", "k")
+
+
+async def test_provider_dialog_fetches_models_with_free_filter(qtbot, themes, db, admin, keys):
+    from caspian.core.settings import Settings
+    from caspian.db.database import DbConfig
+    from caspian.ui.app_context import AppContext
+    from caspian.ui.settings_page import ProviderDialog
+    from helpers import wait_until
+
+    def handler(request):
+        return httpx.Response(200, json={"data": [{"id": "openrouter/free"}, {"id": "x/paid"},
+                                                  {"id": "y/model:free"}]})
+
+    ctx = AppContext(db, DbConfig(), Settings(), themes, admin)
+    ctx.ai = Gateway(db, httpx.MockTransport(handler), online_check=lambda: True)
+    dlg = ProviderDialog(ctx)
+    qtbot.addWidget(dlg)
+    assert dlg.kind.currentData() == ProviderKind.GEMINI  # free-tier providers first
+    dlg.kind.setCurrentIndex(dlg.kind.findData(ProviderKind.OPENROUTER))
+    assert dlg.model.currentText() == "openrouter/free" and not dlg.free_only.isHidden()
+    dlg.key.setText("sk-or")
+    await dlg.on_fetch_models()
+    assert await wait_until(lambda: dlg.model.count() == 2)  # only the free ones
+    dlg.free_only.setChecked(False)
+    assert dlg.model.count() == 3
+    dlg.model.setEditText("y/model:free")
+    dlg.submit_button.click()
+    from helpers import settle
+
+    await settle(dlg)
+    [provider] = await config.list_providers(db)
+    assert provider.kind is ProviderKind.OPENROUTER and provider.model == "y/model:free"
