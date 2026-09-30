@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 from qasync import asyncSlot
 
 from caspian.core import jalali
-from caspian.core.numbers import format_qty
+from caspian.core.numbers import format_qty, parse_decimal
 from caspian.core.permissions import Perm
 from caspian.core.text import to_ascii_digits, to_persian_digits
 from caspian.db.models import BatchStatus, DocType, ImportKind, ImportSource, LineStatus, Resolution
@@ -279,6 +279,95 @@ class TextImportDialog(FormDialog):
             DocType(self.target.doc_type.currentData()), self.target.warehouse.currentData())
 
 
+class ManualImportDialog(FormDialog):
+    """Type items into an empty grid; the rows go through the same review as a file (#13)."""
+
+    COLUMNS = ("کد", "نام کالا", "بارکد", "مقدار", "واحد", "فی")
+
+    def __init__(self, ctx: AppContext, warehouses, persons, parent=None, new_receipt=None) -> None:
+        super().__init__("ورود دستی",
+                         "کالاها را در جدول بنویسید (نام یا کد یا بارکد، و مقدار). مثل ورود از فایل، "
+                         "پیش از اعمال، ردیف‌ها با کالاهای موجود تطبیق داده می‌شوند.",
+                         submit_text="ساخت پیش‌نویس و بررسی", parent=parent)
+        self.setMinimumSize(760, 560)
+        self._ctx = ctx
+        self.batch_id: int | None = None
+        self.open_receipt = False
+        self.target = _TargetFields(self, warehouses, persons)
+        self.grid = QTableWidget(8, len(self.COLUMNS))
+        self.grid.setHorizontalHeaderLabels(self.COLUMNS)
+        self.grid.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.grid.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.body.addWidget(self.grid, 1)
+        tools = QHBoxLayout()
+        add_rows = QPushButton("+ ردیف")
+        add_rows.clicked.connect(lambda: self.grid.setRowCount(self.grid.rowCount() + 5))
+        tools.addWidget(add_rows)
+        tools.addStretch(1)
+        if new_receipt is not None:
+            direct = QPushButton("یا ثبت مستقیم «رسید ورود» در اسناد انبار…")
+            direct.setProperty("variant", "link")
+            direct.clicked.connect(self._go_to_receipt)
+            tools.addWidget(direct)
+        self.body.addLayout(tools)
+        self._inputs += [self.grid, add_rows]
+
+    def _go_to_receipt(self) -> None:
+        self.open_receipt = True
+        self.reject()
+
+    def rows(self) -> list[RawRow]:
+        rows = []
+        for r in range(self.grid.rowCount()):
+            cells = [(self.grid.item(r, c).text().strip() if self.grid.item(r, c) else "")
+                     for c in range(len(self.COLUMNS))]
+            code, name, barcode, qty_text, unit, price_text = cells
+            if not (code or name or barcode):
+                continue
+            qty = price = None
+            error = ""
+            for text, label in ((qty_text, "مقدار"), (price_text, "فی")):
+                try:
+                    value = parse_decimal(text)
+                except ValueError:
+                    error = error or f"«{text}» در ستون {label} عدد نیست."
+                    continue
+                if label == "مقدار":
+                    qty = value
+                else:
+                    price = value
+            rows.append(RawRow(code=code, name=name, barcode=barcode, qty=qty, unit_name=unit,
+                               unit_price=price, error=error,
+                               raw=dict(zip(self.COLUMNS, cells, strict=True))))
+        return rows
+
+    async def submit(self) -> None:
+        rows = self.rows()
+        if not rows:
+            raise ValidationError("حداقل یک ردیف را پر کنید.")
+        self.batch_id = await imports.create_batch(
+            self._ctx.db, self._ctx.actor, ImportKind.STOCK, ImportSource.MANUAL, rows,
+            f"ورود دستی {jalali.format_date(dt.date.today())}",
+            self.target.doc_type.currentData(), self.target.warehouse.currentData(),
+            self.target.person.currentData())
+
+
+class VariantDialog(FormDialog):
+    """«نسخه جدید از همین کالا»: a new item whose name starts from the similar one (#14)."""
+
+    def __init__(self, ctx: AppContext, line: LineRow, similar_name: str, parent=None) -> None:
+        super().__init__("نسخه جدید از همین کالا",
+                         f"کالای جدیدی شبیه «{similar_name}» ساخته می‌شود. برند، اندازه یا مدل را به نام "
+                         "اضافه کنید.", submit_text="ثبت", parent=parent)
+        self._ctx, self._line = ctx, line
+        self.name = self.add_row("نام کالای جدید:", QLineEdit(imports.variant_name(similar_name)))
+        self.name.setFocus()
+        self.name.end(False)
+
+    async def submit(self) -> None:
+        await imports.create_variant(self._ctx.db, self._ctx.actor, self._line.id, self.name.text())
+
+
 # ----- review -----
 
 
@@ -309,6 +398,7 @@ class EditLineDialog(FormDialog):
             category_name=self.category.text(), reorder_point=self.reorder.value())
 
 
+VARIANT = "variant"  # action-combo entry: new item named after a similar one
 REVIEW_COLUMNS = ("ردیف", "وضعیت", "کد", "نام", "بارکد", "مقدار", "واحد", "توضیح / کالای منطبق", "اقدام")
 
 
@@ -361,26 +451,36 @@ class ReviewDialog(FormDialog):
         self.table.setRowCount(len(self.detail.lines))
         for r, ln in enumerate(self.detail.lines):
             info = ln.message or (f"← {ln.match_name}" if ln.match_name else "")
-            values = (to_persian_digits(ln.row_no), STATUS_NAMES[ln.status], ln.code, ln.name,
+            code = ln.code or ln.match_code  # files often have no code; show the matched item's
+            values = (to_persian_digits(ln.row_no), STATUS_NAMES[ln.status], code, ln.name,
                       ln.barcode, format_qty(ln.qty), ln.unit_name, info)
             for c, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 item.setToolTip(value)
                 if c == 1:
                     item.setForeground(QColor(colors[ln.status]))
+                if c == 2 and not ln.code and ln.match_code:
+                    item.setForeground(QColor(self._ctx.themes.current.text_muted))
+                    item.setToolTip(f"کد کالای منطبق: {ln.match_code}")
                 self.table.setItem(r, c, item)
             self.table.setCellWidget(r, 8, self._action_combo(ln, editable))
 
     def _action_combo(self, ln: LineRow, editable: bool) -> QComboBox:
         combo = QComboBox()
         combo.addItem("— تصمیم بگیرید —", None)
+        similar = ln.candidates or ([(ln.match_item_id, ln.match_name, 100)] if ln.match_item_id else [])
         for res in ln.allowed:
-            if res in (Resolution.MATCH, Resolution.OVERWRITE) and ln.candidates:
-                for item_id, name, score in ln.candidates:
-                    verb = "استفاده از" if res == Resolution.MATCH else "بازنویسی"
+            if res in (Resolution.MATCH, Resolution.OVERWRITE) and similar:
+                for item_id, name, score in similar:
+                    verb = "همان کالا" if res == Resolution.MATCH else "بازنویسی"
                     combo.addItem(f"{verb}: {name} ({to_persian_digits(score)}٪)", (res, item_id))
+            elif res == Resolution.CREATE:
+                combo.addItem("کالای جدید" + (f": {ln.name}" if ln.name else ""), (res, ln.match_item_id))
             else:
                 combo.addItem(RESOLUTION_NAMES[res], (res, ln.match_item_id))
+        if Resolution.CREATE in ln.allowed or (ln.status != LineStatus.ERROR and similar):
+            for item_id, name, _score in similar[:3]:
+                combo.addItem(f"نسخه جدید از: {name} (برند/سایز دیگر)", (VARIANT, item_id))
         current = (ln.resolution, ln.match_item_id) if ln.resolution else None
         for i in range(combo.count()):
             data = combo.itemData(i)
@@ -398,6 +498,11 @@ class ReviewDialog(FormDialog):
         if data is None:
             return
         res, item_id = data
+        if res == VARIANT:
+            similar = dict((i, n) for i, n, _s in line.candidates) or {line.match_item_id: line.match_name}
+            await exec_dialog(VariantDialog(self._ctx, line, similar.get(item_id, line.name), self))
+            await self.reload()
+            return
         try:
             await imports.set_resolution(self._ctx.db, self._ctx.actor, line.id, res, item_id)
         except ServiceError as exc:
@@ -440,10 +545,12 @@ BATCH_COLUMNS = ("عنوان", "نوع", "منبع", "تاریخ", "ردیف‌�
 
 
 class ImportsPage(QWidget):
-    def __init__(self, ctx: AppContext, parent: QWidget | None = None, open_document=None) -> None:
+    def __init__(self, ctx: AppContext, parent: QWidget | None = None, open_document=None,
+                 new_document=None) -> None:
         super().__init__(parent)
         self._ctx = ctx
         self._open_document = open_document  # async (doc_id) -> None, from the main window
+        self._new_document = new_document  # async (DocType) -> None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
@@ -464,11 +571,13 @@ class ImportsPage(QWidget):
         self.scan_button.clicked.connect(self.on_scan)
         self.text_button = QPushButton("از متن…")
         self.text_button.clicked.connect(self.on_text)
+        self.manual_button = QPushButton("ورود دستی…")
+        self.manual_button.clicked.connect(self.on_manual)
         self.file_button = QPushButton("ورود از فایل…")
         self.file_button.setProperty("variant", "primary")
         self.file_button.clicked.connect(self.on_file)
-        for b in (self.review_button, self.discard_button, self.text_button, self.scan_button,
-                  self.file_button):
+        for b in (self.review_button, self.discard_button, self.manual_button, self.text_button,
+                  self.scan_button, self.file_button):
             toolbar.addWidget(b)
         layout.addLayout(toolbar)
 
@@ -550,6 +659,15 @@ class ImportsPage(QWidget):
         dialog = FileImportDialog(self._ctx, *await self._targets(), self)
         if await exec_dialog(dialog) and dialog.batch_id:
             await self.open_review(dialog.batch_id)
+
+    @asyncSlot()
+    async def on_manual(self) -> None:
+        dialog = ManualImportDialog(self._ctx, *await self._targets(), self,
+                                    new_receipt=self._new_document)
+        if await exec_dialog(dialog) and dialog.batch_id:
+            await self.open_review(dialog.batch_id)
+        elif dialog.open_receipt and self._new_document is not None:
+            await self._new_document(DocType.RECEIPT)
 
     @asyncSlot()
     async def on_scan(self) -> None:

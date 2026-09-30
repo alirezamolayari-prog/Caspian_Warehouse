@@ -309,6 +309,7 @@ class ImportSource(enum.StrEnum):
     WORD = "WORD"
     SCAN = "SCAN"
     TEXT = "TEXT"  # typed text parsed by the AI assistant
+    MANUAL = "MANUAL"  # rows typed into the manual-entry grid
 
 
 class BatchStatus(enum.StrEnum):

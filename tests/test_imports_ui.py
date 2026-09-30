@@ -77,8 +77,9 @@ async def test_review_resolve_and_apply(qtbot, env):
     assert "نیازمند تصمیم: ۱" in dlg.summary.text()
     combo = dlg.table.cellWidget(1, 8)
     labels = [combo.itemText(i) for i in range(combo.count())]
-    assert any(t.startswith("استفاده از: دریل بوش") for t in labels)
-    combo.setCurrentIndex(next(i for i, t in enumerate(labels) if t.startswith("استفاده از")))
+    assert any(t.startswith("همان کالا: دریل بوش") for t in labels)
+    assert any(t.startswith("نسخه جدید از: دریل بوش") for t in labels)
+    combo.setCurrentIndex(next(i for i, t in enumerate(labels) if t.startswith("همان کالا")))
     await wait_until(lambda: "نیازمند تصمیم: ۰" in dlg.summary.text())
     assert "نیازمند تصمیم: ۰" in dlg.summary.text(), dlg.status.text()
     dlg.submit_button.click()
@@ -140,3 +141,51 @@ async def test_after_apply_offers_post_or_open(qtbot, env, monkeypatch, choice):
     status = (await docs.get_document(ctx.db, ctx.actor, doc_id)).status
     assert status is (DocStatus.POSTED if choice == "post" else DocStatus.DRAFT)
     assert opened == ([doc_id] if choice == "open" else [])
+
+
+async def test_manual_entry_grid_to_review(qtbot, env):
+    """«ورود دستی»: an editable grid feeding the normal review (#13)."""
+    from PySide6.QtWidgets import QTableWidgetItem
+
+    from caspian.ui.imports_page import ManualImportDialog
+
+    ctx, warehouses, persons = env
+    dlg = ManualImportDialog(ctx, warehouses, persons)
+    qtbot.addWidget(dlg)
+    for r, values in enumerate([("1001", "", "", "۲", "", ""), ("", "میز تحریر", "", "1", "عدد", "x")]):
+        for c, v in enumerate(values):
+            dlg.grid.setItem(r, c, QTableWidgetItem(v))
+    rows = dlg.rows()
+    assert [(r.code, r.name, r.qty) for r in rows] == [
+        ("1001", "", Decimal(2)), ("", "میز تحریر", Decimal(1))]
+    assert "فی" in rows[1].error
+    dlg.submit_button.click()
+    await settle(dlg)
+    detail = await imports.get_batch(ctx.db, ctx.actor, dlg.batch_id)
+    assert detail.row.source is ImportSource.MANUAL and len(detail.lines) == 2
+
+
+async def test_review_shows_matched_code_and_variant_flow(qtbot, env, monkeypatch):
+    from caspian.services.import_files import RawRow
+    from caspian.ui import imports_page
+
+    ctx, warehouses, _ = env
+    batch = await imports.create_batch(
+        ctx.db, ctx.actor, imports.ImportKind.STOCK, ImportSource.EXCEL,
+        [RawRow(name="دریل بوش", qty=Decimal(1))], "فاکتور", DocType.RECEIPT, warehouses[0].id)
+    dlg = ReviewDialog(ctx, batch)
+    qtbot.addWidget(dlg)
+    await dlg.reload()
+    assert dlg.table.item(0, 2).text() == "1001"  # matched item's code, not an empty cell
+
+    async def fake_exec(dialog):
+        dialog.name.setText("دریل بوش - مدل جدید")
+        await dialog.submit()
+        return 1
+
+    monkeypatch.setattr(imports_page, "exec_dialog", fake_exec)
+    combo = dlg.table.cellWidget(0, 8)
+    combo.setCurrentIndex(next(i for i in range(combo.count())
+                               if combo.itemText(i).startswith("نسخه جدید از")))
+    assert await wait_until(lambda: dlg.detail.lines[0].resolution == Resolution.CREATE)
+    assert dlg.detail.lines[0].name == "دریل بوش - مدل جدید"

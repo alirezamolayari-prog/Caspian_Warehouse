@@ -62,6 +62,7 @@ KIND_NAMES = {ImportKind.ITEMS: "تعریف کالا", ImportKind.STOCK: "اقل
 SOURCE_NAMES = {
     ImportSource.EXCEL: "اکسل", ImportSource.CSV: "CSV", ImportSource.WORD: "Word",
     ImportSource.SCAN: "اسکن بارکد", ImportSource.TEXT: "متن (دستیار)",
+    ImportSource.MANUAL: "ورود دستی",
 }
 
 
@@ -162,12 +163,13 @@ def evaluate(index: ItemIndex, kind: ImportKind, line: ImportLine,
         if found:
             best_id, best = found[0]
             second = found[1][1] if len(found) > 1 else 0
+            alternatives = [[i, sc] for i, sc in found]
             if best >= 99 and kind == ImportKind.STOCK:
-                return Evaluation(LineStatus.EXISTING_MATCH, "", best_id, best)
+                return Evaluation(LineStatus.EXISTING_MATCH, "", best_id, best, alternatives)
             if kind == ImportKind.STOCK and best >= AUTO_MATCH and best - second >= 6:
                 return Evaluation(LineStatus.EXISTING_MATCH,
                                   f"تطبیق تقریبی با «{index.display[best_id]}» — بررسی کنید.",
-                                  best_id, best)
+                                  best_id, best, alternatives)
             what = "احتمالاً همان" if kind == ImportKind.ITEMS else "شبیه"
             return Evaluation(LineStatus.CONFLICT,
                               f"{what} «{index.display[best_id]}» است؟ کالای موجود را انتخاب "
@@ -252,6 +254,7 @@ class LineRow:
     candidates: list[tuple[int, str, int]]  # (item_id, name, score)
     resolution: Resolution | None
     allowed: list[Resolution]
+    match_code: str = ""  # code of the matched item (the file often has none)
 
 
 @dataclass(frozen=True)
@@ -308,8 +311,10 @@ async def get_batch(db: Database, actor: Actor, batch_id: int) -> BatchDetail:
         ids = {ln.match_item_id for ln in batch.lines if ln.match_item_id}
         for ln in batch.lines:
             ids.update(c[0] for c in ln.candidates or [])
-        names = dict((await s.execute(select(Item.id, Item.name).where(Item.id.in_(ids)))).all()) \
-            if ids else {}
+        found = (await s.execute(select(Item.id, Item.name, Item.code).where(Item.id.in_(ids)))).all() \
+            if ids else []
+        names = {i: n for i, n, _c in found}
+        codes = {i: c for i, _n, c in found}
         lines = [
             LineRow(
                 ln.id, ln.row_no, ln.status, ln.code, ln.name, ln.barcode, ln.qty, ln.unit_name,
@@ -317,6 +322,7 @@ async def get_batch(db: Database, actor: Actor, batch_id: int) -> BatchDetail:
                 names.get(ln.match_item_id, "") if ln.match_item_id else "",
                 [(c[0], names.get(c[0], "?"), c[1]) for c in ln.candidates or []],
                 ln.resolution, allowed_resolutions(batch.kind, ln),
+                codes.get(ln.match_item_id, "") if ln.match_item_id else "",
             )
             for ln in batch.lines
         ]
@@ -408,6 +414,31 @@ async def set_resolution(db: Database, actor: Actor, line_id: int, resolution: R
         if resolution not in allowed_resolutions(batch.kind, line):
             raise ValidationError("این اقدام برای این ردیف مجاز نیست.")
         line.resolution = resolution
+
+
+def variant_name(similar_name: str) -> str:
+    """Starting text for «نسخه جدید از همین کالا»: the similar item's name, ready for the brand
+    or size to be appended (e.g. «مایع ظرفشویی ۱ لیتری - ۲ لیتری برند X»)."""
+    return f"{similar_name} - "
+
+
+async def create_variant(db: Database, actor: Actor, line_id: int, name: str) -> None:
+    """Resolve a row as a NEW item (a variant of a similar one) under the name the user edited."""
+    actor.require(Perm.IMPORT_RUN)
+    name = " ".join(name.split())[:255]
+    if not name:
+        raise ValidationError("نام کالای جدید را بنویسید.")
+    async with db.session(actor.user_id) as s:
+        line = await s.get(ImportLine, line_id)
+        if line is None:
+            raise NotFound("ردیف پیدا نشد.")
+        batch = await _load(s, line.batch_id)
+        _require_open(batch)
+        line.name = name
+        await _evaluate_batch(s, batch)
+        if Resolution.CREATE not in allowed_resolutions(batch.kind, line):
+            raise ValidationError(line.message or "برای این ردیف نمی‌توان کالای جدید ساخت.")
+        line.resolution = Resolution.CREATE
 
 
 async def discard_batch(db: Database, actor: Actor, batch_id: int) -> None:

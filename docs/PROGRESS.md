@@ -89,3 +89,14 @@ Plan: Phase 1 (baseline + bug-class audit) → units U1–U13 (P0 → P1 → P2)
 - Item form (new items, users who may create documents): «موجودی اولیه» quantity / warehouse / price.
 - Tests: `test_items.py` (posted OPENING + balance + cardex row, draft without post right, no qty = no document,
   invalid qty rolls back the item too), `test_items_ui.py` (form → posted OPENING; edit form has no fields).
+
+### U6 — imports: manual entry + similar-item suggestions (#13, #14)
+- #13 «ورود دستی…»: editable grid (کد، نام، بارکد، مقدار، واحد، فی) → batch with source `MANUAL` → the same review;
+  link «ثبت مستقیم رسید ورود» opens a new receipt in «اسناد انبار». `ImportSource.MANUAL` needs no DDL
+  (non-native enum, VARCHAR(20)).
+- #14 review: choices «همان کالا: X (۹۵٪)» (top 3 with %), «کالای جدید: …», «نسخه جدید از: X (برند/سایز دیگر)»
+  → name prefilled «X - », editable (`imports.create_variant`, `variant_name`); approximate matches keep their
+  alternatives; the code column shows the matched item's code (muted) when the file had none.
+- Deferred (optional in the spec): structured `brand` / `size` fields on items (would need a migration).
+- Tests: `test_imports.py` (manual source, match code + alternatives, variant), `test_imports_ui.py` (grid,
+  matched code, variant flow; labels updated in the existing review test).
