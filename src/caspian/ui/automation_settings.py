@@ -1,8 +1,6 @@
 """Settings tabs for messaging (Telegram / email), scheduled tasks and MCP access."""
 
 import json
-import shutil
-import sys
 from pathlib import Path
 
 from PySide6.QtGui import QGuiApplication
@@ -23,14 +21,16 @@ from PySide6.QtWidgets import (
 from qasync import asyncSlot
 
 from caspian.core import jalali
+from caspian.core.permissions import Perm
 from caspian.core.text import to_persian_digits
 from caspian.db.database import describe_error
 from caspian.db.models import TaskKind, TaskStatus
 from caspian.db.readonly import create_readonly_user, readonly_password, readonly_username
-from caspian.services import messaging, scheduler
+from caspian.services import mcp_settings, messaging, scheduler
 from caspian.services.errors import ServiceError, ValidationError
 from caspian.services.messaging import EmailConfig, MessagingConfig, TelegramConfig
 from caspian.services.scheduler import KIND_NAMES, REPORT_NAMES, STATUS_NAMES, TaskRow
+from caspian.ui import mcp_runner
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.dialogs import FormDialog, ltr_field, password_field
 from caspian.ui.messages import show_error, show_info
@@ -373,10 +373,12 @@ class ReadOnlyUserDialog(FormDialog):
 
 
 class McpSection(Card):
+    """External AI tools (MCP): read-only by default; HTTP needs a token; drafts only if allowed."""
+
     def __init__(self, ctx: AppContext, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._ctx = ctx
-        self.body.addWidget(QLabel("دسترسی فقط‌خواندنی برای ابزارهای هوش مصنوعی بیرونی (MCP)",
+        self.body.addWidget(QLabel("اتصال ابزارها و ایجنت‌های هوش مصنوعی بیرونی (MCP)",
                                    objectName="CardTitle"))
         self.status = QLabel(objectName="Muted")
         self.status.setWordWrap(True)
@@ -386,19 +388,81 @@ class McpSection(Card):
         self.create_button.clicked.connect(self.on_create)
         self.copy_button = QPushButton("کپی تنظیمات MCP")
         self.copy_button.clicked.connect(self.on_copy)
-        row.addWidget(self.create_button)
-        row.addWidget(self.copy_button)
+        self.test_button = QPushButton("تست MCP")
+        self.test_button.clicked.connect(self.on_test)
+        for b in (self.create_button, self.copy_button, self.test_button):
+            row.addWidget(b)
         row.addStretch(1)
         self.body.addLayout(row)
+
+        # Streamable HTTP for agents on a server / another PC (n8n, web agents…).
+        http = QHBoxLayout()
+        http.addWidget(QLabel("HTTP — درگاه:"))
+        self.port = QSpinBox()
+        self.port.setRange(1024, 65535)
+        self.port.setValue(ctx.settings.mcp_http_port)
+        http.addWidget(self.port)
+        self.lan = QCheckBox("دسترسی از شبکه (LAN)")
+        self.lan.setChecked(ctx.settings.mcp_http_lan)
+        self.lan.setToolTip("خاموش: فقط برنامه‌های همین رایانه (127.0.0.1). روشن: همه رایانه‌های شبکه "
+                            "با داشتن توکن.")
+        http.addWidget(self.lan)
+        self.http_button = QPushButton("شروع")
+        self.http_button.clicked.connect(self.on_toggle_http)
+        http.addWidget(self.http_button)
+        self.http_state = QLabel(objectName="Muted")
+        http.addWidget(self.http_state, 1)
+        self.body.addLayout(http)
+        token_row = QHBoxLayout()
+        token_row.addWidget(QLabel("توکن:"))
+        self.token = ltr_field()
+        self.token.setReadOnly(True)
+        self.token.setEchoMode(QLineEdit.EchoMode.Password)
+        token_row.addWidget(self.token, 1)
+        self.show_token = QCheckBox("نمایش")
+        self.show_token.toggled.connect(lambda on: self.token.setEchoMode(
+            QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password))
+        token_row.addWidget(self.show_token)
+        self.copy_token = QPushButton("کپی توکن")
+        self.copy_token.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.token.text()))
+        self.new_token = QPushButton("توکن جدید")
+        self.new_token.clicked.connect(self.on_new_token)
+        token_row.addWidget(self.copy_token)
+        token_row.addWidget(self.new_token)
+        self.body.addLayout(token_row)
+
+        self.allow_drafts = QCheckBox("اجازه ساخت «پیش‌نویس» سند از MCP (ثبت نهایی همیشه فقط در برنامه)")
+        self.allow_drafts.setVisible(ctx.actor.can(Perm.SETTINGS_EDIT))
+        self.allow_drafts.toggled.connect(self.on_allow_drafts)
+        self.body.addWidget(self.allow_drafts)
+        self.token.setText(mcp_settings.http_token() or "")
         self.refresh()
 
     def refresh(self) -> None:
         if readonly_password(self._ctx.db_config):
-            self.status.setText(f"کاربر فقط‌خواندنی «{readonly_username(self._ctx.db_config)}» روی این رایانه "
-                                "تنظیم شده است؛ ابزار MCP علاوه بر ابزارهای آماده، پرس‌وجوی SELECT هم دارد.")
+            text = (f"کاربر فقط‌خواندنی «{readonly_username(self._ctx.db_config)}» روی این رایانه تنظیم "
+                    "شده است؛ ابزار MCP علاوه بر ابزارهای آماده، پرس‌وجوی SELECT هم دارد.")
         else:
-            self.status.setText("هنوز کاربر فقط‌خواندنی ساخته نشده؛ MCP با کاربر برنامه در حالت «فقط‌خواندنی» "
-                                "کار می‌کند و پرس‌وجوی آزاد SQL غیرفعال است.")
+            text = ("هنوز کاربر فقط‌خواندنی ساخته نشده؛ MCP با کاربر برنامه در حالت «فقط‌خواندنی» کار "
+                    "می‌کند و پرس‌وجوی آزاد SQL غیرفعال است.")
+        self.status.setText(text + " هر فراخوانی در Logs\\mcp-audit.log همین رایانه ثبت می‌شود.")
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.refresh_http()  # probes the port: only when the card is actually on screen
+
+    @asyncSlot()
+    async def refresh_http(self) -> None:
+        running = mcp_runner.SERVER.running or await mcp_runner.http_running(self.port.value())
+        address = mcp_runner.http_address(self.port.value(), self.lan.isChecked())
+        self.http_state.setText(f"در حال اجرا — {address}" if running else "متوقف")
+        self.http_button.setText("توقف" if mcp_runner.SERVER.running else "شروع")
+        for widget in (self.port, self.lan):
+            widget.setEnabled(not mcp_runner.SERVER.running)
+        if self.allow_drafts.isVisible() or self._ctx.actor.can(Perm.SETTINGS_EDIT):
+            self.allow_drafts.blockSignals(True)
+            self.allow_drafts.setChecked(await mcp_settings.allow_drafts(self._ctx.db))
+            self.allow_drafts.blockSignals(False)
 
     @asyncSlot()
     async def on_create(self) -> None:
@@ -407,8 +471,57 @@ class McpSection(Card):
             show_info(self, "کاربر فقط‌خواندنی ساخته شد.")
 
     def on_copy(self) -> None:
-        command = shutil.which("caspian-mcp") or str(Path(sys.executable).with_name("caspian-mcp.exe"))
-        snippet = json.dumps({"mcpServers": {"caspian-warehouse": {"command": command}}}, indent=2)
-        QGuiApplication.clipboard().setText(snippet)
-        show_info(self, "تنظیمات در حافظه کپی شد:\n" + snippet)
+        command = mcp_runner.mcp_command()
+        server = {"command": command[0], **({"args": command[1:]} if len(command) > 1 else {})}
+        snippet = json.dumps({"mcpServers": {"caspian-warehouse": server}}, indent=2, ensure_ascii=False)
+        claude = mcp_runner.claude_code_command(command)
+        http = ""
+        if self.token.text():
+            http = (f"\n\nاتصال HTTP: {mcp_runner.http_address(self.port.value(), self.lan.isChecked())}\n"
+                    "هدر: Authorization: Bearer <توکن>")
+        QGuiApplication.clipboard().setText(f"{snippet}\n\n{claude}")
+        show_info(self, "در حافظه کپی شد:\n" + snippet + "\n\nبرای Claude Code:\n" + claude + http)
+
+    @asyncSlot()
+    async def on_test(self) -> None:
+        self.test_button.setEnabled(False)
+        try:
+            tools = await mcp_runner.probe_stdio(mcp_runner.mcp_command())
+        except Exception as exc:  # the server process failed to start or to answer
+            show_error(self, f"سرور MCP پاسخ نداد: {str(exc)[:300] or type(exc).__name__}")
+            return
+        finally:
+            self.test_button.setEnabled(True)
+        show_info(self, f"MCP کار می‌کند؛ {to_persian_digits(len(tools))} ابزار: {'، '.join(tools)}")
+
+    def on_new_token(self) -> None:
+        self.token.setText(mcp_settings.new_http_token())
+        if mcp_runner.SERVER.running:
+            show_info(self, "توکن جدید پس از توقف و شروع دوباره سرور HTTP اعمال می‌شود.")
+
+    def on_toggle_http(self) -> None:
+        if mcp_runner.SERVER.running:
+            mcp_runner.SERVER.stop()
+        else:
+            if not self.token.text():
+                self.token.setText(mcp_settings.new_http_token())
+            self._ctx.settings.mcp_http_port = self.port.value()
+            self._ctx.settings.mcp_http_lan = self.lan.isChecked()
+            self._ctx.settings.save()
+            try:
+                mcp_runner.SERVER.start(self.port.value(), self.lan.isChecked())
+            except OSError as exc:
+                show_error(self, f"اجرای سرور MCP ممکن نشد: {exc}")
+        self.refresh_http()
+
+    @asyncSlot(bool)
+    async def on_allow_drafts(self, enabled: bool) -> None:
+        try:
+            await mcp_settings.set_allow_drafts(self._ctx.db, self._ctx.actor, enabled)
+        except ServiceError as exc:
+            show_error(self, exc.message)
+            self.refresh_http()
+            return
+        show_info(self, "تغییر از اجرای بعدی سرور MCP اعمال می‌شود.")
+
 

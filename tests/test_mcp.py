@@ -96,3 +96,99 @@ async def test_readonly_user_on_mariadb(monkeypatch):
                 await conn.execute(text("UPDATE items SET name = 'x'"))
     finally:
         await ro.dispose()
+
+
+# ----- #17: HTTP transport, audit, draft-only tools -----
+
+HTTP_HEADERS = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
+
+
+def _http_db(tmp_path):
+    import asyncio
+
+    from caspian.db.bootstrap import prepare
+    from caspian.db.database import Database
+
+    url = f"sqlite+aiosqlite:///{tmp_path / 'http.db'}"
+    setup = Database(url)
+    asyncio.run(prepare(setup))
+    asyncio.run(setup.dispose())
+    return Database(url)
+
+
+def _rpc(method, params=None, id_=1):
+    return {"jsonrpc": "2.0", "id": id_, "method": method, "params": params or {}}
+
+
+def test_http_requires_the_bearer_token(tmp_path, _isolated_logs):
+    from starlette.testclient import TestClient
+
+    from caspian.mcp_server import http_app
+
+    app = http_app(build_server(_http_db(tmp_path), allow_sql=False), "s3cret-token")
+    with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+        for auth in (None, "Bearer wrong", "s3cret-token", "Basic s3cret-token"):
+            headers = dict(HTTP_HEADERS, **({"authorization": auth} if auth else {}))
+            response = client.post("/mcp", json=_rpc("tools/list"), headers=headers)
+            assert response.status_code == 401, auth
+            assert response.headers["www-authenticate"] == "Bearer"
+        ok = dict(HTTP_HEADERS, authorization="Bearer s3cret-token")
+        tools = client.post("/mcp", json=_rpc("tools/list"), headers=ok).json()["result"]["tools"]
+        assert "search_items" in {t["name"] for t in tools}
+        call = client.post("/mcp", json=_rpc("tools/call", {"name": "open_loans", "arguments": {}}),
+                           headers=ok)
+        assert call.status_code == 200
+    audit = (_isolated_logs / "mcp-audit.log").read_text(encoding="utf-8")
+    assert audit.count("rejected") == 4
+    assert '"tool": "open_loans"' in audit and '"client": "http testclient"' in audit  # peer address
+
+
+def test_http_binds_to_localhost_unless_lan(tmp_path):
+    from caspian.mcp_server import BearerTokenMiddleware, bind_host, http_app
+
+    assert bind_host(False) == "127.0.0.1" and bind_host(True) == "0.0.0.0"
+    with pytest.raises(ValueError):
+        BearerTokenMiddleware(object(), "")
+    from starlette.testclient import TestClient
+
+    app = http_app(build_server(_http_db(tmp_path), allow_sql=False), "t")
+    with TestClient(app, base_url="http://192.168.1.20:8765") as client:  # LAN name, localhost-only server
+        response = client.post("/mcp", json=_rpc("tools/list"),
+                               headers=dict(HTTP_HEADERS, authorization="Bearer t"))
+        assert response.status_code != 200  # DNS-rebinding protection refuses other hosts
+
+
+async def test_every_stdio_call_is_audited(ro_db, _isolated_logs):
+    server = build_server(ro_db, allow_sql=False)
+    await server.call_tool("search_items", {"query": "دریل"})
+    line = (_isolated_logs / "mcp-audit.log").read_text(encoding="utf-8").strip().splitlines()[-1]
+    assert '"tool": "search_items"' in line and '"client": "stdio"' in line and '"دریل"' in line
+
+
+async def test_draft_tools_only_when_enabled_and_never_post(db, admin, ro_db):
+    from caspian.db.models import DocStatus
+    from caspian.services import documents as docs
+    from caspian.services import mcp_settings
+
+    assert not await mcp_settings.allow_drafts(db)
+    names = {t.name for t in await build_server(ro_db, allow_sql=False).list_tools()}
+    assert "create_draft_document" not in names
+    with pytest.raises(Exception):  # noqa: B017 - the AI can't switch it on
+        await mcp_settings.set_allow_drafts(db, admin.as_ai(), True)
+    await mcp_settings.set_allow_drafts(db, admin, True)
+    assert await mcp_settings.allow_drafts(db)
+
+    unit = (await master.list_units(db))[0].id
+    await items.create_item(db, admin, ItemInput("2001", "میز", unit))
+    server = build_server(ro_db, allow_sql=False, write_db=db)
+    assert "create_draft_document" in {t.name for t in await server.list_tools()}
+    result = _payload(await server.call_tool("create_draft_document", {
+        "doc_type": "RECEIPT", "warehouse_code": "01", "lines": [{"code": "2001", "qty": 3}],
+        "description": "فاکتور ۱۲"}))
+    assert result["status"] == "DRAFT" and result["number"].startswith("ر-")
+    detail = await docs.get_document(db, admin, result["document_id"])
+    assert detail.status is DocStatus.DRAFT and "MCP" in detail.input.description
+    assert "error" in _payload(await server.call_tool("create_draft_document", {
+        "doc_type": "ADJUSTMENT", "warehouse_code": "01", "lines": []}))
+    names = {t.name for t in await server.list_tools()}
+    assert not any(n.startswith(("post", "cancel", "delete")) for n in names)

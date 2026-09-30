@@ -127,3 +127,20 @@ Plan: Phase 1 (baseline + bug-class audit) → units U1–U13 (P0 → P1 → P2)
   save → list regression test.
 - Tests: `test_ai_gateway.py` (401 vs 403 + server text + key masked, presets, save/list all kinds, OpenRouter headers,
   model list + free flag, list errors, dialog fetch + filter + save).
+
+### U9 — MCP (#17)
+- `caspian-mcp --http [--port 8765] [--lan]`: Streamable HTTP at `/mcp` (stateless, JSON), bound to 127.0.0.1
+  unless LAN is ticked (0.0.0.0); every request needs `Authorization: Bearer <token>` (constant-time compare,
+  401 + `WWW-Authenticate: Bearer` otherwise); the SDK's DNS-rebinding protection stays on for localhost. Random
+  token (`secrets.token_urlsafe(32)`) in Credential Manager (`mcp:http_token`), generated from Settings.
+- Audit: every tool call (tool, args, caller = `stdio` / `http <ip>`, ok/error) and every rejected request goes to
+  `Logs\mcp-audit.log` on that PC (rotating); the read path stays on the read-only DB connection.
+- Draft-only write tool `create_draft_document` (RECEIPT/ISSUE, lines by item code), only when an admin ticks
+  «اجازه ساخت پیش‌نویس سند از MCP» (`app_settings.mcp_allow_drafts`, audited, AI can't change it); runs as an AI
+  actor with `documents.edit` only → posting/cancel/protected actions impossible; description «ساخته‌شده از MCP».
+- Settings card: «تست MCP» (spawns the exe over stdio and lists tools), HTTP port / LAN / start–stop + «در حال
+  اجرا / متوقف» + address, token show/copy/new, «کپی تنظیمات MCP» = JSON **and**
+  `claude mcp add caspian-warehouse -- "<…>\caspian-mcp.exe"`. The started server stops with the app.
+- Tests: `test_mcp.py` (token required incl. wrong/Basic, audit lines with caller, DNS-rebinding refusal, drafts only
+  when enabled, never post), `test_automation_ui.py` (copy text, token, switch, test-button errors, real stdio probe).
+  Live check on this PC: stdio probe lists the 6 read tools. Tests write logs to a temp folder (conftest).

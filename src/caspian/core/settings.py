@@ -31,6 +31,9 @@ class Settings:
     mariadb_tools_dir: str = ""
     # Folder of the last Excel/PDF export (the save dialog starts there).
     last_export_dir: str = ""
+    # MCP over HTTP on this PC (the token itself is in Credential Manager).
+    mcp_http_port: int = 8765
+    mcp_http_lan: bool = False
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Settings":
