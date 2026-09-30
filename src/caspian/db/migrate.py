@@ -18,15 +18,41 @@ def alembic_config() -> Config:
     return cfg
 
 
-async def upgrade(db: Database, revision: str = "head") -> None:
+async def _run(db: Database, action, revision: str) -> None:
     cfg = alembic_config()
 
-    def _run(sync_conn) -> None:
+    def _go(sync_conn) -> None:
         cfg.attributes["connection"] = sync_conn
-        command.upgrade(cfg, revision)
+        action(cfg, revision)
 
-    async with db.engine.begin() as conn:
-        await conn.run_sync(_run)
+    if not db.is_sqlite:
+        async with db.engine.begin() as conn:
+            await conn.run_sync(_go)
+        return
+    # SQLite applies ALTERs by rebuilding the table (copy, DROP, rename). With foreign keys on,
+    # that DROP would fire ON DELETE CASCADE on child tables and silently delete their rows.
+    # The pragma can't change inside a transaction, so switch it around the migration.
+    async with db.engine.connect() as conn:
+        await conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        await conn.commit()
+        try:
+            async with conn.begin():
+                await conn.run_sync(_go)
+                problems = (await conn.exec_driver_sql("PRAGMA foreign_key_check")).fetchall()
+                if problems:
+                    raise RuntimeError(f"Migration left broken foreign keys: {problems[:5]}")
+        finally:
+            await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+            await conn.commit()
+
+
+async def upgrade(db: Database, revision: str = "head") -> None:
+    await _run(db, command.upgrade, revision)
+
+
+async def downgrade(db: Database, revision: str) -> None:
+    """Only for tests and support: schema back to `revision` (data is kept where possible)."""
+    await _run(db, command.downgrade, revision)
 
 
 async def current_revision(db: Database) -> str | None:

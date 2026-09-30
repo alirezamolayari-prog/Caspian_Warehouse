@@ -212,3 +212,24 @@ async def test_discard(db, admin, catalog):
     assert await imports.list_batches(db, admin) == []
     with pytest.raises(ValidationError):
         await imports.update_line(db, admin, (await _lines(db, admin, batch))[0].id, name="y")
+
+
+async def test_deleting_import_draft_reopens_batch(db, admin, catalog):
+    """Deleting the draft an import created failed with FK error 1451 (#3). Now the batch goes
+    back to OPEN and re-applying it reuses the items created the first time (no duplicates)."""
+    rows = [RawRow(code="1001", qty=Decimal(2)), RawRow(barcode="777000", name="اره عمود بر", qty=Decimal(3))]
+    batch = await imports.create_batch(
+        db, admin, ImportKind.STOCK, ImportSource.SCAN, rows, "اسکن", DocType.RECEIPT, catalog["wh"])
+    first = await imports.apply_batch(db, admin, batch)
+    assert first.created_items == 1
+
+    await docs.delete_draft(db, admin, first.document_id)
+
+    detail = await imports.get_batch(db, admin, batch)
+    assert detail.row.status is BatchStatus.OPEN and detail.result_document_id is None
+    assert [ln.status for ln in detail.lines] == [LineStatus.EXISTING_MATCH] * 2
+    second = await imports.apply_batch(db, admin, batch)
+    assert second.created_items == 0
+    redo = await docs.get_document(db, admin, second.document_id)
+    assert redo.status is DocStatus.DRAFT and len(redo.lines) == 2
+    assert len(await items.search_items(db, admin, "اره عمود بر")) == 1

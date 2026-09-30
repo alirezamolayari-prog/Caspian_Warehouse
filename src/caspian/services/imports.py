@@ -419,6 +419,23 @@ async def discard_batch(db: Database, actor: Actor, batch_id: int) -> None:
         audit.record(s, actor, "import.batch_discarded", "import_batch", batch.id)
 
 
+async def reopen_for_deleted_document(s: AsyncSession, actor: Actor, document_id: int) -> None:
+    """The draft a batch produced is being deleted: put the batch back in review.
+
+    Lines are re-matched, so items created by the first apply are now EXISTING_MATCH and a
+    second apply does not create them again.
+    """
+    batches = (await s.scalars(select(ImportBatch)
+                               .where(ImportBatch.result_document_id == document_id))).all()
+    for batch in batches:
+        batch.result_document_id = None
+        batch.status = BatchStatus.OPEN
+        batch.applied_at = batch.applied_by_id = None
+        await _evaluate_batch(s, batch)
+        audit.record(s, actor, "import.batch_reopened", "import_batch", batch.id,
+                     {"deleted_document_id": document_id})
+
+
 def needs_overwrite_approval(detail: BatchDetail) -> bool:
     return any(ln.resolution == Resolution.OVERWRITE for ln in detail.lines)
 

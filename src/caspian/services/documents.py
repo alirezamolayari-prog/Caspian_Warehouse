@@ -500,6 +500,9 @@ async def delete_draft(db: Database, actor: Actor, doc_id: int) -> None:
         if doc.status != DocStatus.DRAFT:
             raise ValidationError("فقط سند پیش‌نویس قابل حذف است. سند ثبت‌شده را ابطال کنید.")
         await ensure_open_year(s, doc.fiscal_year)
+        from caspian.services import imports  # imports depends on this module
+
+        await imports.reopen_for_deleted_document(s, actor, doc.id)
         audit.record(s, actor, "document.draft_deleted", "document", doc.id,
                      {"type": doc.doc_type.value, "number": doc.number})
         await s.delete(doc)

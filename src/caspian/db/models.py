@@ -343,7 +343,9 @@ class ImportBatch(IdMixin, TimestampMixin, CreatedByMixin, Base):
     person_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("persons.id"))
     applied_at: Mapped[dt.datetime | None]
     applied_by_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("users.id"))
-    result_document_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("documents.id"))
+    # Deleting that draft re-opens the batch (see documents.delete_draft).
+    result_document_id: Mapped[int | None] = mapped_column(
+        BigIntPK, ForeignKey("documents.id", ondelete="SET NULL"))
 
     lines: Mapped[list["ImportLine"]] = relationship(
         back_populates="batch", cascade="all, delete-orphan", order_by="ImportLine.row_no",
