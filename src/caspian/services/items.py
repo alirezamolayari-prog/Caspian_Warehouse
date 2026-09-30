@@ -1,5 +1,6 @@
 """Items: search, create/edit, units & barcodes, activation (protected) and deletion."""
 
+import datetime as dt
 from dataclasses import dataclass, field
 from decimal import Decimal
 
@@ -12,6 +13,7 @@ from caspian.core.text import normalize, to_ascii_digits
 from caspian.db.database import Database
 from caspian.db.models import (
     Category,
+    DocType,
     DocumentLine,
     Item,
     ItemBarcode,
@@ -19,7 +21,7 @@ from caspian.db.models import (
     StockBalance,
     Unit,
 )
-from caspian.services import audit
+from caspian.services import audit, documents
 from caspian.services.actor import Actor
 from caspian.services.errors import ConcurrencyError, NotFound, ValidationError
 from caspian.services.protected import Approval, ProtectedAction, consume
@@ -303,6 +305,42 @@ async def create_item_in(s: AsyncSession, actor: Actor, data: ItemInput) -> Item
 async def create_item(db: Database, actor: Actor, data: ItemInput) -> int:
     async with db.session(actor.user_id) as s:
         return (await create_item_in(s, actor, data)).id
+
+
+@dataclass(frozen=True)
+class OpeningStock:
+    """Quantity (in the base unit) already on the shelf when the item is defined."""
+
+    warehouse_id: int
+    qty: Decimal
+    unit_price: Decimal | None = None
+
+
+@dataclass(frozen=True)
+class CreatedItem:
+    item_id: int
+    document_id: int | None  # the OPENING document, if any
+    posted: bool
+
+
+async def create_item_with_opening(db: Database, actor: Actor, data: ItemInput,
+                                   opening: OpeningStock | None) -> CreatedItem:
+    """New item plus its opening stock (#12). Stock only ever changes through documents: this
+    creates an OPENING document and posts it when the user may post (else it stays a draft).
+    Item and document are saved together or not at all."""
+    async with db.session(actor.user_id) as s:
+        item = await create_item_in(s, actor, data)
+        if opening is None:
+            return CreatedItem(item.id, None, False)
+        doc = await documents.create_document_in(s, actor, documents.DocumentInput(
+            DocType.OPENING, dt.date.today(), opening.warehouse_id,
+            [documents.LineInput(item.id, item.base_unit_id, opening.qty, opening.unit_price,
+                                 "موجودی اولیه هنگام تعریف کالا")],
+            description=f"موجودی اولیه «{item.name}»"))
+        posted = actor.can(Perm.DOCUMENTS_POST)
+        if posted:
+            await documents.post_document_in(s, actor, doc)
+        return CreatedItem(item.id, doc.id, posted)
 
 
 async def update_item(

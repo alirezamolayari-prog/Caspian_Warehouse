@@ -179,3 +179,59 @@ async def test_next_code(db, admin):
     await _drill(db, admin, "1050")
     await _drill(db, admin, "A-7", "x")
     assert await items.next_code(db) == "1051"
+
+
+# ----- opening stock on the new-item form (#12) -----
+
+
+async def test_opening_stock_goes_through_an_opening_document(db, admin):
+    """Stock only changes through documents: the item form creates a posted OPENING document."""
+    from caspian.db.models import DocStatus
+    from caspian.services import documents as docs
+    from caspian.services import reports
+
+    u = await _units(db)
+    wh = (await master.list_warehouses(db))[0].id
+    result = await items.create_item_with_opening(
+        db, admin, ItemInput(code="3001", name="میز اداری", base_unit_id=u["عدد"]),
+        items.OpeningStock(wh, Decimal(7), Decimal(1_200_000)))
+    assert result.posted and result.document_id is not None
+    doc = await docs.get_document(db, admin, result.document_id)
+    assert doc.input.doc_type is DocType.OPENING and doc.status is DocStatus.POSTED
+    assert [(ln.item_id, ln.base_qty, ln.unit_price) for ln in doc.lines] == [
+        (result.item_id, Decimal(7), Decimal(1_200_000))]
+    assert (await docs.stock_by_warehouse(db, result.item_id))[0][1] == Decimal(7)
+    cardex = await reports.cardex(db, admin, result.item_id)
+    assert cardex.rows[-1][7] == Decimal(7) and "موجودی اول دوره" in cardex.rows[-1][1]
+
+
+async def test_opening_stock_without_post_permission_stays_draft(db, admin):
+    from caspian.db.models import DocStatus
+    from caspian.services import documents as docs
+
+    u = await _units(db)
+    wh = (await master.list_warehouses(db))[0].id
+    from caspian.core.permissions import Perm
+    from caspian.services.actor import Actor
+
+    clerk = Actor(admin.user_id, "admin", "ثبت‌کننده", "custom", frozenset(p.value for p in (
+        Perm.ITEMS_VIEW, Perm.ITEMS_EDIT, Perm.DOCUMENTS_VIEW, Perm.DOCUMENTS_EDIT)))
+    result = await items.create_item_with_opening(
+        db, clerk, ItemInput(code="3002", name="صندلی", base_unit_id=u["عدد"]),
+        items.OpeningStock(wh, Decimal(3)))
+    assert not result.posted
+    assert (await docs.get_document(db, admin, result.document_id)).status is DocStatus.DRAFT
+    assert await docs.stock_by_warehouse(db, result.item_id) == []
+
+
+async def test_no_opening_quantity_means_no_document(db, admin):
+    u = await _units(db)
+    result = await items.create_item_with_opening(
+        db, admin, ItemInput(code="3003", name="کمد", base_unit_id=u["عدد"]), None)
+    assert result.document_id is None and not result.posted
+    wh = (await master.list_warehouses(db))[0].id
+    with pytest.raises(ValidationError, match="بزرگ‌تر از صفر"):
+        await items.create_item_with_opening(
+            db, admin, ItemInput(code="3004", name="قفسه", base_unit_id=u["عدد"]),
+            items.OpeningStock(wh, Decimal(0)))
+    assert await items.search_items(db, admin, "قفسه") == []  # all or nothing

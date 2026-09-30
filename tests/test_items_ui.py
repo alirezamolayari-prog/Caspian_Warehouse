@@ -151,3 +151,33 @@ async def test_master_page_tabs(qtbot, db, admin, make_ctx):
     await settle(dlg)
     await page.warehouses.refresh()
     assert page.warehouses.table.rowCount() == 2
+
+
+async def test_new_item_with_opening_stock_posts_an_opening_document(qtbot, db, admin, make_ctx):
+    """«موجودی اولیه» on the item form becomes a posted OPENING document (#12)."""
+    from caspian.db.models import DocType
+    from caspian.services import documents as docs
+
+    ctx = make_ctx(admin)
+    warehouses = await master.list_warehouses(db)
+    dlg = ItemDialog(ctx, await master.list_units(db), [], suggested_code="5001", warehouses=warehouses)
+    qtbot.addWidget(dlg)
+    dlg.name.setText("میز جلسه")
+    dlg.opening_qty.setText("۴")
+    dlg.opening_price.setText("2500000")
+    dlg.submit_button.click()
+    await settle(dlg)
+    assert dlg.result() == dlg.DialogCode.Accepted and dlg.result_message == ""
+    [(_wh, qty)] = await docs.stock_by_warehouse(db, dlg.saved_id)
+    assert qty == Decimal(4)
+    [opening] = await docs.list_documents(db, admin, DocType.OPENING)
+    assert opening.status.value == "POSTED"
+
+
+async def test_edit_form_has_no_opening_stock(qtbot, db, admin, make_ctx):
+    ctx = make_ctx(admin)
+    item_id = await items.create_item(db, admin, ItemInput("5002", "صندلی", (await _units(db))["عدد"]))
+    dlg = ItemDialog(ctx, await master.list_units(db), [], await items.get_item(db, admin, item_id),
+                     warehouses=await master.list_warehouses(db))
+    qtbot.addWidget(dlg)
+    assert dlg.opening_qty not in dlg._inputs and dlg.collect_opening() is None

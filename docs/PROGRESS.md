@@ -82,3 +82,10 @@ Plan: Phase 1 (baseline + bug-class audit) → units U1–U13 (P0 → P1 → P2)
   selected fiscal year and keeps the selection.
 - Tests: `test_widgets_ui.py`, cardex/filters in `test_reports_ui.py`, add-person in `test_documents_ui.py`;
   two existing tests that drove the removed cardex search box now use the new field (same assertions).
+
+### U5 — opening stock on the new-item form (#12)
+- `items.create_item_with_opening(data, OpeningStock(warehouse, qty, price))`: item + OPENING document in one
+  transaction, posted when the user may post (else left as a draft, and the user is told); never writes stock.
+- Item form (new items, users who may create documents): «موجودی اولیه» quantity / warehouse / price.
+- Tests: `test_items.py` (posted OPENING + balance + cardex row, draft without post right, no qty = no document,
+  invalid qty rolls back the item too), `test_items_ui.py` (form → posted OPENING; edit form has no fields).
