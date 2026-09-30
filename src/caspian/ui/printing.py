@@ -7,13 +7,13 @@ from collections.abc import Sequence
 from PySide6.QtCore import QMarginsF, QSizeF, Qt
 from PySide6.QtGui import QFont, QPageLayout, QPageSize, QPdfWriter, QTextDocument, QTextOption
 from PySide6.QtWidgets import QFileDialog, QMenu, QWidget
-from qasync import asyncSlot
 
 from caspian import APP_DISPLAY_NAME
 from caspian.core import jalali
 from caspian.core.text import to_persian_digits
 from caspian.ui.fonts import FONT_FAMILY
 from caspian.ui.messages import show_info
+from caspian.ui.tasks import callback
 
 
 def report_html(title: str, meta: Sequence[str], headers: Sequence[str],
@@ -101,14 +101,13 @@ def output_menu(parent: QWidget, make_html, default_name) -> QMenu:
     """Print / Save-PDF menu. make_html is an async callable returning the HTML."""
     menu = QMenu(parent)
 
-    @asyncSlot()
     async def do_print() -> None:
         print_html(await make_html(), parent)
 
-    @asyncSlot()
     async def do_pdf() -> None:
         await export_pdf(parent, await make_html(), default_name())
 
-    menu.addAction("چاپ…", do_print)
-    menu.addAction("ذخیره PDF…", do_pdf)
+    # Closures can't be @asyncSlot (see caspian.ui.tasks).
+    menu.addAction("چاپ…", callback(do_print))
+    menu.addAction("ذخیره PDF…", callback(do_pdf))
     return menu
