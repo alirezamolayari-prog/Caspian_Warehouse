@@ -55,3 +55,19 @@ Plan: Phase 1 (baseline + bug-class audit) → units U1–U13 (P0 → P1 → P2)
   sheets, document forms); report tables now span the page. A test fails if Qt ever starts mirroring itself.
 - Tests: `test_documents.py` (sheet, record_print, drafts), `test_document_print_ui.py`, `test_printing_ui.py`.
 - Note: CI runs only on `main`/pull requests; it will run when a PR is opened for this branch.
+
+### U3 — stock integrity: freeze, carton scan, import → post (#7, #8, #9)
+- #7 `documents._stocktake_override`: posting or cancelling a document that moves an item counted by an OPEN or
+  COUNTED stocktake (source or destination warehouse) raises `StocktakeFrozen`; items outside a category-scoped
+  stocktake and other warehouses are unaffected; the stocktake's own adjustment is exempt. New protected action
+  `STOCKTAKE_OVERRIDE` (admin PIN, never AI); audited on `document.posted/cancelled` with `approved_by_id`.
+  UI: `documents_page.with_stocktake_override` offers the PIN dialog and retries (list, editor, cancel, import).
+  Existing test `test_movements_after_snapshot_are_flagged` now posts through the override (its movement is only
+  possible that way now).
+- #8 `stocktake.scan()` → line + factor of the scanned barcode's unit; a carton scan adds `factor` base units.
+- #9 after applying a stock import: «ثبت نهایی همین حالا» / «باز کردن سند» / «بعداً» (`messages.ask`, awaitable);
+  `documents.pending_incoming/pending_hint`: issue/transfer/loan forms and the "insufficient stock" error say
+  «۵ عدد در پیش‌نویس ر-۱ منتظر ثبت نهایی است».
+- Tests: `test_stocktake.py` (freeze, scope, override, AI refused, approve exempt, scan factor),
+  `test_documents.py` (pending), `test_stocktake_ui.py` (carton ×2 = 24), `test_imports_ui.py` (post/open/later),
+  `test_documents_ui.py` (PIN override, pending hint), `test_messages_ui.py` (ask).

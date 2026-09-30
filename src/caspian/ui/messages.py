@@ -1,4 +1,6 @@
+import asyncio
 import traceback
+from collections.abc import Sequence
 
 import shiboken6
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
@@ -23,6 +25,26 @@ def _show(box: QMessageBox) -> QMessageBox:
     box.destroyed.connect(lambda *_: _open_boxes.discard(box))
     box.open()
     return box
+
+
+async def ask(parent: QWidget | None, text: str, choices: Sequence[tuple[str, str]],
+              title: str = "تأیید", danger: bool = False) -> str | None:
+    """Ask without blocking the event loop. `choices` = (key, button text), the first one is the
+    default; returns the chosen key, or None for «انصراف» / Esc / closing the box."""
+    box = QMessageBox(QMessageBox.Icon.Warning if danger else QMessageBox.Icon.Question, title, text,
+                      QMessageBox.StandardButton.NoButton, parent)
+    keys = {}
+    for i, (key, label) in enumerate(choices):
+        button = box.addButton(label, QMessageBox.ButtonRole.AcceptRole)
+        keys[button] = key
+        if i == 0:
+            box.setDefaultButton(button)
+    box.setEscapeButton(box.addButton("انصراف", QMessageBox.ButtonRole.RejectRole))
+    future: asyncio.Future[str | None] = asyncio.get_running_loop().create_future()
+    box.buttonClicked.connect(lambda b: future.done() or future.set_result(keys.get(b)))
+    box.finished.connect(lambda _r: future.done() or future.set_result(None))
+    _show(box)
+    return await future
 
 
 def show_error(parent: QWidget | None, text: str) -> None:

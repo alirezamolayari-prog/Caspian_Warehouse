@@ -58,3 +58,17 @@ async def test_box_destroyed_with_its_parent_does_not_break_the_hook(qtbot, monk
         raise KeyError("y")
     except KeyError as exc:
         assert messages.show_unexpected_error(type(exc), exc, exc.__traceback__) is not None
+
+
+async def test_ask_returns_the_clicked_choice_or_none(qtbot):
+    import asyncio
+
+    task = asyncio.ensure_future(messages.ask(None, "ادامه؟", [("yes", "بله"), ("no", "خیر")]))
+    assert await wait_until(lambda: bool(_visible_boxes()))
+    box = _visible_boxes()[0]
+    next(b for b in box.buttons() if b.text() == "خیر").click()
+    assert await task == "no"
+    task = asyncio.ensure_future(messages.ask(None, "ادامه؟", [("yes", "بله")]))
+    assert await wait_until(lambda: bool(_visible_boxes()))
+    next(b for b in _visible_boxes()[0].buttons() if b.text() == "انصراف").click()
+    assert await task is None

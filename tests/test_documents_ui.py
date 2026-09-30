@@ -140,3 +140,44 @@ async def test_documents_page_and_cancel(qtbot, env):
     dlg.submit_button.click()
     await settle(dlg)
     assert (await docs.get_document(db, actor, doc_id)).status is DocStatus.CANCELLED
+
+
+async def test_post_during_stocktake_asks_for_admin_pin(qtbot, env, monkeypatch):
+    """A freeze error offers an admin override; with the PIN the document is posted (#7)."""
+    from caspian.services import protected
+    from caspian.services import stocktake as st
+    from caspian.services.protected import ProtectedAction
+    from caspian.ui import documents_page
+    from conftest import ADMIN_PIN
+
+    ctx = env["ctx"]
+    wh = (await master.list_warehouses(ctx.db))[0].id
+    draft = await docs.create_document(ctx.db, ctx.actor, DocumentInput(
+        DocType.RECEIPT, dt.date.today(), wh, [LineInput(env["drill"], env["u"]["عدد"], Decimal(1))]))
+    await st.create_stocktake(ctx.db, ctx.actor, wh)
+    asked = []
+
+    async def fake_request(db, actor, action, description, parent=None):
+        asked.append(description)
+        return await protected.approve(db, actor, ProtectedAction.STOCKTAKE_OVERRIDE, "admin", ADMIN_PIN)
+
+    monkeypatch.setattr(documents_page, "request_approval", fake_request)
+    page = DocumentsPage(ctx)
+    qtbot.addWidget(page)
+    await page.documents.refresh()
+    page.documents.table.select_id(draft)
+    await page.documents.on_post()
+    assert asked and "انبارگردانی" in asked[0]
+    assert (await docs.get_document(ctx.db, ctx.actor, draft)).status is DocStatus.POSTED
+
+
+async def test_issue_form_mentions_stock_waiting_in_a_draft(qtbot, env):
+    """«موجودی: ۰» alone made users think the import failed (#9)."""
+    ctx = env["ctx"]
+    wh = (await master.list_warehouses(ctx.db))[0].id
+    await docs.create_document(ctx.db, ctx.actor, DocumentInput(
+        DocType.RECEIPT, dt.date.today(), wh, [LineInput(env["drill"], env["u"]["عدد"], Decimal(5))]))
+    dlg = await make_dialog(env, DocType.ISSUE)
+    qtbot.addWidget(dlg)
+    await scan(dlg, "111")
+    assert "۵ عدد در پیش‌نویس ر-۱ منتظر ثبت نهایی است" in dlg.stock_hint.text()

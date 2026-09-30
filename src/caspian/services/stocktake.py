@@ -184,18 +184,42 @@ async def discrepancy_report(db: Database, actor: Actor, stocktake_id: int) -> D
         return DiscrepancyReport(await _row(s, st), lines, moved or 0)
 
 
-async def find_line(db: Database, stocktake_id: int, code_or_barcode: str) -> int | None:
-    """Line id for a scanned barcode or typed item code, within this stocktake."""
+@dataclass(frozen=True)
+class ScanHit:
+    line_id: int
+    factor: Decimal  # base units per scan: a carton barcode counts the whole carton (#8)
+    unit_name: str
+
+
+async def scan(db: Database, stocktake_id: int, code_or_barcode: str) -> ScanHit | None:
+    """The stocktake line for a scanned barcode or typed item code, and how much one scan counts.
+
+    Counts are in the item's base unit; a barcode registered for another unit (e.g. a carton of
+    12) adds that unit's conversion factor. A typed item code counts one base unit."""
     key = to_ascii_digits(code_or_barcode.strip())
     if not key:
         return None
     async with db.session() as s:
-        item_id = await s.scalar(select(ItemBarcode.item_id).where(ItemBarcode.barcode == key)) \
-            or await s.scalar(select(Item.id).where(Item.code == key))
+        barcode = await s.scalar(select(ItemBarcode).where(ItemBarcode.barcode == key))
+        item_id = barcode.item_id if barcode else await s.scalar(select(Item.id).where(Item.code == key))
         if item_id is None:
             return None
-        return await s.scalar(select(StocktakeLine.id).where(
+        line_id = await s.scalar(select(StocktakeLine.id).where(
             StocktakeLine.stocktake_id == stocktake_id, StocktakeLine.item_id == item_id))
+        if line_id is None:
+            return None
+        item = await s.get(Item, item_id)
+        unit_id = barcode.unit_id if barcode and barcode.unit_id else item.base_unit_id
+        factor = next((u.factor for u in item.units if u.unit_id == unit_id), Decimal(1)) \
+            if unit_id != item.base_unit_id else Decimal(1)
+        unit = await s.get(Unit, unit_id)
+        return ScanHit(line_id, factor, unit.name if unit else "")
+
+
+async def find_line(db: Database, stocktake_id: int, code_or_barcode: str) -> int | None:
+    """Line id for a scanned barcode or typed item code, within this stocktake."""
+    hit = await scan(db, stocktake_id, code_or_barcode)
+    return hit.line_id if hit else None
 
 
 # ----- commands -----
@@ -302,7 +326,7 @@ async def approve(db: Database, actor: Actor, stocktake_id: int) -> int | None:
                                      notes=f"انبارگردانی {st.number} — ردیف {ln.line_no}")
                  for ln in diffs],
                 description=f"اصلاحیه انبارگردانی شماره {st.number}"))
-            await documents.post_document_in(s, actor, doc)
+            await documents.post_document_in(s, actor, doc, stocktake_id=st.id)
             doc_id = st.adjustment_document_id = doc.id
         st.status = StocktakeStatus.APPROVED
         st.approved_at = dt.datetime.now()

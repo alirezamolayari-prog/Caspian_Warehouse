@@ -102,3 +102,41 @@ async def test_imports_page_lists_batches(qtbot, env):
     await page.refresh()
     assert page.table.rowCount() == 1
     assert page.table.item(0, 0).text() == "کالاهای جدید"
+
+
+async def _applied_stock_batch(ctx, warehouse_id):
+    from caspian.services.import_files import RawRow
+
+    batch = await imports.create_batch(ctx.db, ctx.actor, imports.ImportKind.STOCK, ImportSource.SCAN,
+                                       [RawRow(code="1001", qty=Decimal(5))], "اسکن", DocType.RECEIPT,
+                                       warehouse_id)
+    return (await imports.apply_batch(ctx.db, ctx.actor, batch)).document_id
+
+
+@pytest.mark.parametrize("choice", ["post", "open", "later"])
+async def test_after_apply_offers_post_or_open(qtbot, env, monkeypatch, choice):
+    """An import only drafts a receipt; the user is offered to post it right away (#9)."""
+    from caspian.db.models import DocStatus
+    from caspian.ui import imports_page
+
+    ctx, warehouses, _ = env
+    doc_id = await _applied_stock_batch(ctx, warehouses[0].id)
+    offered = {}
+
+    async def fake_ask(parent, text, choices, title="", danger=False):
+        offered["keys"] = [k for k, _ in choices]
+        return choice
+
+    opened = []
+
+    async def open_document(i):
+        opened.append(i)
+
+    monkeypatch.setattr(imports_page, "ask", fake_ask)
+    page = ImportsPage(ctx, open_document=open_document)
+    qtbot.addWidget(page)
+    await page._after_apply(doc_id, "اعمال شد")
+    assert offered["keys"] == ["post", "open", "later"]
+    status = (await docs.get_document(ctx.db, ctx.actor, doc_id)).status
+    assert status is (DocStatus.POSTED if choice == "post" else DocStatus.DRAFT)
+    assert opened == ([doc_id] if choice == "open" else [])

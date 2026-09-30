@@ -27,6 +27,7 @@ from qasync import asyncSlot
 
 from caspian.core import jalali
 from caspian.core.numbers import format_qty
+from caspian.core.permissions import Perm
 from caspian.core.text import to_ascii_digits, to_persian_digits
 from caspian.db.models import BatchStatus, DocType, ImportKind, ImportSource, LineStatus, Resolution
 from caspian.services import imports, items, master
@@ -54,7 +55,7 @@ from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import request_approval
 from caspian.ui.dialogs import FormDialog, ltr_field
 from caspian.ui.file_dialogs import ask_open_path
-from caspian.ui.messages import show_error, show_info
+from caspian.ui.messages import ask, show_error, show_info
 from caspian.ui.widgets import Card, DataTable, QtyEdit
 
 STOCK_DOC_TYPES = (DocType.RECEIPT, DocType.ISSUE, DocType.OPENING, DocType.LOAN_OUT)
@@ -321,6 +322,7 @@ class ReviewDialog(FormDialog):
         self._ctx, self._batch_id = ctx, batch_id
         self.detail: BatchDetail | None = None
         self.result_message = ""
+        self.result_document_id: int | None = None
         self.summary = QLabel(objectName="Muted")
         self.body.addWidget(self.summary)
         hint = QLabel("برای اصلاح داده‌های یک ردیف، روی آن دوبار کلیک کنید. تا زمانی که «اعمال» "
@@ -423,13 +425,14 @@ class ReviewDialog(FormDialog):
             if approval is None:
                 raise ValidationError("اعمال لغو شد.")
         result = await imports.apply_batch(self._ctx.db, self._ctx.actor, self._batch_id, approval)
+        self.result_document_id = result.document_id
         parts = []
         if result.created_items:
             parts.append(f"{to_persian_digits(result.created_items)} کالای جدید ساخته شد")
         if result.updated_items:
             parts.append(f"{to_persian_digits(result.updated_items)} کالا به‌روزرسانی شد")
         if result.document_id:
-            parts.append("یک سند پیش‌نویس ساخته شد؛ پس از کنترل، آن را از صفحه «اسناد انبار» ثبت نهایی کنید")
+            parts.append("یک سند پیش‌نویس ساخته شد. تا ثبت نهایی آن، موجودی تغییر نمی‌کند")
         self.result_message = "، ".join(parts) + "." if parts else "تغییری لازم نبود."
 
 
@@ -440,9 +443,10 @@ BATCH_COLUMNS = ("عنوان", "نوع", "منبع", "تاریخ", "ردیف‌�
 
 
 class ImportsPage(QWidget):
-    def __init__(self, ctx: AppContext, parent: QWidget | None = None) -> None:
+    def __init__(self, ctx: AppContext, parent: QWidget | None = None, open_document=None) -> None:
         super().__init__(parent)
         self._ctx = ctx
+        self._open_document = open_document  # async (doc_id) -> None, from the main window
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
@@ -517,9 +521,32 @@ class ImportsPage(QWidget):
     async def open_review(self, batch_id: int) -> None:
         dialog = ReviewDialog(self._ctx, batch_id, self)
         await dialog.reload()
-        if await exec_dialog(dialog) and dialog.result_message:
-            show_info(self, dialog.result_message)
+        if await exec_dialog(dialog):
+            if dialog.result_document_id:
+                await self._after_apply(dialog.result_document_id, dialog.result_message)
+            elif dialog.result_message:
+                show_info(self, dialog.result_message)
         await self.refresh()
+
+    async def _after_apply(self, doc_id: int, message: str) -> None:
+        """Importing only drafts a document; stock changes once it is posted (#9)."""
+        choices = [("open", "باز کردن سند"), ("later", "بعداً")]
+        if self._ctx.actor.can(Perm.DOCUMENTS_POST):
+            choices.insert(0, ("post", "ثبت نهایی همین حالا"))
+        choice = await ask(self, message, choices, "ورود اطلاعات اعمال شد")
+        if choice == "post":
+            from caspian.services import documents as docs
+            from caspian.ui.documents_page import with_stocktake_override
+
+            try:
+                await with_stocktake_override(self._ctx, self, lambda approval: docs.post_document(
+                    self._ctx.db, self._ctx.actor, doc_id, approval=approval))
+            except ServiceError as exc:
+                show_error(self, f"{exc.message}\nسند به‌صورت پیش‌نویس باقی ماند.")
+                return
+            show_info(self, "سند ثبت نهایی شد و موجودی به‌روز شد.")
+        elif choice == "open" and self._open_document is not None:
+            await self._open_document(doc_id)
 
     @asyncSlot()
     async def on_file(self) -> None:

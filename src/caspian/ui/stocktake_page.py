@@ -169,13 +169,15 @@ class CountDialog(FormDialog):
     async def on_scan(self) -> None:
         text = self.scan.text()
         self.scan.clear()
-        line_id = await st.find_line(self._ctx.db, self._sheet.row.id, text)
-        if line_id is None:
+        hit = await st.scan(self._ctx.db, self._sheet.row.id, text)
+        if hit is None:
             self.show_status(f"«{text.strip()}» در فهرست این انبارگردانی نیست.")
             return
-        self.show_status("")
+        line_id = hit.line_id
         edit = self.qty_edits[line_id]
-        edit.set_value((edit.value() or Decimal(0)) + 1)
+        edit.set_value((edit.value() or Decimal(0)) + hit.factor)  # a carton counts all its pieces
+        self.show_status(f"{hit.unit_name}: +{format_qty(hit.factor)}" if hit.factor != 1 else "",
+                         is_error=False)
         self.table.selectRow(self._row_of[line_id])
         self.table.scrollToItem(self.table.item(self._row_of[line_id], 0))
         self.scan.setFocus()

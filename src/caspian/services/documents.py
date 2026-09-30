@@ -11,7 +11,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -32,14 +32,18 @@ from caspian.db.models import (
     Person,
     StockBalance,
     StockLedger,
+    Stocktake,
+    StocktakeLine,
+    StocktakeStatus,
     Unit,
     User,
     Warehouse,
 )
 from caspian.services import audit
 from caspian.services.actor import Actor
-from caspian.services.errors import ConcurrencyError, NotFound, ValidationError
+from caspian.services.errors import ConcurrencyError, NotFound, StocktakeFrozen, ValidationError
 from caspian.services.fiscal_state import ensure_open_year
+from caspian.services.protected import Approval, ProtectedAction, consume
 
 NUMBER_RETRIES = 3
 log = logging.getLogger(__name__)
@@ -286,9 +290,12 @@ async def _apply_effects(s: AsyncSession, doc: Document, reverse: bool) -> None:
         if new_qty < 0 and change < 0 and not allow_negative:
             item = await s.get(Item, item_id)
             wh = await s.get(Warehouse, wh_id)
+            hint = pending_hint(await _pending_incoming_in(s, item_id, wh_id, doc.id),
+                                item.base_unit.name)
             raise ValidationError(
                 f"موجودی «{item.name}» در «{wh.name}» کافی نیست "
                 f"(موجود: {format_qty(balance.qty)}، نیاز: {format_qty(-change)})."
+                + (f" {hint}" if hint else "")
             )
         balance.qty = new_qty
 
@@ -324,6 +331,34 @@ async def _check_loan_return_limits(s: AsyncSession, doc: Document) -> None:
         if qty > outstanding.get(item_id, Decimal(0)):
             item = await s.get(Item, item_id)
             raise ValidationError(f"مقدار برگشتی «{item.name}» بیشتر از مانده امانی است.")
+
+
+async def _stocktake_override(s: AsyncSession, actor: Actor, doc: Document, approval: Approval | None,
+                              exempt_stocktake_id: int | None = None) -> dict:
+    """Stock of items being counted must not move until the stocktake is approved or cancelled,
+    otherwise the adjustment is computed against a stale snapshot (#7). An admin may override
+    with a PIN. Returns audit details for an override (empty if none was needed)."""
+    warehouses = [doc.warehouse_id] + ([doc.dest_warehouse_id] if doc.dest_warehouse_id else [])
+    stmt = (select(Stocktake.number, Warehouse.name, Item.name)
+            .join(StocktakeLine, StocktakeLine.stocktake_id == Stocktake.id)
+            .join(Warehouse, Warehouse.id == Stocktake.warehouse_id)
+            .join(Item, Item.id == StocktakeLine.item_id)
+            .where(Stocktake.status.in_([StocktakeStatus.OPEN, StocktakeStatus.COUNTED]),
+                   Stocktake.warehouse_id.in_(warehouses),
+                   StocktakeLine.item_id.in_({ln.item_id for ln in doc.lines}))
+            .order_by(Stocktake.number).limit(1))
+    if exempt_stocktake_id is not None:
+        stmt = stmt.where(Stocktake.id != exempt_stocktake_id)
+    hit = (await s.execute(stmt)).first()
+    if hit is None:
+        return {}
+    number, warehouse, item = hit
+    if approval is None:
+        raise StocktakeFrozen(
+            f"انبارگردانی شماره {to_persian_digits(number)} در «{warehouse}» در جریان است و موجودی "
+            f"«{item}» تا تأیید یا لغو آن قفل است. تغییر آن فقط با تأیید مدیر (PIN) ممکن است.")
+    return {"stocktake_override": number,
+            "approved_by_id": consume(approval, ProtectedAction.STOCKTAKE_OVERRIDE, actor)}
 
 
 # ----- queries -----
@@ -482,6 +517,46 @@ async def record_print(db: Database, actor: Actor, doc_id: int, kind: str) -> in
         return doc.print_count
 
 
+@dataclass(frozen=True)
+class PendingIn:
+    """Stock that will arrive in a warehouse once a draft is posted."""
+
+    document_id: int
+    number_text: str
+    base_qty: Decimal
+
+
+async def _pending_incoming_in(s: AsyncSession, item_id: int, warehouse_id: int,
+                               exclude_doc: int | None = None) -> list[PendingIn]:
+    into = or_(
+        and_(Document.doc_type.in_([DocType.RECEIPT, DocType.OPENING, DocType.LOAN_RETURN,
+                                    DocType.ADJUSTMENT]), Document.warehouse_id == warehouse_id),
+        and_(Document.doc_type == DocType.TRANSFER, Document.dest_warehouse_id == warehouse_id))
+    stmt = (select(Document.id, Document.doc_type, Document.number, func.sum(DocumentLine.base_qty))
+            .join(DocumentLine, DocumentLine.document_id == Document.id)
+            .where(Document.status == DocStatus.DRAFT, DocumentLine.item_id == item_id, into)
+            .group_by(Document.id, Document.doc_type, Document.number).order_by(Document.id))
+    if exclude_doc is not None:
+        stmt = stmt.where(Document.id != exclude_doc)
+    return [PendingIn(doc_id, number_text(t, n), qty)
+            for doc_id, t, n, qty in (await s.execute(stmt)).all() if qty > 0]
+
+
+async def pending_incoming(db: Database, actor: Actor, item_id: int, warehouse_id: int) -> list[PendingIn]:
+    """Drafts that would add this item to this warehouse (e.g. an import not posted yet, #9)."""
+    actor.require(Perm.DOCUMENTS_VIEW)
+    async with db.session() as s:
+        return await _pending_incoming_in(s, item_id, warehouse_id)
+
+
+def pending_hint(pending: list[PendingIn], unit_name: str) -> str:
+    if not pending:
+        return ""
+    total = sum((p.base_qty for p in pending), Decimal(0))
+    numbers = "، ".join(p.number_text for p in pending)
+    return f"{format_qty(total)} {unit_name} در پیش‌نویس {numbers} منتظر ثبت نهایی است."
+
+
 async def stock_by_warehouse(db: Database, item_id: int) -> list[tuple[str, Decimal]]:
     async with db.session() as s:
         rows = await s.execute(
@@ -616,17 +691,21 @@ async def delete_draft(db: Database, actor: Actor, doc_id: int) -> None:
 
 
 async def post_document(db: Database, actor: Actor, doc_id: int,
-                        expected_version: int | None = None) -> None:
-    """Finalize a draft: write the ledger and update balances atomically."""
+                        expected_version: int | None = None, approval: Approval | None = None) -> None:
+    """Finalize a draft: write the ledger and update balances atomically.
+
+    `approval` (STOCKTAKE_OVERRIDE) is only needed while a stocktake freezes the items."""
     async with db.session(actor.user_id) as s:
         doc = await _load(s, doc_id)
         if expected_version is not None and doc.version_id != expected_version:
             raise ConcurrencyError()
-        await post_document_in(s, actor, doc)
+        await post_document_in(s, actor, doc, approval=approval)
 
 
-async def post_document_in(s: AsyncSession, actor: Actor, doc: Document) -> None:
-    """Post inside the caller's transaction (used by stocktake approval)."""
+async def post_document_in(s: AsyncSession, actor: Actor, doc: Document, *,
+                           approval: Approval | None = None, stocktake_id: int | None = None) -> None:
+    """Post inside the caller's transaction. `stocktake_id`: the stocktake whose own adjustment
+    this is (exempt from its freeze)."""
     actor.require(Perm.DOCUMENTS_POST)
     if doc.status != DocStatus.DRAFT:
         raise ValidationError("این سند قبلاً ثبت یا ابطال شده است.")
@@ -634,12 +713,15 @@ async def post_document_in(s: AsyncSession, actor: Actor, doc: Document) -> None
     await _validate(s, _input_of(doc))
     if doc.doc_type == DocType.LOAN_RETURN:
         await _check_loan_return_limits(s, doc)
+    override = await _stocktake_override(s, actor, doc, approval, stocktake_id)
+    approver_id = override.pop("approved_by_id", None)
     await _apply_effects(s, doc, reverse=False)
     doc.status = DocStatus.POSTED
     doc.posted_at = dt.datetime.now()
     doc.posted_by_id = actor.user_id
     audit.record(s, actor, "document.posted", "document", doc.id,
-                 {"type": doc.doc_type.value, "number": doc.number})
+                 {"type": doc.doc_type.value, "number": doc.number, **override},
+                 approved_by_id=approver_id)
 
 
 def _input_of(doc: Document) -> DocumentInput:
@@ -652,7 +734,8 @@ def _input_of(doc: Document) -> DocumentInput:
     )
 
 
-async def cancel_document(db: Database, actor: Actor, doc_id: int, reason: str = "") -> None:
+async def cancel_document(db: Database, actor: Actor, doc_id: int, reason: str = "",
+                          approval: Approval | None = None) -> None:
     """Void a posted document with reversal ledger rows (history is never deleted)."""
     actor.require(Perm.DOCUMENTS_POST)
     async with db.session(actor.user_id) as s:
@@ -667,15 +750,19 @@ async def cancel_document(db: Database, actor: Actor, doc_id: int, reason: str =
                 raise ValidationError(
                     "برای این امانی، برگشت ثبت شده است. ابتدا برگشت‌ها را ابطال کنید."
                 )
+        override = await _stocktake_override(s, actor, doc, approval)
+        approver_id = override.pop("approved_by_id", None)
         await _apply_effects(s, doc, reverse=True)
         doc.status = DocStatus.CANCELLED
         audit.record(s, actor, "document.cancelled", "document", doc.id,
-                     {"type": doc.doc_type.value, "number": doc.number, "reason": reason})
+                     {"type": doc.doc_type.value, "number": doc.number, "reason": reason, **override},
+                     approved_by_id=approver_id)
 
 
-async def create_and_post(db: Database, actor: Actor, data: DocumentInput) -> int:
+async def create_and_post(db: Database, actor: Actor, data: DocumentInput,
+                          approval: Approval | None = None) -> int:
     actor.require(Perm.DOCUMENTS_POST)
     """Save then post. If posting fails the document stays as a draft (not lost)."""
     doc_id = await create_document(db, actor, data)
-    await post_document(db, actor, doc_id)
+    await post_document(db, actor, doc_id, approval=approval)
     return doc_id

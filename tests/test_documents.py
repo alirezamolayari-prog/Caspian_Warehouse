@@ -312,3 +312,25 @@ async def test_drafts_are_not_tracked(env):
 def test_number_text_prefixes():
     assert docs.number_text(DocType.RECEIPT, 12) == "ر-۱۲"
     assert len({docs.DOC_PREFIX[t] for t in DocType}) == len(DocType)  # all distinct
+
+
+# ----- stock waiting in drafts (#9) -----
+
+
+async def test_pending_incoming_explains_zero_stock(env):
+    db, admin = env["db"], env["admin"]
+    draft = await docs.create_document(db, admin, doc(DocType.RECEIPT, env["wh1"],
+                                                      (env["drill"], env["u"]["جعبه"], Decimal(1))))
+    await docs.create_document(db, admin, doc(DocType.RECEIPT, env["wh2"],  # other warehouse
+                                              (env["drill"], env["u"]["عدد"], Decimal(7))))
+    pending = await docs.pending_incoming(db, admin, env["drill"], env["wh1"])
+    assert [(p.number_text, p.base_qty) for p in pending] == [("ر-۱", Decimal(24))]
+    assert docs.pending_hint(pending, "عدد") == "۲۴ عدد در پیش‌نویس ر-۱ منتظر ثبت نهایی است."
+
+    issue = await docs.create_document(db, admin, doc(DocType.ISSUE, env["wh1"],
+                                                      (env["drill"], env["u"]["عدد"], Decimal(5))))
+    with pytest.raises(ValidationError, match="پیش‌نویس ر-۱ منتظر ثبت نهایی"):
+        await docs.post_document(db, admin, issue)
+    await docs.post_document(db, admin, draft)
+    assert await docs.pending_incoming(db, admin, env["drill"], env["wh1"]) == []
+    await docs.post_document(db, admin, issue)

@@ -39,9 +39,11 @@ from caspian.services.documents import (
     LineInput,
     LoanRow,
 )
-from caspian.services.errors import ServiceError, ValidationError
+from caspian.services.errors import ServiceError, StocktakeFrozen, ValidationError
 from caspian.services.items import ItemRow
+from caspian.services.protected import ProtectedAction
 from caspian.ui.app_context import AppContext, exec_dialog
+from caspian.ui.auth_dialogs import request_approval
 from caspian.ui.dialogs import FormDialog
 from caspian.ui.document_print import document_print_menu
 from caspian.ui.messages import show_error
@@ -49,7 +51,23 @@ from caspian.ui.widgets import Card, DataTable, JalaliDateEdit, QtyEdit, SearchB
 
 LIST_COLUMNS = ("شماره", "نوع سند", "تاریخ", "انبار", "طرف حساب", "اقلام", "وضعیت", "ثبت‌کننده")
 LOAN_COLUMNS = ("شماره امانی", "تاریخ", "تحویل‌گیرنده", "کالا", "مانده", "روز")
+OUTGOING = {DocType.ISSUE, DocType.TRANSFER, DocType.LOAN_OUT}
 LINE_COLUMNS = ("کد", "نام کالا", "واحد", "مقدار", "فی", "توضیح", "")
+
+
+async def with_stocktake_override(ctx: AppContext, parent, action):
+    """Run `action(approval)`; if a stocktake freezes the items (#7), offer an admin PIN override
+    and retry. Re-raises the freeze error when no approval is given."""
+    try:
+        return await action(None)
+    except StocktakeFrozen as exc:
+        approval = await request_approval(
+            ctx.db, ctx.actor, ProtectedAction.STOCKTAKE_OVERRIDE,
+            f"{exc.message}\nبا وجود انبارگردانی باز ادامه داده شود؟ مغایرت آن انبارگردانی نادرست خواهد شد.",
+            parent)
+        if approval is None:
+            raise
+        return await action(approval)
 
 
 def doc_title(row_type: DocType, number: int | None) -> str:
@@ -357,8 +375,13 @@ class DocumentDialog(FormDialog):
             else:
                 self._add_line(row.id, row.code, row.name, unit_id, Decimal(1))
             if row.on_hand is not None:
-                self.stock_hint.setText(f"موجودی «{row.name}»: {format_qty(row.on_hand)} "
-                                        f"{row.base_unit}")
+                hint = f"موجودی «{row.name}»: {format_qty(row.on_hand)} {row.base_unit}"
+                if self._type in OUTGOING and self.warehouse.currentData() is not None:
+                    pending = await docs.pending_incoming(self._ctx.db, self._ctx.actor, row.id,
+                                                          self.warehouse.currentData())
+                    if pending:
+                        hint += " — " + docs.pending_hint(pending, row.base_unit)
+                self.stock_hint.setText(hint)
         except ServiceError as exc:
             self.show_status(exc.message)
         finally:
@@ -412,8 +435,8 @@ class DocumentDialog(FormDialog):
 
     async def submit(self) -> None:
         doc_id = await self._save()
-        await docs.post_document(self._ctx.db, self._ctx.actor, doc_id,
-                                 self._detail.version_id)
+        await with_stocktake_override(self._ctx, self, lambda approval: docs.post_document(
+            self._ctx.db, self._ctx.actor, doc_id, self._detail.version_id, approval))
         self.posted = True
 
     @asyncSlot()
@@ -441,8 +464,8 @@ class CancelDialog(FormDialog):
     async def submit(self) -> None:
         if not self.reason.text().strip():
             raise ValidationError("علت ابطال را بنویسید.")
-        await docs.cancel_document(self._ctx.db, self._ctx.actor, self._row.id,
-                                   self.reason.text())
+        await with_stocktake_override(self._ctx, self, lambda approval: docs.cancel_document(
+            self._ctx.db, self._ctx.actor, self._row.id, self.reason.text(), approval))
 
 
 # ----- page -----
@@ -593,6 +616,12 @@ class DocumentsList(QWidget):
     async def open_new(self, doc_type: DocType) -> None:
         await self.open_editor(doc_type, None)
 
+    async def open_document(self, doc_id: int) -> None:
+        await self.refresh()
+        self.table.select_id(doc_id)
+        detail = await docs.get_document(self._ctx.db, self._ctx.actor, doc_id)
+        await self.open_editor(detail.input.doc_type, detail)
+
     @asyncSlot()
     async def on_open(self) -> None:
         row = self.selected()
@@ -606,7 +635,8 @@ class DocumentsList(QWidget):
         if (row := self.selected()) is None:
             return
         try:
-            await docs.post_document(self._ctx.db, self._ctx.actor, row.id)
+            await with_stocktake_override(self._ctx, self, lambda approval: docs.post_document(
+                self._ctx.db, self._ctx.actor, row.id, approval=approval))
         except ServiceError as exc:
             show_error(self, exc.message)
         await self.refresh()

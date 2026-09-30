@@ -164,7 +164,7 @@ class MainWindow(QMainWindow):
             elif spec.key == "documents":
                 page = DocumentsPage(self.ctx)
             elif spec.key == "imports":
-                page = ImportsPage(self.ctx)
+                page = ImportsPage(self.ctx, open_document=self.open_document)
             elif spec.key == "stocktake":
                 page = StocktakePage(self.ctx)
             elif spec.key == "reports":
@@ -220,6 +220,10 @@ class MainWindow(QMainWindow):
 
     def show_about(self) -> None:
         AboutDialog(self).open()
+
+    async def open_document(self, doc_id: int) -> None:
+        self.navigate("documents")
+        await self._pages["documents"].documents.open_document(doc_id)
 
     @asyncSlot()
     async def open_import_batch(self, batch_id: int) -> None:

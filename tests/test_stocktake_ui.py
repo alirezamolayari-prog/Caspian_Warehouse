@@ -21,7 +21,8 @@ async def env(themes, db, admin):
     u = {x.name: x.id for x in await master.list_units(db)}
     wh = (await master.list_warehouses(db))[0].id
     a = await items.create_item(db, admin, ItemInput("1001", "دریل", u["عدد"],
-                                                     barcodes=[("111", None)]))
+                                                     units=[(u["کارتن"], Decimal(12))],
+                                                     barcodes=[("111", None), ("111-C", u["کارتن"])]))
     await items.create_item(db, admin, ItemInput("1002", "فرز", u["عدد"]))
     await docs.create_and_post(db, admin, docs.DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh, [docs.LineInput(a, u["عدد"], Decimal(7))]))
@@ -92,3 +93,17 @@ async def test_sheet_is_blind_and_pdf_renders(env, tmp_path):
     save_pdf(html_text, str(path))
     data = path.read_bytes()
     assert data.startswith(b"%PDF") and len(data) > 2000
+
+
+async def test_carton_barcode_counts_the_whole_carton(qtbot, env):
+    """Two scans of a 12-piece carton barcode must count 24, not 2 (#8)."""
+    sheet = await st.count_sheet(env["db"], env["counter"], env["sid"])
+    dlg = CountDialog(ctx_for(env, env["counter"]), sheet)
+    qtbot.addWidget(dlg)
+    for code in ("111-C", "111-C", "111"):
+        dlg.scan.setText(code)
+        await dlg.on_scan()
+    assert dlg.qty_edits[sheet.lines[0].id].value() == Decimal(25)
+    dlg.scan.setText("111-C")
+    await dlg.on_scan()
+    assert "کارتن" in dlg.status.text() and "۱۲" in dlg.status.text()
