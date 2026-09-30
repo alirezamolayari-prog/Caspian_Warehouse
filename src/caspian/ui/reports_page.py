@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QLineEdit,
     QPushButton,
     QSpinBox,
     QTabWidget,
@@ -22,7 +21,7 @@ from qasync import asyncSlot
 from caspian.core import jalali
 from caspian.core.numbers import format_qty
 from caspian.core.permissions import Perm
-from caspian.core.text import to_persian_digits
+from caspian.core.text import to_ascii_digits, to_persian_digits
 from caspian.db.database import Database
 from caspian.services import items, master, reports, users
 from caspian.services.errors import ServiceError, ValidationError
@@ -34,7 +33,8 @@ from caspian.ui.app_context import AppContext
 from caspian.ui.file_dialogs import ask_save_path
 from caspian.ui.messages import show_error, show_info
 from caspian.ui.printing import output_menu, report_html
-from caspian.ui.widgets import Card, DataTable, JalaliDateEdit
+from caspian.ui.tasks import spawn
+from caspian.ui.widgets import Card, DataTable, JalaliDateEdit, SearchableCombo
 
 
 def format_cell(value, kind: str) -> str:
@@ -145,7 +145,7 @@ class ReportView(QWidget):
 
 
 def _warehouse_combo(warehouses, with_all: bool = True) -> QComboBox:
-    combo = QComboBox()
+    combo = SearchableCombo()
     if with_all:
         combo.addItem("همه انبارها", None)
     for w in warehouses:
@@ -185,8 +185,9 @@ class ReportsPage(QWidget):
 
         # stock balance
         self.stock = ReportView(ctx, self._run_stock)
-        self.stock_wh = QComboBox()
-        self.stock_cat = QComboBox()
+        self.stock_wh = SearchableCombo()
+        self.stock_cat = SearchableCombo()
+        self.stock_cat.setMinimumWidth(180)
         self.stock_zero = QCheckBox("نمایش کالاهای بدون موجودی")
         for w in (QLabel("انبار:"), self.stock_wh, QLabel("گروه:"), self.stock_cat, self.stock_zero):
             self.stock.filters.addWidget(w)
@@ -195,15 +196,15 @@ class ReportsPage(QWidget):
 
         # cardex
         self.cardex = ReportView(ctx, self._run_cardex)
-        self.cardex_search = QLineEdit()
-        self.cardex_search.setPlaceholderText("کد یا نام کالا…")
-        self.cardex_search.returnPressed.connect(self.on_cardex_search)
-        self.cardex_item = QComboBox()
-        self.cardex_item.setMinimumWidth(240)
-        self.cardex_wh = QComboBox()
+        # One field: type code, name or scan a barcode (#11).
+        self.cardex_item = SearchableCombo("کد، نام یا بارکد کالا…")
+        self.cardex_item.setMinimumWidth(300)
+        self.cardex_item.activated.connect(self._on_cardex_item_chosen)
+        self.cardex_item.unmatched.connect(self.on_cardex_lookup)
+        self.cardex_wh = SearchableCombo()
         self.cardex_from = JalaliDateEdit(dt.date.today() - dt.timedelta(days=90))
         self.cardex_to = JalaliDateEdit()
-        for w in (QLabel("کالا:"), self.cardex_search, self.cardex_item, QLabel("انبار:"),
+        for w in (QLabel("کالا:"), self.cardex_item, QLabel("انبار:"),
                   self.cardex_wh, QLabel("از:"), self.cardex_from, QLabel("تا:"), self.cardex_to):
             self.cardex.filters.addWidget(w)
         self.cardex.filters.addStretch(1)
@@ -215,7 +216,7 @@ class ReportsPage(QWidget):
         self.lead = _spin(14)
         self.cover = _spin(60)
         self.safety = _spin(7)
-        self.burn_wh = QComboBox()
+        self.burn_wh = SearchableCombo()
         self.only_order = QCheckBox("فقط کالاهای نیازمند سفارش")
         self.only_order.setChecked(True)
         for w in (QLabel("بازه مصرف (روز):"), self.lookback, QLabel("زمان تحویل:"), self.lead,
@@ -235,7 +236,7 @@ class ReportsPage(QWidget):
 
         # user activity
         self.activity = ReportView(ctx, self._run_activity)
-        self.activity_user = QComboBox()
+        self.activity_user = SearchableCombo()
         self.activity_from = JalaliDateEdit(dt.date.today() - dt.timedelta(days=7))
         self.activity_to = JalaliDateEdit()
         for w in (QLabel("کاربر:"), self.activity_user, QLabel("از:"), self.activity_from,
@@ -276,10 +277,9 @@ class ReportsPage(QWidget):
             combo.addItem("همه انبارها", None)
             for w in warehouses:
                 combo.addItem(w.name, w.id)
-        self.stock_cat.clear()
-        self.stock_cat.addItem("همه گروه‌ها", None)
-        for c in await master.list_categories(db):
-            self.stock_cat.addItem(c.name, c.id)
+        self.stock_cat.set_items(((c.name, c.id) for c in await master.list_categories(db)),
+                                 none_text="همه گروه‌ها")
+        await self._load_cardex_items()
         if self._ctx.actor.can(Perm.USERS_MANAGE):
             self.activity_user.clear()
             self.activity_user.addItem("همه کاربران", None)
@@ -302,6 +302,7 @@ class ReportsPage(QWidget):
     def _on_year_changed(self, *_args) -> None:
         year = self.year.currentData()
         self.archive_note.setVisible(year is not None)
+        spawn(self._load_cardex_items())  # an archive has its own item list
         # Date filters follow the chosen year so an archive doesn't look empty.
         if year is None:
             start, end = dt.date.today() - dt.timedelta(days=90), dt.date.today()
@@ -350,15 +351,32 @@ class ReportsPage(QWidget):
                                            self.activity_user.currentData(),
                                            self.activity_from.date(), self.activity_to.date())
 
-    @asyncSlot()
-    async def on_cardex_search(self) -> None:
-        rows = await items.search_items(await self._db(), self._ctx.actor, self.cardex_search.text(),
-                                        include_inactive=True, limit=50)
-        self.cardex_item.clear()
-        for r in rows:
-            self.cardex_item.addItem(f"{r.code} — {r.name}", r.id)
-        if len(rows) == 1:
+    async def _load_cardex_items(self) -> None:
+        rows = await items.search_items(await self._db(), self._ctx.actor, include_inactive=True,
+                                        limit=100_000)
+        self.cardex_item.set_items(((f"{r.code} — {r.name}", r.id) for r in rows), none_text="",
+                                   current=self.cardex_item.currentData())
+
+    def _on_cardex_item_chosen(self, *_args) -> None:
+        if self.cardex_item.currentData() is not None:
+            self.cardex.refresh()
+
+    @asyncSlot(str)
+    async def on_cardex_lookup(self, text: str) -> None:
+        """Enter on text that isn't one entry: a barcode, or a code/name with several matches."""
+        rows = await items.search_items(await self._db(), self._ctx.actor, text, include_inactive=True,
+                                        limit=50)
+        raw = to_ascii_digits(text.strip())
+        exact = [r for r in rows if r.code == raw]
+        if exact or len(rows) == 1:
+            self.cardex_item.select_value((exact or rows)[0].id)
             await self.cardex.refresh()
+        elif not rows:
+            show_error(self, f"کالایی با «{text}» پیدا نشد.")
+        else:
+            self.cardex_item.lineEdit().setText(text)
+            self.cardex_item.completer().setCompletionPrefix(text)
+            self.cardex_item.completer().complete()
 
     @asyncSlot()
     async def on_apply_reorder_points(self) -> None:

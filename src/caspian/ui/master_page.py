@@ -20,7 +20,7 @@ from caspian.services.master import PERSON_KIND_NAMES, PersonRow
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.dialogs import FormDialog, ltr_field
 from caspian.ui.messages import show_error
-from caspian.ui.widgets import Card, DataTable, SearchBox
+from caspian.ui.widgets import Card, DataTable, SearchableCombo, SearchBox
 
 
 class _Tab(QWidget):
@@ -183,6 +183,7 @@ class PersonDialog(FormDialog):
                          "کد خالی = تخصیص خودکار." if not row else "",
                          submit_text="ذخیره", parent=parent)
         self._ctx, self._row = ctx, row
+        self.saved_id: int | None = None
         self.name = self.add_row("نام:", QLineEdit(row.name if row else ""))
         self.kind = self.add_row("نوع:", _kind_combo(row.kind if row else PersonKind.SUPPLIER))
         self.code = self.add_row("کد:", ltr_field(row.code if row else ""))
@@ -190,11 +191,32 @@ class PersonDialog(FormDialog):
         self.address = self.add_row("نشانی:", QLineEdit(row.address if row else ""))
 
     async def submit(self) -> None:
-        await master.save_person(
+        self.saved_id = await master.save_person(
             self._ctx.db, self._ctx.actor, self.name.text(), self.kind.currentData(),
             self.phone.text(), self.address.text(), self.code.text(),
             self._row.id if self._row else None, self._row.version_id if self._row else None,
         )
+
+
+async def add_person(ctx: AppContext, parent, typed: str = "") -> tuple[str, int] | None:
+    """«+ افزودن شخص جدید» in person pickers: (display text, id) of the new person, or None."""
+    if not ctx.actor.can(Perm.PERSONS_EDIT):
+        show_error(parent, "شما مجوز تعریف شخص جدید را ندارید.")
+        return None
+    dialog = PersonDialog(ctx, parent=parent)
+    dialog.name.setText(typed.strip())
+    if not await exec_dialog(dialog) or dialog.saved_id is None:
+        return None
+    return (f"{' '.join(dialog.name.text().split())} ({PERSON_KIND_NAMES[dialog.kind.currentData()]})",
+            dialog.saved_id)
+
+
+def person_picker(ctx: AppContext, parent, persons, current: int | None = None) -> SearchableCombo:
+    combo = SearchableCombo("نام شخص را بنویسید…")
+    combo.enable_add("+ افزودن شخص جدید", lambda typed: add_person(ctx, parent, typed))
+    combo.set_items(((f"{p.name} ({p.kind_name})", p.id) for p in persons), none_text="—",
+                    current=current)
+    return combo
 
 
 class PersonsTab(_Tab):
@@ -244,7 +266,7 @@ class CategoryDialog(FormDialog):
                          parent=parent)
         self._ctx, self._row = ctx, row
         self.name = self.add_row("نام گروه:", QLineEdit(row.name if row else ""))
-        self.parent_combo = QComboBox()
+        self.parent_combo = SearchableCombo()
         self.parent_combo.addItem("— (گروه اصلی)", None)
         for cat in categories:
             if row is None or cat.id != row.id:

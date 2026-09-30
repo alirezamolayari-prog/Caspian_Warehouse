@@ -47,13 +47,41 @@ async def test_stock_tab(page):
     assert "دریل" in report_to_html(page.stock.report)
 
 
-async def test_cardex_search_runs_report(page):
-    page.cardex_search.setText("1001")
-    await page.on_cardex_search()
+async def test_cardex_search_runs_report(qtbot, page):
+    """One field for code / name / barcode (#11): typing the code and Enter runs the cardex."""
+    from PySide6.QtCore import Qt
+
+    page.cardex_item.lineEdit().setText("1001")
+    qtbot.keyClick(page.cardex_item, Qt.Key.Key_Return)
     await wait_until(lambda: page.cardex.report is not None)
     assert page.cardex.table.rowCount() == 3  # opening balance + receipt + issue
     assert page.cardex.table.item(0, 1).text() == "مانده از قبل"
     assert page.cardex.table.item(2, 7).text() == "۱۰"
+
+
+async def test_cardex_item_by_arabic_name_or_barcode(qtbot, page):
+    from PySide6.QtCore import Qt
+
+    db, admin = page._ctx.db, page._ctx.actor
+    unit = (await master.list_units(db))[0].id
+    await items.create_item(db, admin, ItemInput("2001", "کیف ابزار", unit, barcodes=[("626555", None)]))
+    await page.load_filters()
+    page.cardex_item.lineEdit().setText("كيف")  # Arabic keyboard
+    qtbot.keyClick(page.cardex_item, Qt.Key.Key_Return)
+    assert page.cardex_item.currentText() == "2001 — کیف ابزار"
+    page.cardex_item.select_value(None)
+    page.cardex_item.lineEdit().setText("626555")  # barcode: not in the list text
+    qtbot.keyClick(page.cardex_item, Qt.Key.Key_Return)
+    assert await wait_until(lambda: page.cardex_item.currentText() == "2001 — کیف ابزار")
+    assert await wait_until(lambda: page.cardex.report is not None)
+
+
+async def test_report_filters_are_searchable(page):
+    from caspian.ui.widgets import SearchableCombo
+
+    for combo in (page.stock_wh, page.stock_cat, page.cardex_wh, page.burn_wh, page.activity_user):
+        assert isinstance(combo, SearchableCombo)
+    assert page.stock_cat.itemText(0) == "همه گروه‌ها"
 
 
 async def test_burn_rate_and_apply_reorder_point(page):

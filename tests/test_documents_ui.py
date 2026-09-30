@@ -181,3 +181,29 @@ async def test_issue_form_mentions_stock_waiting_in_a_draft(qtbot, env):
     qtbot.addWidget(dlg)
     await scan(dlg, "111")
     assert "۵ عدد در پیش‌نویس ر-۱ منتظر ثبت نهایی است" in dlg.stock_hint.text()
+
+
+async def test_add_new_person_from_the_picker(qtbot, env):
+    """«+ افزودن شخص جدید» creates the person and selects it (#10)."""
+    import asyncio
+
+    from PySide6.QtWidgets import QApplication
+
+    from caspian.ui.master_page import PersonDialog
+
+    dlg = await make_dialog(env, DocType.ISSUE)
+    qtbot.addWidget(dlg)
+    dlg.person.lineEdit().setText("كامران")  # typed with Arabic letters
+    task = asyncio.ensure_future(dlg.person.run_add("كامران"))
+
+    def person_dialog():
+        return next((w for w in QApplication.topLevelWidgets()
+                     if isinstance(w, PersonDialog) and w.isVisible()), None)
+
+    assert await wait_until(lambda: person_dialog() is not None)
+    form = person_dialog()
+    assert form.name.text() == "كامران"
+    form.submit_button.click()
+    new_id = await task
+    assert new_id is not None and dlg.person.currentData() == new_id
+    assert dlg.person.currentText().startswith("كامران")  # stored as typed; search is normalized

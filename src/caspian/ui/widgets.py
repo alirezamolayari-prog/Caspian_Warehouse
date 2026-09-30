@@ -1,13 +1,16 @@
 """Small reusable widgets styled through object names in theme.py."""
 
 import datetime as dt
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from decimal import Decimal
+from typing import Any
 
-from PySide6.QtCore import QRegularExpression, Qt, QTimer, Signal
+from PySide6.QtCore import QModelIndex, QRegularExpression, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QRegularExpressionValidator
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
+    QCompleter,
     QFrame,
     QHeaderView,
     QLabel,
@@ -20,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from caspian.core import jalali
 from caspian.core.numbers import format_qty, parse_decimal
+from caspian.core.text import normalize
 
 
 class Card(QFrame):
@@ -154,6 +158,159 @@ class SearchBox(QLineEdit):
     def _emit_now(self) -> None:
         self._timer.stop()
         self.search.emit(self.text())
+
+
+SEARCH_ROLE = Qt.ItemDataRole.UserRole + 50  # normalized text the completer matches against
+_ADD = "__add__"
+
+
+class _NormalizedCompleter(QCompleter):
+    """Matches what the user types against normalized item text, so Arabic ي/ك, Persian ی/ک,
+    ZWNJ and Persian/Latin digits all find the same entry."""
+
+    def splitPath(self, path: str) -> list[str]:
+        return [normalize(path)]
+
+    def pathFromIndex(self, index: QModelIndex) -> str:
+        return index.data(Qt.ItemDataRole.DisplayRole) or ""
+
+
+class SearchableCombo(QComboBox):
+    """Type -> suggestions (contains, normalized) -> Enter. Otherwise used like a QComboBox
+    (addItem/findData/currentData). `enable_add` appends a «+ افزودن …» entry (#10)."""
+
+    unmatched = Signal(str)  # Enter on text that matches no entry (e.g. a barcode)
+
+    def __init__(self, placeholder: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setEditable(True)
+        self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.setMaxVisibleItems(15)
+        self.setMinimumContentsLength(14)
+        self.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.lineEdit().setPlaceholderText(placeholder)
+        self.model().rowsInserted.connect(self._index_rows)
+        completer = _NormalizedCompleter(self.model(), self)
+        completer.setCompletionRole(SEARCH_ROLE)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        completer.setMaxVisibleItems(15)
+        self.setCompleter(completer)
+        self._add: tuple[str, Callable[[str], Awaitable[tuple[str, Any] | None]]] | None = None
+        self._last_index = -1
+        self.activated.connect(self._on_activated)
+        self.currentIndexChanged.connect(self._remember_index)
+
+    # ----- items -----
+
+    def _index_rows(self, _parent: QModelIndex, first: int, last: int) -> None:
+        for row in range(max(first, 0), last + 1):
+            text = "" if self.itemData(row) == _ADD else normalize(self.itemText(row))
+            self.setItemData(row, text, SEARCH_ROLE)
+
+    def _add_row(self) -> int:
+        return self.findData(_ADD)
+
+    def addItem(self, text: str, userData: Any = None) -> None:
+        """Keeps the «+ افزودن …» entry last."""
+        add_row = self._add_row()
+        if add_row < 0:
+            super().addItem(text, userData)
+        else:
+            self.insertItem(add_row, text, userData)
+
+    def set_items(self, items: Iterable[tuple[str, Any]], none_text: str | None = None,
+                  current: Any = None) -> None:
+        self.blockSignals(True)
+        self.clear()
+        if none_text is not None:
+            super().addItem(none_text, None)
+        for text, value in items:
+            super().addItem(text, value)
+        if self._add is not None:
+            super().addItem(self._add[0], _ADD)
+        self.blockSignals(False)
+        self.select_value(current)
+
+    def select_value(self, value: Any) -> None:
+        index = self.findData(value) if value is not None else -1
+        if index < 0 and self.count() and self.itemData(0) != _ADD:
+            index = 0
+        self.setCurrentIndex(index)
+
+    def enable_add(self, label: str, handler: Callable[[str], Awaitable[tuple[str, Any] | None]]) -> None:
+        """`handler(typed_text)` creates the record and returns (text, value), or None."""
+        self._add = (label, handler)
+        if self._add_row() < 0:
+            super().addItem(label, _ADD)
+
+    # ----- interaction -----
+
+    def _remember_index(self, index: int) -> None:
+        if index >= 0 and self.itemData(index) != _ADD:
+            self._last_index = index
+
+    def _on_activated(self, index: int) -> None:
+        if self.itemData(index) != _ADD or self._add is None:
+            return
+        typed = self.lineEdit().text()
+        if normalize(typed) == normalize(self._add[0]):
+            typed = ""
+        self.setCurrentIndex(self._last_index)
+        from caspian.ui.tasks import spawn
+
+        spawn(self.run_add(typed))
+
+    async def run_add(self, typed: str = "") -> Any:
+        """Create a new entry through the add handler and select it; returns its value."""
+        if self._add is None:
+            return None
+        result = await self._add[1](typed)
+        if result is None:
+            return None
+        text, value = result
+        if self.findData(value) < 0:
+            self.addItem(text, value)
+        self.setCurrentIndex(self.findData(value))
+        return value
+
+    def _matches(self, text: str) -> list[int]:
+        key = normalize(text)
+        rows = [r for r in range(self.count()) if self.itemData(r) != _ADD]
+        exact = [r for r in rows if self.itemData(r, SEARCH_ROLE) == key]
+        return exact or [r for r in rows if key and key in (self.itemData(r, SEARCH_ROLE) or "")]
+
+    def commit_text(self) -> bool:
+        """Select the entry the typed text stands for; restore the current text if none/ambiguous."""
+        text = self.lineEdit().text()
+        current = self.currentIndex()
+        if current >= 0 and self.itemText(current) == text:
+            return True
+        matches = self._matches(text)
+        if len(matches) == 1:
+            self.setCurrentIndex(matches[0])
+            self.lineEdit().setText(self.itemText(matches[0]))
+            return True
+        self.lineEdit().setText(self.itemText(current) if current >= 0 else "")
+        return False
+
+    def keyPressEvent(self, event) -> None:
+        popup = self.completer().popup()
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not popup.isVisible():
+            text = self.lineEdit().text()
+            if self.commit_text():
+                self.activated.emit(self.currentIndex())  # same as picking it from the list
+            elif text.strip():
+                self.unmatched.emit(text.strip())
+            event.accept()  # Enter picks an entry; it must never submit the surrounding form
+            return
+        super().keyPressEvent(event)
+
+    def focusOutEvent(self, event) -> None:
+        if not self.completer().popup().isVisible():
+            self.commit_text()
+        super().focusOutEvent(event)
 
 
 class QtyEdit(QLineEdit):

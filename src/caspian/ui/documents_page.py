@@ -46,8 +46,9 @@ from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import request_approval
 from caspian.ui.dialogs import FormDialog
 from caspian.ui.document_print import document_print_menu
+from caspian.ui.master_page import person_picker
 from caspian.ui.messages import show_error
-from caspian.ui.widgets import Card, DataTable, JalaliDateEdit, QtyEdit, SearchBox
+from caspian.ui.widgets import Card, DataTable, JalaliDateEdit, QtyEdit, SearchableCombo, SearchBox
 
 LIST_COLUMNS = ("شماره", "نوع سند", "تاریخ", "انبار", "طرف حساب", "اقلام", "وضعیت", "ثبت‌کننده")
 LOAN_COLUMNS = ("شماره امانی", "تاریخ", "تحویل‌گیرنده", "کالا", "مانده", "روز")
@@ -152,12 +153,12 @@ class DocumentDialog(FormDialog):
 
         self.date = JalaliDateEdit(data.doc_date)
         right.addRow("تاریخ:", self.date)
-        self.warehouse = QComboBox()
+        self.warehouse = SearchableCombo()
         for w in warehouses:
             self.warehouse.addItem(w.name, w.id)
         self.warehouse.setCurrentIndex(max(self.warehouse.findData(data.warehouse_id), 0))
         right.addRow("از انبار:" if doc_type == DocType.TRANSFER else "انبار:", self.warehouse)
-        self.dest = QComboBox()
+        self.dest = SearchableCombo()
         if doc_type == DocType.TRANSFER:
             for w in warehouses:
                 self.dest.addItem(w.name, w.id)
@@ -165,11 +166,7 @@ class DocumentDialog(FormDialog):
             self.dest.setCurrentIndex(index if index >= 0 else min(1, self.dest.count() - 1))
             right.addRow("به انبار:", self.dest)
 
-        self.person = QComboBox()
-        self.person.addItem("—", None)
-        for p in persons:
-            self.person.addItem(f"{p.name} ({p.kind_name})", p.id)
-        self.person.setCurrentIndex(max(self.person.findData(data.person_id), 0))
+        self.person = person_picker(ctx, self, persons, data.person_id)
         person_label = {DocType.RECEIPT: "تأمین‌کننده:", DocType.ISSUE: "تحویل‌گیرنده:",
                         DocType.LOAN_OUT: "تحویل‌گیرنده:", DocType.LOAN_RETURN: "برگشت‌دهنده:"}
         if doc_type in person_label:

@@ -30,7 +30,7 @@ from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import request_approval
 from caspian.ui.dialogs import FormDialog, ltr_field
 from caspian.ui.messages import show_error
-from caspian.ui.widgets import Card, DataTable, EmptyState, QtyEdit, SearchBox
+from caspian.ui.widgets import Card, DataTable, EmptyState, QtyEdit, SearchableCombo, SearchBox
 
 COLUMNS = ("کد", "نام کالا", "گروه", "واحد", "موجودی", "نقطه سفارش", "وضعیت")
 
@@ -103,7 +103,7 @@ class ItemDialog(FormDialog):
 
         self.code = self.add_row("کد کالا:", ltr_field(data.code))
         self.name = self.add_row("نام کالا:", QLineEdit(data.name))
-        self.category = QComboBox()
+        self.category = SearchableCombo()
         self.category.addItem("بدون گروه", None)
         for cat in categories:
             self.category.addItem(cat.name, cat.id)
@@ -226,8 +226,8 @@ class ItemsPage(QWidget):
         self.search = SearchBox("جستجو: نام، کد یا بارکد…")
         self.search.search.connect(lambda _: self.refresh())
         toolbar.addWidget(self.search)
-        self.category = QComboBox()
-        self.category.setMinimumWidth(160)
+        self.category = SearchableCombo("گروه…")
+        self.category.setMinimumWidth(180)
         self.category.currentIndexChanged.connect(lambda _: self.refresh())
         toolbar.addWidget(self.category)
         self.low_only = QCheckBox("فقط زیر نقطه سفارش")

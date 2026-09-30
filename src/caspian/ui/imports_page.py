@@ -55,8 +55,9 @@ from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import request_approval
 from caspian.ui.dialogs import FormDialog, ltr_field
 from caspian.ui.file_dialogs import ask_open_path
+from caspian.ui.master_page import person_picker
 from caspian.ui.messages import ask, show_error, show_info
-from caspian.ui.widgets import Card, DataTable, QtyEdit
+from caspian.ui.widgets import Card, DataTable, QtyEdit, SearchableCombo
 
 STOCK_DOC_TYPES = (DocType.RECEIPT, DocType.ISSUE, DocType.OPENING, DocType.LOAN_OUT)
 PREVIEW_ROWS = 8
@@ -76,13 +77,9 @@ class _TargetFields:
         self.doc_type = QComboBox()
         for t in STOCK_DOC_TYPES:
             self.doc_type.addItem(DOC_TYPE_NAMES[t], t)
-        self.warehouse = QComboBox()
-        for w in warehouses:
-            self.warehouse.addItem(w.name, w.id)
-        self.person = QComboBox()
-        self.person.addItem("—", None)
-        for p in persons:
-            self.person.addItem(f"{p.name} ({p.kind_name})", p.id)
+        self.warehouse = SearchableCombo()
+        self.warehouse.set_items((w.name, w.id) for w in warehouses)
+        self.person = person_picker(dialog._ctx, dialog, persons)
         self.rows = [dialog.add_row("نوع سند:", self.doc_type),
                      dialog.add_row("انبار:", self.warehouse),
                      dialog.add_row("طرف حساب:", self.person)]

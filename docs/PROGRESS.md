@@ -71,3 +71,14 @@ Plan: Phase 1 (baseline + bug-class audit) → units U1–U13 (P0 → P1 → P2)
 - Tests: `test_stocktake.py` (freeze, scope, override, AI refused, approve exempt, scan factor),
   `test_documents.py` (pending), `test_stocktake_ui.py` (carton ×2 = 24), `test_imports_ui.py` (post/open/later),
   `test_documents_ui.py` (PIN override, pending hint), `test_messages_ui.py` (ask).
+
+### U4 — searchable pickers + single item search (#10, #11)
+- `widgets.SearchableCombo`: editable combo + completer matching normalized text (Arabic ي/ك = Persian ی/ک,
+  ZWNJ, digits), contains-match, Enter selects (never submits the form), text reverts if nothing matches,
+  `unmatched(text)` signal, optional «+ افزودن …» entry kept last (`enable_add`).
+- Used for persons (documents, imports; «+ افزودن شخص جدید» opens the person form, `master_page.person_picker`),
+  warehouses, item group (form + filter), stocktake scope, category parent, all report filters.
+- #11 cardex: one field (code / name / barcode); Enter on a barcode or code looks it up; the item list follows the
+  selected fiscal year and keeps the selection.
+- Tests: `test_widgets_ui.py`, cardex/filters in `test_reports_ui.py`, add-person in `test_documents_ui.py`;
+  two existing tests that drove the removed cardex search box now use the new field (same assertions).

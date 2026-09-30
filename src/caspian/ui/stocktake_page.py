@@ -6,7 +6,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
-    QComboBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -32,7 +31,7 @@ from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.dialogs import FormDialog, ltr_field
 from caspian.ui.messages import show_error, show_info
 from caspian.ui.printing import output_menu, report_html
-from caspian.ui.widgets import Card, DataTable, QtyEdit
+from caspian.ui.widgets import Card, DataTable, QtyEdit, SearchableCombo
 
 LIST_COLUMNS = ("شماره", "انبار", "محدوده", "عنوان", "شروع", "وضعیت", "پیشرفت شمارش")
 
@@ -68,16 +67,16 @@ def report_to_html(report: DiscrepancyReport, only_differences: bool) -> str:
 class NewStocktakeDialog(FormDialog):
     def __init__(self, ctx: AppContext, warehouses, categories, parent=None) -> None:
         super().__init__("انبارگردانی جدید",
-                         "موجودی سیستم در همین لحظه ثبت (فریز) می‌شود. در طول شمارش، تا حد امکان "
-                         "ورود و خروج کالا از این انبار انجام نشود.",
+                         "موجودی سیستم در همین لحظه ثبت (فریز) می‌شود. تا تأیید یا لغو انبارگردانی، "
+                         "ثبت و ابطال اسناد کالاهای آن در این انبار قفل است (مگر با تأیید مدیر).",
                          submit_text="شروع انبارگردانی", parent=parent)
         self._ctx = ctx
         self.created_id: int | None = None
-        self.warehouse = QComboBox()
+        self.warehouse = SearchableCombo()
         for w in warehouses:
             self.warehouse.addItem(w.name, w.id)
         self.add_row("انبار:", self.warehouse)
-        self.category = QComboBox()
+        self.category = SearchableCombo()
         self.category.addItem("همه کالاها", None)
         for c in categories:
             self.category.addItem(c.name, c.id)
