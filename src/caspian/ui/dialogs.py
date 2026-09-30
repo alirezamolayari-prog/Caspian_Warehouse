@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 from qasync import asyncSlot
 
+from caspian.core.logging_setup import log_file
 from caspian.services.errors import ServiceError
 
 log = logging.getLogger(__name__)
@@ -111,7 +112,7 @@ class FormDialog(QDialog):
             return
         except Exception:
             log.exception("Dialog action failed")
-            self.show_status("خطای غیرمنتظره رخ داد. جزئیات در فایل گزارش ثبت شد.")
+            self.show_status(f"خطای غیرمنتظره رخ داد. جزئیات در فایل گزارش ثبت شد:\n{log_file()}")
             return
         finally:
             self.set_busy(False)

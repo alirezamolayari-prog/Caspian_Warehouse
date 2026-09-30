@@ -7,7 +7,7 @@ import sys
 
 import qasync
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog
 
 from caspian import APP_DISPLAY_NAME, APP_NAME, __version__, setup_cli
 from caspian.core.logging_setup import setup_logging
@@ -24,6 +24,7 @@ from caspian.ui.db_setup_dialog import DbSetupDialog
 from caspian.ui.fonts import apply_app_font
 from caspian.ui.icons import icon
 from caspian.ui.main_window import MainWindow
+from caspian.ui.messages import show_unexpected_error
 from caspian.ui.theme import LIGHT, ThemeManager
 
 log = logging.getLogger(__name__)
@@ -46,10 +47,7 @@ def install_exception_hook() -> None:
     def hook(exc_type, exc, tb) -> None:
         log.critical("Unhandled error", exc_info=(exc_type, exc, tb))
         if QApplication.instance() is not None:
-            box = QMessageBox(QMessageBox.Icon.Critical, "خطای غیرمنتظره",
-                              "خطای غیرمنتظره‌ای رخ داد و جزئیات آن در فایل گزارش ثبت شد.\n"
-                              f"{exc_type.__name__}: {exc}"[:500], QMessageBox.StandardButton.Ok)
-            box.open()
+            show_unexpected_error(exc_type, exc, tb)
 
     sys.excepthook = hook
 
