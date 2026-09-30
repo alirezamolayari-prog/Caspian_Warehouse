@@ -5,7 +5,7 @@ import pytest
 
 from caspian.core.settings import Settings
 from caspian.db.database import DbConfig
-from caspian.db.models import DocType
+from caspian.db.models import DocType, PersonKind
 from caspian.services import auth, items, master, users
 from caspian.services import documents as docs
 from caspian.services.items import ItemInput
@@ -22,9 +22,10 @@ async def page(qtbot, themes, db, admin):
     await docs.create_and_post(db, admin, docs.DocumentInput(
         DocType.RECEIPT, dt.date.today() - dt.timedelta(10), wh,
         [docs.LineInput(drill, u["عدد"], Decimal(100), Decimal(250000))]))
+    recipient = await master.save_person(db, admin, "گیرنده", PersonKind.EMPLOYEE)
     await docs.create_and_post(db, admin, docs.DocumentInput(
         DocType.ISSUE, dt.date.today() - dt.timedelta(5), wh,
-        [docs.LineInput(drill, u["عدد"], Decimal(90))]))
+        [docs.LineInput(drill, u["عدد"], Decimal(90))], person_id=recipient))
     p = ReportsPage(AppContext(db, DbConfig(), Settings(), themes, admin))
     qtbot.addWidget(p)
     await p.load_filters()

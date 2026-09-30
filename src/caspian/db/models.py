@@ -125,6 +125,8 @@ class Unit(IdMixin, Base):
 
     name: Mapped[str] = mapped_column(String(50), unique=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Counted things (عدد، کارتن…) can't be 2.5; measured ones (متر، کیلوگرم…) can.
+    allow_decimal: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
 
 
 class Item(IdMixin, TimestampMixin, CreatedByMixin, VersionMixin, Base):

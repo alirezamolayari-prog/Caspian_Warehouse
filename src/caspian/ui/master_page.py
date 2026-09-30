@@ -317,20 +317,24 @@ class UnitDialog(FormDialog):
                          parent=parent)
         self._ctx, self._row = ctx, row
         self.name = self.add_row("نام واحد:", QLineEdit(row.name if row else ""))
+        self.allow_decimal = QCheckBox("مقدار اعشاری مجاز است (مثل متر، کیلوگرم؛ برای «عدد» و «کارتن» خاموش)")
+        self.allow_decimal.setChecked(row.allow_decimal if row else True)
+        self.add_row("", self.allow_decimal)
 
     async def submit(self) -> None:
         await master.save_unit(self._ctx.db, self._ctx.actor, self.name.text(),
-                               self._row.id if self._row else None)
+                               self._row.id if self._row else None, self.allow_decimal.isChecked())
 
 
 class UnitsTab(_Tab):
-    columns = ("نام واحد", "وضعیت")
+    columns = ("نام واحد", "اعشار", "وضعیت")
     new_text = "واحد جدید"
 
     async def refresh(self) -> None:
         rows = await master.list_units(self.ctx.db, include_inactive=True)
         self.rows = {r.id: r for r in rows}
-        self.table.set_rows([(r.id, (r.name, "فعال" if r.is_active else "غیرفعال"))
+        self.table.set_rows([(r.id, (r.name, "مجاز" if r.allow_decimal else "فقط عدد صحیح",
+                                     "فعال" if r.is_active else "غیرفعال"))
                              for r in rows], muted=[not r.is_active for r in rows])
 
     async def open_editor(self, row) -> None:

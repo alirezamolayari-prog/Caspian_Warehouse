@@ -276,6 +276,11 @@ async def record_counts(db: Database, actor: Actor, stocktake_id: int,
                 raise ValidationError("ردیف متعلق به این انبارگردانی نیست.")
             if qty is not None and qty < 0:
                 raise ValidationError(f"ردیف {line.line_no}: مقدار شمارش نمی‌تواند منفی باشد.")
+            if qty is not None and qty != qty.to_integral_value():
+                item = await s.get(Item, line.item_id)
+                if not item.base_unit.allow_decimal:
+                    raise ValidationError(f"ردیف {line.line_no}: شمارش «{item.name}» به "
+                                          f"«{item.base_unit.name}» باید عدد صحیح باشد.")
             if qty != line.counted_qty or note.strip() != line.note:
                 line.counted_qty = qty
                 line.note = note.strip()

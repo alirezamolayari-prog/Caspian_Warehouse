@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from caspian.db.models import DocStatus, DocType, StocktakeStatus
+from caspian.db.models import DocStatus, DocType, PersonKind, StocktakeStatus
 from caspian.services import auth, items, master, protected, users
 from caspian.services import documents as docs
 from caspian.services import stocktake as st
@@ -27,9 +27,11 @@ async def env(db, admin):
     await docs.create_and_post(db, admin, docs.DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh,
         [docs.LineInput(a, u["عدد"], Decimal(10)), docs.LineInput(b, u["عدد"], Decimal(5))]))
+    person = await master.save_person(db, admin, "گیرنده", PersonKind.EMPLOYEE)
     await users.create_user(db, admin, "shomar", "شمارشگر", "Count#2026", "counter")
     counter = (await auth.login(db, "shomar", "Count#2026")).actor
-    return {"wh": wh, "tools": tools, "a": a, "b": b, "c": c, "counter": counter, "u": u}
+    return {"wh": wh, "tools": tools, "a": a, "b": b, "c": c, "counter": counter, "u": u,
+            "person": person}
 
 
 async def _counts(db, actor, stocktake_id, **by_code):
@@ -93,7 +95,7 @@ async def test_movements_after_snapshot_are_flagged(db, admin, env):
     # Only possible with an admin override since the freeze is enforced (#7).
     issue = await docs.create_document(db, admin, docs.DocumentInput(
         DocType.ISSUE, dt.date.today(), env["wh"],
-        [docs.LineInput(env["b"], env["u"]["عدد"], Decimal(1))]))
+        [docs.LineInput(env["b"], env["u"]["عدد"], Decimal(1))], person_id=env["person"]))
     approval = await protected.approve(db, admin, ProtectedAction.STOCKTAKE_OVERRIDE, "admin", ADMIN_PIN)
     await docs.post_document(db, admin, issue, approval=approval)
     await _counts(db, admin, sid, **{"1001": "10", "1002": "4", "2001": "0"})
@@ -125,7 +127,8 @@ async def test_counter_cannot_approve_or_cancel(db, admin, env):
 
 def _issue(env, item="b", qty=1, wh="wh"):
     return docs.DocumentInput(DocType.ISSUE, dt.date.today(), env[wh],
-                              [docs.LineInput(env[item], env["u"]["عدد"], Decimal(qty))])
+                              [docs.LineInput(env[item], env["u"]["عدد"], Decimal(qty))],
+                              person_id=env["person"])
 
 
 async def test_posting_is_blocked_while_counting(db, admin, env):
@@ -200,3 +203,12 @@ async def test_scan_returns_unit_factor(db, admin, env):
     by_code = await st.scan(db, sid, "۱۰۰۱")
     assert by_code.factor == Decimal(1)
     assert await st.scan(db, sid, "nope") is None
+
+
+async def test_counts_respect_integer_units(db, admin, env):
+    """Counting «۲٫۵ عدد» was accepted (#21)."""
+    sid = await st.create_stocktake(db, admin, env["wh"])
+    sheet = await st.count_sheet(db, admin, sid)
+    with pytest.raises(ValidationError, match="صحیح"):
+        await st.record_counts(db, admin, sid, {sheet.lines[0].id: (Decimal("2.5"), "")})
+    await st.record_counts(db, admin, sid, {sheet.lines[0].id: (Decimal(3), "")})

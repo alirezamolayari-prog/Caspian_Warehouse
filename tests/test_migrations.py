@@ -55,6 +55,9 @@ async def _roundtrip(db: Database) -> None:
     async with db.engine.connect() as conn:
         diff = await conn.run_sync(lambda c: compare_metadata(MigrationContext.configure(c), Base.metadata))
     assert diff == []
+    # Existing installations: the seeded count units become integer-only, others unchanged.
+    units = {u.name: u.allow_decimal for u in await master.list_units(db, include_inactive=True)}
+    assert units["عدد"] is False and units["کارتن"] is False and units["متر"] is True
 
 
 async def test_new_migrations_roundtrip_sqlite(tmp_path):

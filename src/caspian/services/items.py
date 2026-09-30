@@ -354,6 +354,8 @@ async def update_item(
         data = await _validate(s, data, item_id)
         if data.base_unit_id != item.base_unit_id and await _has_movements(s, item_id):
             raise ValidationError("واحد اصلی کالایی که گردش دارد قابل تغییر نیست.")
+        if data.code != item.code and await _has_movements(s, item_id):  # #23
+            raise ValidationError("کد کالایی که در سندی استفاده شده قابل تغییر نیست.")
         before = _snapshot(item)
         _apply(item, data)
         # Unit/barcode-only edits touch child rows; force a version bump on the item itself.

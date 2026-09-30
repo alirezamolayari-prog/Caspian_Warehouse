@@ -26,7 +26,11 @@ async def env(db, admin):
         "1001", "دریل", u["عدد"], units=[(u["جعبه"], D(4))], reorder_point=D(5)))
     table = await items.create_item(db, admin, ItemInput("2001", "میز", u["عدد"]))
 
+    recipient = await master.save_person(db, admin, "گیرنده", PersonKind.EMPLOYEE)
+
     async def post(doc_type, date, wh_id, *lines, **kw):
+        if doc_type == DocType.ISSUE:
+            kw.setdefault("person_id", recipient)  # issues need a recipient to be posted
         return await docs.create_and_post(db, admin, docs.DocumentInput(
             doc_type, date, wh_id, [docs.LineInput(*ln) for ln in lines], **kw))
 

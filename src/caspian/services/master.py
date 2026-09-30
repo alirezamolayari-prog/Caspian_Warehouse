@@ -112,6 +112,7 @@ class UnitRow:
     id: int
     name: str
     is_active: bool
+    allow_decimal: bool = True
 
 
 async def list_units(db: Database, include_inactive: bool = False) -> list[UnitRow]:
@@ -119,10 +120,12 @@ async def list_units(db: Database, include_inactive: bool = False) -> list[UnitR
         stmt = select(Unit).order_by(Unit.id)
         if not include_inactive:
             stmt = stmt.where(Unit.is_active)
-        return [UnitRow(u.id, u.name, u.is_active) for u in (await s.scalars(stmt)).all()]
+        return [UnitRow(u.id, u.name, u.is_active, u.allow_decimal) for u in (await s.scalars(stmt)).all()]
 
 
-async def save_unit(db: Database, actor: Actor, name: str, unit_id: int | None = None) -> int:
+async def save_unit(db: Database, actor: Actor, name: str, unit_id: int | None = None,
+                    allow_decimal: bool | None = None) -> int:
+    """`allow_decimal`: None keeps the current setting (new units allow decimals)."""
     actor.require(Perm.ITEMS_EDIT)
     name = _clean(name)
     if not name:
@@ -131,14 +134,20 @@ async def save_unit(db: Database, actor: Actor, name: str, unit_id: int | None =
         if await s.scalar(select(Unit.id).where(Unit.name == name, Unit.id != (unit_id or -1))):
             raise ValidationError("واحدی با این نام وجود دارد.")
         if unit_id is None:
-            unit = Unit(name=name)
+            unit = Unit(name=name, allow_decimal=True if allow_decimal is None else allow_decimal)
             s.add(unit)
             await s.flush()
-            audit.record(s, actor, "unit.created", "unit", unit.id, {"name": name})
+            audit.record(s, actor, "unit.created", "unit", unit.id,
+                         {"name": name, "allow_decimal": unit.allow_decimal})
         else:
             unit = await _get(s, Unit, unit_id, "واحد")
-            audit.record(s, actor, "unit.updated", "unit", unit.id, {"name": [unit.name, name]})
+            audit.record(s, actor, "unit.updated", "unit", unit.id, {
+                "name": [unit.name, name],
+                "allow_decimal": [unit.allow_decimal,
+                                  unit.allow_decimal if allow_decimal is None else allow_decimal]})
             unit.name = name
+            if allow_decimal is not None:
+                unit.allow_decimal = allow_decimal
         return unit.id
 
 

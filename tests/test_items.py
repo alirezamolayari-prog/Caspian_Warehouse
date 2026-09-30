@@ -235,3 +235,26 @@ async def test_no_opening_quantity_means_no_document(db, admin):
             db, admin, ItemInput(code="3004", name="قفسه", base_unit_id=u["عدد"]),
             items.OpeningStock(wh, Decimal(0)))
     assert await items.search_items(db, admin, "قفسه") == []  # all or nothing
+
+
+async def test_code_is_locked_once_used_in_a_document(db, admin):
+    """#23: documents and printed forms refer to the code; it can't change after first use."""
+    from caspian.services import documents as docs
+
+    item_id = await _drill(db, admin)
+    detail = await items.get_item(db, admin, item_id)
+    data = detail.input
+    data.code = "1001-B"
+    await items.update_item(db, admin, item_id, detail.version_id, data)  # unused: still allowed
+    wh = (await master.list_warehouses(db))[0].id
+    await docs.create_document(db, admin, docs.DocumentInput(
+        DocType.RECEIPT, dt.date.today(), wh, [docs.LineInput(item_id, data.base_unit_id, Decimal(1))]))
+    detail = await items.get_item(db, admin, item_id)
+    assert detail.has_movements
+    data = detail.input
+    data.code = "1001-C"
+    with pytest.raises(ValidationError, match="کد کالا"):
+        await items.update_item(db, admin, item_id, detail.version_id, data)
+    data.code = "1001-B"
+    data.name = "دریل بوش جدید"
+    await items.update_item(db, admin, item_id, detail.version_id, data)  # other fields still editable

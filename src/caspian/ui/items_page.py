@@ -114,6 +114,9 @@ class ItemDialog(FormDialog):
         if editing and detail.has_movements:
             self.base_unit.setToolTip("واحد اصلی کالایی که گردش دارد قابل تغییر نیست.")
         self._base_locked = editing and detail.has_movements
+        if self._base_locked:  # documents and printed forms refer to the code (#23)
+            self.code.setReadOnly(True)
+            self.code.setToolTip("کد کالایی که در سندی استفاده شده قابل تغییر نیست.")
 
         reorder = QHBoxLayout()
         self.reorder_point = QtyEdit(data.reorder_point)

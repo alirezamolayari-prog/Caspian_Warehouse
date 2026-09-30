@@ -79,6 +79,7 @@ async def test_insufficient_stock_keeps_draft(qtbot, env):
     qtbot.addWidget(dlg)
     dlg.open()
     await scan(dlg, "111")
+    dlg.person.select_value(env["person"])  # issues need a recipient (#22)
     dlg.submit_button.click()
     await settle(dlg)
     assert dlg.isVisible() and "کافی نیست" in dlg.status.text()

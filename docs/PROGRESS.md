@@ -144,3 +144,15 @@ Plan: Phase 1 (baseline + bug-class audit) → units U1–U13 (P0 → P1 → P2)
 - Tests: `test_mcp.py` (token required incl. wrong/Basic, audit lines with caller, DNS-rebinding refusal, drafts only
   when enabled, never post), `test_automation_ui.py` (copy text, token, switch, test-button errors, real stdio probe).
   Live check on this PC: stdio probe lists the 6 read tools. Tests write logs to a temp folder (conftest).
+
+### U10 — validation rules (#18, #21, #22, #23)
+- #18 documents dated after today are refused (closed years were already refused).
+- #21 migration `c4a9e1f07b52`: `units.allow_decimal` (default true; the seeded count units عدد، جعبه، کارتن، بسته،
+  دست، رول start as integer-only — a new column's initial value, no business data changed). Enforced on document
+  lines (entered unit) and stocktake counts (base unit); unit form + column «اعشار».
+- #22 posting an ISSUE needs a recipient (drafts from imports / AI / MCP may still be incomplete).
+- #23 an item's code can't change once it appears in any document line (service + read-only field).
+- Existing tests that posted issues now pass a recipient; the numbering test uses the previous fiscal year instead
+  of a future one (both only follow the new rules).
+- Tests: `test_documents.py`, `test_stocktake.py`, `test_items.py`, `test_items_ui.py`, migration round-trip checks
+  the unit flags (SQLite + MariaDB).

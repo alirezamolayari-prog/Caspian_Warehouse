@@ -203,6 +203,8 @@ def _item_factors(item: Item) -> dict[int, Decimal]:
 
 async def _validate(s: AsyncSession, data: DocumentInput) -> list[DocumentLine]:
     """Validate header + lines; returns ready DocumentLine objects (unattached)."""
+    if data.doc_date > dt.date.today():
+        raise ValidationError("تاریخ سند نمی‌تواند بعد از امروز باشد. تاریخ را بررسی کنید.")
     await ensure_open_year(s, jalali.fiscal_year_of(data.doc_date))
     wh = await s.get(Warehouse, data.warehouse_id)
     if wh is None or not wh.is_active:
@@ -248,6 +250,9 @@ async def _validate(s: AsyncSession, data: DocumentInput) -> list[DocumentLine]:
         qty = line.qty
         if qty is None or qty == 0 or (qty < 0 and data.doc_type != DocType.ADJUSTMENT):
             raise ValidationError(f"ردیف {no}: مقدار «{item.name}» باید بزرگ‌تر از صفر باشد.")
+        unit = await s.get(Unit, line.unit_id)
+        if unit is not None and not unit.allow_decimal and qty != qty.to_integral_value():
+            raise ValidationError(f"ردیف {no}: مقدار «{item.name}» به «{unit.name}» باید عدد صحیح باشد.")
         if line.unit_price is not None and line.unit_price < 0:
             raise ValidationError(f"ردیف {no}: فی نمی‌تواند منفی باشد.")
         factor = factors[line.unit_id]
@@ -713,6 +718,8 @@ async def post_document_in(s: AsyncSession, actor: Actor, doc: Document, *,
     await _validate(s, _input_of(doc))
     if doc.doc_type == DocType.LOAN_RETURN:
         await _check_loan_return_limits(s, doc)
+    if doc.doc_type == DocType.ISSUE and doc.person_id is None:
+        raise ValidationError("برای ثبت نهایی حواله خروج، تحویل‌گیرنده را انتخاب کنید.")
     override = await _stocktake_override(s, actor, doc, approval, stocktake_id)
     approver_id = override.pop("approved_by_id", None)
     await _apply_effects(s, doc, reverse=False)
