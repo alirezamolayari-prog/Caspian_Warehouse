@@ -156,3 +156,17 @@ Plan: Phase 1 (baseline + bug-class audit) → units U1–U13 (P0 → P1 → P2)
   of a future one (both only follow the new rules).
 - Tests: `test_documents.py`, `test_stocktake.py`, `test_items.py`, `test_items_ui.py`, migration round-trip checks
   the unit flags (SQLite + MariaDB).
+
+### U11 — confirmations & form behaviour (#19, #20, #24, #27, #34)
+- `messages.confirm()` (awaitable «بله / انصراف»); asked before: posting from the list and from the document form,
+  deleting a draft, approving a stocktake adjustment. «ابطال» already had its own confirming dialog (effect text +
+  required reason + red button), so no second prompt there. `dialogs.Cancelled` lets a declined confirmation keep
+  the form open.
+- #20 `FormDialog` tracks real user edits (after the form is shown) and asks «تغییرات ذخیره نشده‌اند…» on Esc /
+  «انصراف» / window close; untouched forms close at once. Opted out: login, password/PIN, approval, item chooser,
+  cancel, import review (saves as it goes), stocktake report, profile, restore password.
+- #24 «… ثبت نهایی شد و موجودی به‌روز شد.» after posting from the list. #27 «باز کردن» → «مشاهده» for final
+  documents. #34 the cancel-reason field has the focus when the dialog opens.
+- Tests: `test_documents_ui.py` (decline/accept, success, «مشاهده», focus, unsaved-changes flow),
+  `test_stocktake_ui.py` (approval asks). Existing tests that post/approve get an auto-«بله» fixture.
+  Note for tests: QTest `keyClicks` with Persian text kills the test process, so tests type Latin text.

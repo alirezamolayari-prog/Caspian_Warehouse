@@ -28,8 +28,8 @@ from caspian.services import stocktake as st
 from caspian.services.errors import ServiceError, ValidationError
 from caspian.services.stocktake import CountSheet, DiscrepancyReport, StocktakeRow
 from caspian.ui.app_context import AppContext, exec_dialog
-from caspian.ui.dialogs import FormDialog, ltr_field
-from caspian.ui.messages import show_error, show_info
+from caspian.ui.dialogs import Cancelled, FormDialog, ltr_field
+from caspian.ui.messages import confirm, show_error, show_info
 from caspian.ui.printing import output_menu, report_html
 from caspian.ui.widgets import Card, DataTable, QtyEdit, SearchableCombo
 
@@ -211,6 +211,8 @@ class CountDialog(FormDialog):
 
 
 class ReportDialog(FormDialog):
+    confirm_discard = False  # nothing to lose on closing
+
     def __init__(self, ctx: AppContext, report: DiscrepancyReport, parent=None) -> None:
         row = report.row
         super().__init__(f"گزارش مغایرت انبارگردانی شماره {to_persian_digits(row.number)}",
@@ -263,6 +265,11 @@ class ReportDialog(FormDialog):
         return report_to_html(self._report, self.only_diff.isChecked())
 
     async def submit(self) -> None:
+        n = len(self._report.differences)
+        text = (f"اصلاحیه موجودی برای {to_persian_digits(n)} مغایرت ثبت نهایی شود؟ موجودی سیستم با شمارش "
+                "یکسان می‌شود." if n else "مغایرتی نیست؛ انبارگردانی بدون سند اصلاحی بسته شود؟")
+        if not await confirm(self, text, "تأیید و ثبت اصلاحیه"):
+            raise Cancelled
         self.document_id = await st.approve(self._ctx.db, self._ctx.actor, self._report.row.id)
 
 

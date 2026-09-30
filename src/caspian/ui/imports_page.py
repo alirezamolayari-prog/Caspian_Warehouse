@@ -403,6 +403,8 @@ REVIEW_COLUMNS = ("ردیف", "وضعیت", "کد", "نام", "بارکد", "م�
 
 
 class ReviewDialog(FormDialog):
+    confirm_discard = False  # nothing to lose on closing
+
     def __init__(self, ctx: AppContext, batch_id: int, parent=None) -> None:
         super().__init__("بررسی پیش‌نویس", submit_text="اعمال", cancel_text="بستن", parent=parent)
         self.setMinimumSize(1100, 680)

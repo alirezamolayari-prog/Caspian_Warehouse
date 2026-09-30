@@ -44,10 +44,10 @@ from caspian.services.items import ItemRow
 from caspian.services.protected import ProtectedAction
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import request_approval
-from caspian.ui.dialogs import FormDialog
+from caspian.ui.dialogs import Cancelled, FormDialog
 from caspian.ui.document_print import document_print_menu
 from caspian.ui.master_page import person_picker
-from caspian.ui.messages import show_error
+from caspian.ui.messages import confirm, show_error, show_info
 from caspian.ui.widgets import Card, DataTable, JalaliDateEdit, QtyEdit, SearchableCombo, SearchBox
 
 LIST_COLUMNS = ("شماره", "نوع سند", "تاریخ", "انبار", "طرف حساب", "اقلام", "وضعیت", "ثبت‌کننده")
@@ -81,6 +81,8 @@ def doc_title(row_type: DocType, number: int | None) -> str:
 
 class ItemChooserDialog(FormDialog):
     """Pick one of several items matching a typed name."""
+
+    confirm_discard = False  # nothing to lose on closing
 
     def __init__(self, ctx: AppContext, query: str, rows: list[ItemRow], parent=None) -> None:
         super().__init__("انتخاب کالا", f"چند کالا با «{query}» پیدا شد.", submit_text="انتخاب",
@@ -431,6 +433,9 @@ class DocumentDialog(FormDialog):
         return self.saved_id
 
     async def submit(self) -> None:
+        if not await confirm(self, "سند ذخیره و ثبت نهایی شود؟ موجودی تغییر می‌کند و سند پس از آن فقط با "
+                             "ابطال قابل برگشت است.", "ثبت نهایی"):
+            raise Cancelled
         doc_id = await self._save()
         await with_stocktake_override(self._ctx, self, lambda approval: docs.post_document(
             self._ctx.db, self._ctx.actor, doc_id, self._detail.version_id, approval))
@@ -450,6 +455,8 @@ class DocumentDialog(FormDialog):
 
 
 class CancelDialog(FormDialog):
+    confirm_discard = False  # nothing to lose on closing
+
     def __init__(self, ctx: AppContext, row: DocumentRow, parent=None) -> None:
         super().__init__(f"ابطال {doc_title(row.doc_type, row.number)}",
                          "اثر این سند روی موجودی برگردانده می‌شود و سند به حالت «ابطال شده» "
@@ -457,6 +464,9 @@ class CancelDialog(FormDialog):
         self.submit_button.setProperty("variant", "danger")
         self._ctx, self._row = ctx, row
         self.reason = self.add_row("علت ابطال:", QLineEdit())
+        self.reason.setPlaceholderText("مثلاً: مقدار اشتباه وارد شده بود")
+        # Typing must land in the reason field right away (the default button had focus, #34).
+        self.reason.setFocus()
 
     async def submit(self) -> None:
         if not self.reason.text().strip():
@@ -554,6 +564,7 @@ class DocumentsList(QWidget):
         self.post_button.setVisible(actor.can(Perm.DOCUMENTS_POST))
         self.cancel_button.setVisible(actor.can(Perm.DOCUMENTS_POST))
         self.open_button.setEnabled(row is not None)
+        self.open_button.setText("باز کردن" if row is None or row.status == DocStatus.DRAFT else "مشاهده")
         self.print_button.setEnabled(row is not None)
         draft = row is not None and row.status == DocStatus.DRAFT
         self.post_button.setEnabled(draft)
@@ -631,11 +642,17 @@ class DocumentsList(QWidget):
     async def on_post(self) -> None:
         if (row := self.selected()) is None:
             return
+        title = doc_title(row.doc_type, row.number)
+        if not await confirm(self, f"«{title}» ثبت نهایی شود؟\nموجودی تغییر می‌کند و سند پس از آن فقط با "
+                             "ابطال قابل برگشت است.", "ثبت نهایی"):
+            return
         try:
             await with_stocktake_override(self._ctx, self, lambda approval: docs.post_document(
                 self._ctx.db, self._ctx.actor, row.id, approval=approval))
         except ServiceError as exc:
             show_error(self, exc.message)
+        else:
+            show_info(self, f"«{title}» ثبت نهایی شد و موجودی به‌روز شد.")
         await self.refresh()
 
     @asyncSlot()
@@ -648,6 +665,9 @@ class DocumentsList(QWidget):
     @asyncSlot()
     async def on_delete(self) -> None:
         if (row := self.selected()) is None:
+            return
+        if not await confirm(self, f"پیش‌نویس «{doc_title(row.doc_type, row.number)}» حذف شود؟",
+                             "حذف پیش‌نویس", danger=True):
             return
         try:
             await docs.delete_draft(self._ctx.db, self._ctx.actor, row.id)

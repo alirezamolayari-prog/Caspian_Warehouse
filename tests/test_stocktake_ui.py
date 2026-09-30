@@ -16,6 +16,21 @@ from caspian.ui.stocktake_page import CountDialog, ReportDialog, StocktakePage, 
 from helpers import settle
 
 
+@pytest.fixture(autouse=True)
+def confirmations(monkeypatch):
+    """Answer «بله» to every confirmation (#19) and record the questions asked."""
+    from caspian.ui import stocktake_page
+
+    asked = []
+
+    async def yes(parent, text, yes_text="بله", danger=False, title="تأیید"):
+        asked.append(text)
+        return True
+
+    monkeypatch.setattr(stocktake_page, "confirm", yes)
+    return asked
+
+
 @pytest.fixture
 async def env(themes, db, admin):
     u = {x.name: x.id for x in await master.list_units(db)}
@@ -107,3 +122,13 @@ async def test_carton_barcode_counts_the_whole_carton(qtbot, env):
     dlg.scan.setText("111-C")
     await dlg.on_scan()
     assert "کارتن" in dlg.status.text() and "۱۲" in dlg.status.text()
+
+
+async def test_approval_asks_first(qtbot, env, confirmations):
+    db, admin, counter, sid = env["db"], env["admin"], env["counter"], env["sid"]
+    await st.submit_counts(db, counter, sid, missing_as_zero=True)
+    dlg = ReportDialog(ctx_for(env, admin), await st.discrepancy_report(db, admin, sid))
+    qtbot.addWidget(dlg)
+    dlg.submit_button.click()
+    await settle(dlg)
+    assert confirmations and "اصلاحیه" in confirmations[0]

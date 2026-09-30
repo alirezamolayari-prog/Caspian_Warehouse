@@ -53,6 +53,8 @@ class BackupPasswordDialog(FormDialog):
 
 
 class RestorePasswordDialog(FormDialog):
+    confirm_discard = False  # nothing to lose on closing
+
     def __init__(self, info: BackupInfo, parent=None) -> None:
         super().__init__("رمز نسخه پشتیبان",
                          f"رمز فایل «{info.name}» را وارد کنید (اگر با رمز فعلی این رایانه ساخته شده، "

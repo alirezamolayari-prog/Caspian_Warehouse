@@ -47,6 +47,12 @@ async def ask(parent: QWidget | None, text: str, choices: Sequence[tuple[str, st
     return await future
 
 
+async def confirm(parent: QWidget | None, text: str, yes_text: str = "بله", danger: bool = False,
+                  title: str = "تأیید") -> bool:
+    """«بله / انصراف» without blocking the event loop; Esc or closing counts as «انصراف»."""
+    return await ask(parent, text, [("yes", yes_text)], title, danger) == "yes"
+
+
 def show_error(parent: QWidget | None, text: str) -> None:
     box = QMessageBox(QMessageBox.Icon.Warning, "خطا", text, QMessageBox.StandardButton.Ok, parent)
     box.button(QMessageBox.StandardButton.Ok).setText("باشه")

@@ -15,6 +15,21 @@ from caspian.ui.documents_page import CancelDialog, DocumentDialog, DocumentsPag
 from helpers import settle, wait_until
 
 
+@pytest.fixture(autouse=True)
+def confirmations(monkeypatch):
+    """Answer «بله» to every confirmation (#19) and record the questions asked."""
+    from caspian.ui import documents_page
+
+    asked = []
+
+    async def yes(parent, text, yes_text="بله", danger=False, title="تأیید"):
+        asked.append(text)
+        return True
+
+    monkeypatch.setattr(documents_page, "confirm", yes)
+    return asked
+
+
 @pytest.fixture
 async def env(themes, db, admin):
     u = {x.name: x.id for x in await master.list_units(db)}
@@ -208,3 +223,88 @@ async def test_add_new_person_from_the_picker(qtbot, env):
     new_id = await task
     assert new_id is not None and dlg.person.currentData() == new_id
     assert dlg.person.currentText().startswith("كامران")  # stored as typed; search is normalized
+
+
+async def test_list_asks_before_posting_or_deleting_and_reports_success(qtbot, env, monkeypatch):
+    """#19 confirmations, #24 success message, #27 «مشاهده» for final documents."""
+    from caspian.ui import documents_page
+
+    ctx = env["ctx"]
+    wh = (await master.list_warehouses(ctx.db))[0].id
+    make = DocumentInput(DocType.RECEIPT, dt.date.today(), wh,
+                         [LineInput(env["drill"], env["u"]["عدد"], Decimal(1))])
+    draft = await docs.create_document(ctx.db, ctx.actor, make)
+    infos = []
+    monkeypatch.setattr(documents_page, "show_info", lambda parent, text: infos.append(text))
+    answer = {"value": False}
+
+    async def fake_confirm(parent, text, yes_text="بله", danger=False, title="تأیید"):
+        return answer["value"]
+
+    monkeypatch.setattr(documents_page, "confirm", fake_confirm)
+    page = DocumentsPage(ctx)
+    qtbot.addWidget(page)
+    lst = page.documents
+    await lst.refresh()
+    lst.table.select_id(draft)
+    assert lst.open_button.text() == "باز کردن"
+    await lst.on_post()  # declined
+    await lst.on_delete()  # declined
+    assert (await docs.get_document(ctx.db, ctx.actor, draft)).status is DocStatus.DRAFT
+    answer["value"] = True
+    lst.table.select_id(draft)
+    await lst.on_post()
+    assert await wait_until(lambda: infos and "ثبت نهایی شد" in infos[-1])
+    lst.table.select_id(draft)
+    assert lst.open_button.text() == "مشاهده"
+
+    other = await docs.create_document(ctx.db, ctx.actor, make)
+    await lst.refresh()
+    lst.table.select_id(other)
+    await lst.on_delete()
+    assert other not in {r.id for r in await docs.list_documents(ctx.db, ctx.actor)}
+
+
+async def test_cancel_reason_has_focus(qtbot, env):
+    """Typing went nowhere the first time: the reason field must have the focus (#34)."""
+    ctx = env["ctx"]
+    wh = (await master.list_warehouses(ctx.db))[0].id
+    posted = await docs.create_and_post(ctx.db, ctx.actor, DocumentInput(
+        DocType.RECEIPT, dt.date.today(), wh, [LineInput(env["drill"], env["u"]["عدد"], Decimal(1))]))
+    [row] = [r for r in await docs.list_documents(ctx.db, ctx.actor) if r.id == posted]
+    dlg = CancelDialog(ctx, row)
+    qtbot.addWidget(dlg)
+    dlg.show()
+    dlg.activateWindow()
+    assert await wait_until(lambda: dlg.focusWidget() is dlg.reason)
+
+
+async def test_dialog_asks_before_discarding_changes(qtbot, env, monkeypatch):
+    """#20: Esc / «انصراف» on a changed form asks; an untouched form closes at once."""
+    from PySide6.QtCore import Qt
+
+    from caspian.ui import dialogs
+
+    answers = []
+
+    async def fake_confirm(parent, text, yes_text="بله", danger=False, title="تأیید"):
+        answers.append(text)
+        return len(answers) > 1  # first: «انصراف» (stay), then: close
+
+    monkeypatch.setattr(dialogs, "confirm", fake_confirm)
+    clean = await make_dialog(env, DocType.RECEIPT)
+    qtbot.addWidget(clean)
+    clean.show()
+    qtbot.keyClick(clean, Qt.Key.Key_Escape)
+    assert await wait_until(lambda: not clean.isVisible()) and answers == []
+
+    dlg = await make_dialog(env, DocType.RECEIPT)
+    qtbot.addWidget(dlg)
+    dlg.show()
+    qtbot.keyClicks(dlg.description, "note")  # a real edit (QTest crashes on non-Latin keys)
+    assert dlg.dirty
+    qtbot.keyClick(dlg, Qt.Key.Key_Escape)
+    assert await wait_until(lambda: len(answers) == 1)
+    assert dlg.isVisible() and "ذخیره نشده" in answers[0]
+    dlg.cancel_button.click()
+    assert await wait_until(lambda: not dlg.isVisible())

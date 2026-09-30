@@ -44,6 +44,8 @@ from caspian.ui.users_page import UsersPage
 class ProfileDialog(FormDialog):
     """«پروفایل من»: who is signed in, with a shortcut to change the password."""
 
+    confirm_discard = False  # nothing to lose on closing
+
     def __init__(self, ctx, parent=None) -> None:
         actor = ctx.actor
         super().__init__("پروفایل من", submit_text="تغییر رمز عبور", cancel_text="بستن", parent=parent)
