@@ -61,7 +61,8 @@ class FormDialog(QDialog):
     def __init__(self, title: str, subtitle: str = "", submit_text: str = "تأیید",
                  cancel_text: str = "انصراف", parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle(title)
+        # A leading RLM keeps a title like «alireza» تغییر نقش in Persian order (#20).
+        self.setWindowTitle(f"‏{title}")
         self.setMinimumWidth(420)
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(24, 22, 24, 22)
@@ -81,6 +82,10 @@ class FormDialog(QDialog):
 
         self.status = QLabel(objectName="StatusText")
         self.status.setWordWrap(True)
+        # Keep its place while hidden so the buttons don't jump when an error appears (#18).
+        policy = self.status.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)
+        self.status.setSizePolicy(policy)
         self.status.hide()
         self._layout.addWidget(self.status)
 
@@ -123,6 +128,8 @@ class FormDialog(QDialog):
 
     def mark_dirty(self, *_args) -> None:
         self.dirty = True
+        if self.status.property("error") and self.status.isVisible():
+            self.show_status("")  # the user is fixing it: don't keep showing the old error (#18)
 
     def reject(self) -> None:
         if self.confirm_discard and self.dirty and self.isVisible():

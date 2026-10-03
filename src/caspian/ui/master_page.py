@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 from qasync import asyncSlot
 
 from caspian.core.permissions import Perm
+from caspian.core.text import to_persian_digits as fa  # display-only digits (#19)
 from caspian.db.models import PersonKind
 from caspian.services import master
 from caspian.services.errors import ServiceError
@@ -155,7 +156,7 @@ class WarehousesTab(_Tab):
         rows = await master.list_warehouses(self.ctx.db, include_inactive=True)
         self.rows = {r.id: r for r in rows}
         self.table.set_rows(
-            [(r.id, (r.code, r.name, r.notes, "فعال" if r.is_active else "غیرفعال"))
+            [(r.id, (fa(r.code), r.name, r.notes, "فعال" if r.is_active else "غیرفعال"))
              for r in rows], muted=[not r.is_active for r in rows])
 
     async def open_editor(self, row) -> None:
@@ -248,7 +249,7 @@ class PersonsTab(_Tab):
             return
         self.rows = {r.id: r for r in rows}
         self.table.set_rows(
-            [(r.id, (r.code, r.name, r.kind_name, r.phone, r.address,
+            [(r.id, (fa(r.code), r.name, r.kind_name, fa(r.phone), r.address,
                      "فعال" if r.is_active else "غیرفعال")) for r in rows],
             muted=[not r.is_active for r in rows])
 

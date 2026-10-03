@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from caspian.core.permissions import Perm
-from caspian.core.text import normalize, to_ascii_digits
+from caspian.core.text import normalize, to_ascii_digits, to_persian_digits
 from caspian.db.database import Database
 from caspian.db.models import (
     BatchStatus,
@@ -574,7 +574,7 @@ async def apply_batch(db: Database, actor: Actor, batch_id: int,
                 allowed = {item.base_unit_id, *(u.unit_id for u in item.units)}
                 doc_lines.append(documents.LineInput(
                     item.id, unit_id if unit_id in allowed else item.base_unit_id, ln.qty,
-                    ln.unit_price, f"ورود اطلاعات — ردیف {ln.row_no}"))
+                    ln.unit_price, f"ورود اطلاعات — ردیف {to_persian_digits(ln.row_no)}"))
             if not doc_lines:
                 raise ValidationError("همه ردیف‌ها نادیده گرفته شده‌اند؛ سندی ساخته نمی‌شود.")
             doc = await documents.create_document_in(s, actor, documents.DocumentInput(

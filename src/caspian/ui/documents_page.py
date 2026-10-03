@@ -27,6 +27,7 @@ from caspian.core import jalali
 from caspian.core.numbers import format_qty
 from caspian.core.permissions import Perm
 from caspian.core.text import to_persian_digits
+from caspian.core.text import to_persian_digits as fa  # display-only digits (#19)
 from caspian.db.models import DocStatus, DocType
 from caspian.services import documents as docs
 from caspian.services import items, master
@@ -48,7 +49,15 @@ from caspian.ui.dialogs import Cancelled, FormDialog
 from caspian.ui.document_print import document_print_menu
 from caspian.ui.master_page import person_picker
 from caspian.ui.messages import confirm, show_error, show_info
-from caspian.ui.widgets import Card, DataTable, JalaliDateEdit, QtyEdit, SearchableCombo, SearchBox
+from caspian.ui.widgets import (
+    Card,
+    DataTable,
+    JalaliDateEdit,
+    QtyEdit,
+    SearchableCombo,
+    SearchBox,
+    popup_inside,
+)
 
 LIST_COLUMNS = ("شماره", "نوع سند", "تاریخ", "انبار", "طرف حساب", "اقلام", "وضعیت", "ثبت‌کننده")
 LOAN_COLUMNS = ("شماره امانی", "تاریخ", "تحویل‌گیرنده", "کالا", "مانده", "روز")
@@ -92,7 +101,7 @@ class ItemChooserDialog(FormDialog):
         self.chosen: ItemRow | None = None
         self.table = DataTable(("کد", "نام کالا", "واحد", "موجودی"))
         self.table.setMinimumHeight(280)
-        self.table.set_rows([(r.id, (r.code, r.name, r.base_unit, format_qty(r.on_hand) or "—"))
+        self.table.set_rows([(r.id, (fa(r.code), r.name, r.base_unit, format_qty(r.on_hand) or "—"))
                              for r in rows])
         self.table.selectRow(0)
         self.table.doubleClicked.connect(lambda _: self.submit_button.click())
@@ -519,7 +528,9 @@ class DocumentsList(QWidget):
         for t in (DocType.RECEIPT, DocType.ISSUE, DocType.TRANSFER, DocType.LOAN_OUT,
                   DocType.LOAN_RETURN, DocType.ADJUSTMENT, DocType.OPENING):
             menu.addAction(DOC_TYPE_NAMES[t], lambda t=t: self.open_new(t))
-        self.new_button.setMenu(menu)
+        self.new_menu = menu
+        # Opened by hand so it stays inside the window (it opened off its left edge, #21).
+        self.new_button.clicked.connect(lambda: popup_inside(self.new_menu, self.new_button))
         toolbar.addWidget(self.new_button)
         layout.addLayout(toolbar)
 

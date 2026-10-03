@@ -37,7 +37,7 @@ async def test_form_contents_and_duplicate_stamp(env):
     ctx = env["ctx"]
     sheet = await docs.print_sheet(ctx.db, ctx.actor, env["receipt"])
     first = document_html(sheet, 1, "A5")
-    for text in ("رسید ورود", "ر-۱", "علی رضایی", "تأمین‌کننده", "دریل بوش", "1001", "عدد", "نو",
+    for text in ("رسید ورود", "ر-۱", "علی رضایی", "تأمین‌کننده", "دریل بوش", "۱۰۰۱", "عدد", "نو",
                  "۱۰٬۰۰۰", "تحویل‌دهنده", "تحویل‌گیرنده", "انباردار", "بازار مبلمان کاسپین"):
         assert text in first, text
     assert "المثنی" not in first
@@ -99,3 +99,14 @@ async def test_pdf_export_counts_and_draft_does_not(qtbot, env, monkeypatch, tmp
     assert (await docs.print_sheet(ctx.db, ctx.actor, env["receipt"])).print_count == 1
     assert await document_print.pdf_document(None, ctx, env["draft"])  # allowed, but not counted
     assert (await docs.print_sheet(ctx.db, ctx.actor, env["draft"])).print_count == 0
+
+
+async def test_form_fields_are_bidi_safe_and_complete(env):
+    """#16: item count was empty, «شماره: … تاریخ: …» lost its colons, footer showed «admin»."""
+    ctx = env["ctx"]
+    sheet = await docs.print_sheet(ctx.db, ctx.actor, env["receipt"])
+    html_text = document_html(sheet, 1, "A5")
+    assert "⁧تعداد اقلام:⁩" in html_text and "<b>۱</b>" in html_text
+    assert "⁧شماره:⁩" in html_text and "⁧تاریخ:⁩" in html_text
+    assert ctx.actor.display_name in html_text and sheet.created_by == ctx.actor.display_name
+    assert "font-size: 10pt" in html_text

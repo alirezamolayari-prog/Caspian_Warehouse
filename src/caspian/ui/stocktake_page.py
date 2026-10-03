@@ -22,6 +22,7 @@ from caspian.core import jalali
 from caspian.core.numbers import format_qty
 from caspian.core.permissions import Perm
 from caspian.core.text import to_persian_digits
+from caspian.core.text import to_persian_digits as fa  # display-only digits (#19)
 from caspian.db.models import StocktakeStatus
 from caspian.services import master
 from caspian.services import stocktake as st
@@ -43,7 +44,7 @@ def sheet_html(sheet: CountSheet) -> str:
         f"برگه شمارش انبارگردانی شماره {to_persian_digits(row.number)}",
         [f"انبار: {row.warehouse} — محدوده: {row.category}", row.title],
         ("ردیف", "کد", "نام کالا", "واحد", "مقدار شمارش‌شده", "توضیح"),
-        [(to_persian_digits(ln.line_no), ln.code, ln.name, ln.unit, "", "") for ln in sheet.lines],
+        [(to_persian_digits(ln.line_no), fa(ln.code), ln.name, ln.unit, "", "") for ln in sheet.lines],
         widths=(6, 12, 40, 10, 16, 16), blank_columns=(4, 5),
         footer="نام و امضای شمارشگر: ........................................ &nbsp;&nbsp;&nbsp; "
                "نام و امضای ناظر: ........................................",
@@ -58,7 +59,7 @@ def report_to_html(report: DiscrepancyReport, only_differences: bool) -> str:
         [f"انبار: {row.warehouse} — محدوده: {row.category}",
          f"وضعیت: {row.status_name} — تعداد مغایرت: {to_persian_digits(len(report.differences))}"],
         ("کد", "نام کالا", "واحد", "موجودی سیستم", "شمارش", "مغایرت", "توضیح"),
-        [(ln.code, ln.name, ln.unit, format_qty(ln.system_qty), format_qty(ln.counted_qty),
+        [(fa(ln.code), ln.name, ln.unit, format_qty(ln.system_qty), format_qty(ln.counted_qty),
           format_qty(ln.difference), ln.note) for ln in lines],
         widths=(10, 34, 8, 12, 12, 12, 12),
     )
@@ -123,7 +124,7 @@ class CountDialog(FormDialog):
         self.table.setColumnWidth(5, 180)
         for r, ln in enumerate(sheet.lines):
             self._row_of[ln.id] = r
-            for c, value in enumerate((to_persian_digits(ln.line_no), ln.code, ln.name, ln.unit)):
+            for c, value in enumerate((to_persian_digits(ln.line_no), fa(ln.code), ln.name, ln.unit)):
                 self.table.setItem(r, c, QTableWidgetItem(value))
             qty = QtyEdit(ln.counted_qty)
             qty.textChanged.connect(lambda _t: self._update_progress())
@@ -250,7 +251,7 @@ class ReportDialog(FormDialog):
         lines = self._report.differences if self.only_diff.isChecked() else self._report.lines
         theme = self._ctx.themes.current
         self.table.set_rows(
-            [(ln.line_no, (ln.code, ln.name, ln.unit, format_qty(ln.system_qty),
+            [(ln.line_no, (fa(ln.code), ln.name, ln.unit, format_qty(ln.system_qty),
                            format_qty(ln.counted_qty), format_qty(ln.difference), ln.note))
              for ln in lines],
             highlight={(i, 5): theme.danger if ln.difference < 0 else theme.success

@@ -208,7 +208,7 @@ class BackupTab(QWidget):
         self.table.set_rows([(str(b.path), (
             jalali.format_date(b.created_at), to_persian_digits(b.created_at.strftime("%H:%M")),
             b.label or "—", "دارد" if b.encrypted else "بدون رمز",
-            f"{to_persian_digits(f'{b.size / 1_048_576:.1f}')} MB", b.app_version,
+            backup.format_size(b.size), b.app_version,
             b.name)) for b in rows])
         self.status.setText(f"{to_persian_digits(len(rows))} نسخه پشتیبان در پوشه")
         self._update_buttons()
@@ -291,7 +291,8 @@ class BackupTab(QWidget):
         except ServiceError as exc:
             show_error(self, exc.message)
             return
-        show_info(self, "نسخه پشتیبان سالم است و با این رمز قابل بازیابی است.")
+        show_info(self, "نسخه پشتیبان سالم است و با این رمز قابل بازیابی است." if info.encrypted
+                  else "نسخه پشتیبان سالم و قابل بازیابی است (این نسخه بدون رمز است).")
 
     @asyncSlot()
     async def on_restore(self) -> None:

@@ -301,7 +301,7 @@ def _server_detail(response: httpx.Response, key: str | None) -> str:
 
 def _explain(outcome: str, detail: str) -> str:
     text = _OUTCOME_TEXT.get(outcome, "خطا")
-    return f"{text}\nپاسخ سرور: {detail}" if detail else text
+    return f"{text}\nپاسخ سرور: {ltr(detail)}" if detail else text  # English text isolated (#20)
 
 
 def _retry_after(response: httpx.Response) -> float | None:

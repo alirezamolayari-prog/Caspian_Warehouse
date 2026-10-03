@@ -354,6 +354,15 @@ def prune(directory: str | Path, keep: int) -> int:
     return removed
 
 
+def format_size(size: int) -> str:
+    """«۲۵۶ KB» below one megabyte (small backups showed «۰٫۰ MB», #22)."""
+    from caspian.core.text import to_persian_digits
+
+    if size < 1_048_576:
+        return f"{to_persian_digits(max(1, round(size / 1024)))} KB"
+    return f"{to_persian_digits(f'{size / 1_048_576:.1f}').replace('.', '٫')} MB"
+
+
 def _check_password(password: str) -> None:
     if not password or len(password) < MIN_PASSWORD:
         raise ValidationError(f"رمز پشتیبان باید حداقل {MIN_PASSWORD} کاراکتر باشد. آن را در تنظیمات "
@@ -380,8 +389,14 @@ async def create_backup(db: Database, actor: Actor | None, dumper: Dumper, passw
     except OSError as exc:
         raise BackupError(f"پوشه پشتیبان قابل ساخت نیست: {folder}") from exc
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    slug = re.sub(r"[^\w-]+", "-", label.strip(), flags=re.UNICODE).strip("-")[:40]
+    # ASCII-only file names (some tools and USB drives mangle Persian); the label itself is kept
+    # in the header and shown by the app (#22).
+    slug = re.sub(r"[^A-Za-z0-9-]+", "-", label.strip()).strip("-")[:40]
     path = folder / f"caspian-{stamp}{'-' + slug if slug else ''}.bak"
+    n = 1
+    while path.exists():  # two backups in the same second
+        n += 1
+        path = folder / f"caspian-{stamp}{'-' + slug if slug else ''}-{n}.bak"
     extra = {"app_version": __version__, "schema_revision": await _schema_revision(db),
              "label": label.strip()}
     await asyncio.to_thread(write_backup, dumper, path, password, extra)
@@ -453,6 +468,6 @@ def make_scheduled_handler(db: Database, config: DbConfig, app_password: str, se
             db, None, make_dumper(db, config, app_password, settings.mariadb_tools_dir), password,
             settings.backup_dir or default_backup_dir(), "زمان‌بندی‌شده", keep=settings.backup_keep)
         warning = "" if info.encrypted else " — بدون رمز! رمز پشتیبان را در تنظیمات تعیین کنید"
-        return f"{info.name} ({info.size / 1_048_576:.1f} MB){warning}"
+        return f"{info.name} ({format_size(info.size)}){warning}"
 
     return handler

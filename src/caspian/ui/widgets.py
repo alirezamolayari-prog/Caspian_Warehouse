@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Any
 
 import jdatetime
-from PySide6.QtCore import QModelIndex, QRegularExpression, Qt, QTimer, Signal
+from PySide6.QtCore import QModelIndex, QPoint, QRegularExpression, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QPainter, QRegularExpressionValidator
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -63,6 +63,37 @@ class StatCard(Card):
         if hint is not None:
             self.hint.setText(hint)
             self.hint.setVisible(bool(hint))
+
+
+def popup_inside(menu, button: QWidget) -> None:
+    """Open `menu` under `button`, right-aligned for RTL and kept within the button's window."""
+    hint = menu.sizeHint()
+    window = button.window().geometry()
+    below = button.mapToGlobal(button.rect().bottomRight())
+    x = below.x() - hint.width() + 1
+    x = max(window.left(), min(x, window.right() - hint.width()))
+    y = below.y()
+    if y + hint.height() > window.bottom():  # no room below: open upwards
+        y = button.mapToGlobal(button.rect().topLeft()).y() - hint.height()
+    menu.popup(QPoint(x, y))
+
+
+class Toast(QLabel):
+    """A short, non-blocking confirmation at the bottom of a page that hides itself (#23)."""
+
+    def __init__(self, parent: QWidget, text: str, msec: int = 3000) -> None:
+        super().__init__(text, parent, objectName="Toast")
+        self.setWordWrap(True)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet("QLabel#Toast { background: rgba(30, 41, 59, 230); color: white; "
+                           "border-radius: 8px; padding: 8px 16px; }")
+        self.adjustSize()
+        width = min(max(self.width(), 260), max(parent.width() - 40, 260))
+        self.resize(width, self.heightForWidth(width) if self.hasHeightForWidth() else self.height())
+        self.move((parent.width() - self.width()) // 2, max(parent.height() - self.height() - 24, 0))
+        self.show()
+        self.raise_()
+        QTimer.singleShot(msec, self.deleteLater)
 
 
 class EmptyState(QWidget):

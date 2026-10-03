@@ -38,7 +38,7 @@ from caspian.services.errors import NotFound
 @dataclass(frozen=True)
 class Column:
     title: str
-    kind: str = "text"  # text | qty | money | int | date
+    kind: str = "text"  # text | code | qty | money | int | date
 
 
 @dataclass
@@ -123,7 +123,7 @@ async def stock_balance(db: Database, actor: Actor, warehouse_id: int | None = N
         ids.append(item.id)
     return ReportTable(
         "گزارش موجودی کالا",
-        [Column("کد"), Column("نام کالا"), Column("گروه"), Column("واحد"), Column("موجودی", "qty"),
+        [Column("کد", "code"), Column("نام کالا"), Column("گروه"), Column("واحد"), Column("موجودی", "qty"),
          Column("نقطه سفارش", "qty"), Column("آخرین فی خرید", "money"), Column("ارزش", "money")],
         out, [f"انبار: {wh_name}", f"{to_persian_digits(len(out))} قلم کالا"], {7: total_value}, ids)
 
@@ -273,7 +273,7 @@ async def burn_rates(db: Database, actor: Actor, params: ReorderParams = DEFAULT
 def burn_rate_table(rates: list[BurnRate], params: ReorderParams) -> ReportTable:
     return ReportTable(
         "تحلیل مصرف و پیشنهاد سفارش",
-        [Column("کد"), Column("نام کالا"), Column("واحد"), Column("موجودی", "qty"),
+        [Column("کد", "code"), Column("نام کالا"), Column("واحد"), Column("موجودی", "qty"),
          Column(to_persian_digits(f"مصرف {params.lookback_days} روز"), "qty"), Column("مصرف روزانه", "qty"),
          Column("پوشش (روز)", "int"), Column("نقطه سفارش فعلی", "qty"),
          Column("نقطه سفارش پیشنهادی", "qty"), Column("مقدار سفارش پیشنهادی", "qty")],
@@ -296,7 +296,7 @@ async def loans_report(db: Database, actor: Actor) -> ReportTable:
     return ReportTable(
         "گزارش امانی‌های باز",
         [Column("شماره امانی", "int"), Column("تاریخ", "date"), Column("تحویل‌گیرنده"),
-         Column("کد"), Column("کالا"), Column("مانده", "qty"), Column("واحد"), Column("روز", "int")],
+         Column("کد", "code"), Column("کالا"), Column("مانده", "qty"), Column("واحد"), Column("روز", "int")],
         [[r.number, r.doc_date, r.person, r.item_code, r.item_name, r.outstanding, r.base_unit,
           r.days_out] for r in rows],
         [f"{to_persian_digits(len(rows))} قلم امانی باز"])

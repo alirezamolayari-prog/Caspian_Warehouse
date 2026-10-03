@@ -78,7 +78,7 @@ re-sets the text but `setEditText` after `clear()` + list makes the first item w
 15. **Editor order** (`DocumentDialog.submit`): `collect()` + service-side pre-validation
     (`documents.validate_input`, no write) before the confirm. Test: no lines → error, no confirm.
 
-## Phase 3 — Printing & UI polish (#16–#23)
+## Phase 3 — Printing & UI polish (#16–#23) ✅
 16. `ui/document_print.py`: fill «تعداد اقلام», put labels/values in separate RTL spans with RLM
     (`\u200F`) around colons and LTR numbers, footer uses full names (`print_sheet` returns display
     names), A5 base 10pt / A4 11pt. Render check + test on HTML.

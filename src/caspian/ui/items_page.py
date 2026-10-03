@@ -21,6 +21,7 @@ from qasync import asyncSlot
 from caspian.core.numbers import format_qty
 from caspian.core.permissions import Perm
 from caspian.core.text import to_persian_digits
+from caspian.core.text import to_persian_digits as fa  # display-only digits (#19)
 from caspian.services import items, master
 from caspian.services.errors import ServiceError, ValidationError
 from caspian.services.items import ItemDetail, ItemInput, ItemRow
@@ -30,7 +31,7 @@ from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import request_approval
 from caspian.ui.dialogs import Cancelled, FormDialog, ltr_field
 from caspian.ui.messages import confirm, show_error, show_info
-from caspian.ui.widgets import Card, DataTable, EmptyState, QtyEdit, SearchableCombo, SearchBox
+from caspian.ui.widgets import Card, DataTable, EmptyState, QtyEdit, SearchableCombo, SearchBox, Toast
 
 COLUMNS = ("کد", "نام کالا", "گروه", "واحد", "موجودی", "نقطه سفارش", "وضعیت")
 
@@ -366,7 +367,7 @@ class ItemsPage(QWidget):
         theme = self._ctx.themes.current
         highlight = {(i, 4): theme.warning for i, r in enumerate(rows) if r.below_reorder}
         self.table.set_rows(
-            [(r.id, (r.code, r.name, r.category or "—", r.base_unit, format_qty(r.on_hand) or "—",
+            [(r.id, (fa(r.code), r.name, r.category or "—", r.base_unit, format_qty(r.on_hand) or "—",
                      format_qty(r.reorder_point) or "—", "فعال" if r.is_active else "غیرفعال"))
              for r in rows],
             muted=[not r.is_active for r in rows],
@@ -398,6 +399,8 @@ class ItemsPage(QWidget):
             self.table.select_id(dialog.saved_id)
             if dialog.result_message:
                 show_info(self, dialog.result_message)
+            else:
+                self.toast = Toast(self, f"کالای «{dialog.name.text().strip()}» ذخیره شد.")
 
     @asyncSlot()
     async def on_new(self) -> None:

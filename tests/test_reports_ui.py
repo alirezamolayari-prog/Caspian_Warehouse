@@ -129,8 +129,24 @@ async def test_stock_report_uses_the_width(page):
 
     await page.stock.refresh()
     header = page.stock.table.horizontalHeader()
-    kinds = [c.kind for c in page.stock.report.columns]
-    for i, kind in enumerate(kinds):
-        mode = QHeaderView.ResizeMode
-        assert header.sectionResizeMode(i) == (mode.Stretch if kind == "text" else mode.ResizeToContents)
+    from caspian.ui.reports_page import SHORT_TEXT_COLUMNS
+
+    mode = QHeaderView.ResizeMode
+    for i, c in enumerate(page.stock.report.columns):
+        stretch = c.kind == "text" and c.title not in SHORT_TEXT_COLUMNS  # names; codes fit (#17)
+        assert header.sectionResizeMode(i) == (mode.Stretch if stretch else mode.ResizeToContents)
     assert page.stock_cat.minimumWidth() >= 180 and page.stock_cat.itemText(0) == "همه گروه‌ها"
+
+
+async def test_burn_rate_columns_are_not_squeezed(page):
+    """«کد»/«نام کالا»/«واحد» were cut to «10…/چه…» and the checkbox label clipped (#17)."""
+    page.resize(700, 500)
+    await page.burn.refresh()
+    header = page.burn.table.horizontalHeader()
+    assert header.minimumSectionSize() >= 72
+    titles = [c.title for c in page.burn.report.columns]
+    assert header.sectionResizeMode(titles.index("کد")) == header.ResizeMode.ResizeToContents
+    # The checkbox is on the second filter row, not after the four spin boxes.
+    assert page.burn.filters.indexOf(page.only_order) == -1
+    second = page.burn.layout().itemAt(page.burn.layout().indexOf(page.burn.filters) + 1).layout()
+    assert second.indexOf(page.only_order) >= 0

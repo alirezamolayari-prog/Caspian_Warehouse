@@ -22,6 +22,7 @@ from caspian.ui.messages import show_error, show_info
 from caspian.ui.printing import build_document, rtl_cells, save_pdf
 from caspian.ui.tasks import callback
 
+RLM, RLI, PDI = "‏", "⁧", "⁩"  # right-to-left mark / isolate (bidi, #16)
 PAPERS = {"A5": QPageSize.PageSizeId.A5, "A4": QPageSize.PageSizeId.A4}
 SIGNATURES = ("تحویل‌دهنده", "تحویل‌گیرنده", "انباردار")
 
@@ -39,28 +40,39 @@ def _stamp(sheet: PrintSheet, copy_no: int) -> str:
 def document_html(sheet: PrintSheet, copy_no: int, paper: str = "A5") -> str:
     """The form for one copy; `copy_no` > 1 marks it as a duplicate."""
     esc = html.escape
-    size = 8 if paper == "A5" else 10
+    size = 10 if paper == "A5" else 11  # 8pt was too small on A5 (#16)
     priced = any(ln.unit_price is not None for ln in sheet.lines)
     heads = ["ردیف", "کد", "نام کالا", "واحد", "مقدار"] + (["فی", "مبلغ"] if priced else []) + ["توضیح"]
     rows = []
     for no, ln in enumerate(sheet.lines, start=1):
-        cells = [to_persian_digits(no), ln.code, ln.name, ln.unit, format_qty(ln.qty)]
+        cells = [to_persian_digits(no), to_persian_digits(ln.code), ln.name, ln.unit, format_qty(ln.qty)]
         if priced:
             cells += [format_qty(ln.unit_price) if ln.unit_price is not None else "",
                       format_qty(ln.amount) if ln.amount is not None else ""]
         cells.append(ln.notes)
         rows.append("<tr>" + rtl_cells([f"<td>{esc(c)}</td>" for c in cells]) + "</tr>")
-    total = f" — جمع مبلغ: {format_qty(sheet.total_amount)} ریال" if sheet.total_amount is not None else ""
-    parties = [f"انبار: {esc(sheet.warehouse)}"]
+    # Label and value in separate RTL-isolated pieces so colons and numbers stay in place (#16).
+    def field(label: str, value: str) -> str:
+        return f"{RLI}{esc(label)}:{PDI}{RLM} {RLI}<b>{esc(value)}</b>{PDI}"
+
+    parties = [field("انبار", sheet.warehouse)]
     if sheet.dest_warehouse:
-        parties = [f"از انبار: {esc(sheet.warehouse)}", f"به انبار: {esc(sheet.dest_warehouse)}"]
+        parties = [field("از انبار", sheet.warehouse), field("به انبار", sheet.dest_warehouse)]
     if sheet.person:
-        parties.append(f"{esc(sheet.person_label)}: {esc(sheet.person)}")
+        parties.append(field(sheet.person_label, sheet.person))
+    summary = [field("تعداد اقلام", to_persian_digits(len(sheet.lines)))]
+    if sheet.total_amount is not None:
+        summary.append(field("جمع مبلغ", f"{format_qty(sheet.total_amount)} ریال"))
     stamp = _stamp(sheet, copy_no)
     stamp_html = f'<p align="center" class="stamp">{esc(stamp)}</p>' if stamp else ""
-    description = f"<p>توضیحات: {esc(sheet.description)}</p>" if sheet.description else ""
+    description = f"<p>{field('توضیحات', sheet.description)}</p>" if sheet.description else ""
     printed = to_persian_digits(jalali.format_date(dt.date.today()))
-    posted_by = f" — ثبت نهایی: {esc(sheet.posted_by)}" if sheet.posted_by else ""
+    footer = [field("صادرکننده", sheet.created_by)]
+    if sheet.posted_by:
+        footer.append(field("ثبت نهایی", sheet.posted_by))
+    footer.append(field("تاریخ چاپ", printed))
+    sep = f"{RLM} — {RLM}"
+    doc_date = to_persian_digits(jalali.format_date(sheet.doc_date))
     signature_cells = rtl_cells([f'<td width="33%" align="center">{s}<br><br><br><br></td>'
                                  for s in SIGNATURES])
     return f"""
@@ -77,17 +89,17 @@ h1 {{ font-size: {size + 6}pt; margin: 0; }}
 <td width="40%" style="border:none" align="left"><b>{esc(sheet.company or APP_DISPLAY_NAME)}</b><br>
 <span class="muted">{esc(APP_DISPLAY_NAME)}</span></td>
 <td width="60%" style="border:none"><h1>{esc(sheet.type_name)}</h1>
-<b>شماره: {esc(sheet.number_text)}</b> — تاریخ: {to_persian_digits(jalali.format_date(sheet.doc_date))}</td>
+{field("شماره", sheet.number_text)}{sep}{field("تاریخ", doc_date)}</td>
 </tr></table>
 {stamp_html}
-<p>{" — ".join(parties)}</p>
+<p>{sep.join(parties)}</p>
 {description}
 <table class="grid" width="100%" cellspacing="0" cellpadding="4"><thead><tr>
 {rtl_cells([f"<th>{h}</th>" for h in heads])}</tr></thead>
 <tbody>{"".join(rows)}</tbody></table>
-<p>تعداد اقلام: {to_persian_digits(len(sheet.lines))}{total}</p>
+<p>{sep.join(summary)}</p>
 <table width="100%" cellspacing="0" cellpadding="6" border="1"><tr>{signature_cells}</tr></table>
-<p class="muted">صادرکننده: {esc(sheet.created_by)}{posted_by} — تاریخ چاپ: {printed}</p>
+<p class="muted">{sep.join(footer)}</p>
 </body></html>"""
 
 

@@ -4,6 +4,7 @@ import datetime as dt
 from collections.abc import Awaitable, Callable
 from decimal import Decimal
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -36,10 +37,15 @@ from caspian.ui.printing import output_menu, report_html
 from caspian.ui.tasks import spawn
 from caspian.ui.widgets import Card, DataTable, JalaliDateEdit, SearchableCombo
 
+MIN_COLUMN = 72
+SHORT_TEXT_COLUMNS = {"کد", "واحد", "گروه", "انبار"}
+
 
 def format_cell(value, kind: str) -> str:
     if value is None:
         return ""
+    if kind == "code":
+        return to_persian_digits(str(value))
     if kind in ("qty", "money"):
         return format_qty(Decimal(value))
     if kind == "int":
@@ -127,12 +133,16 @@ class ReportView(QWidget):
         self.table.set_rows([(ids[i], [format_cell(v, c.kind) for v, c in zip(row, cols, strict=False)])
                              for i, row in enumerate(report.rows)])
         self.meta.setText(" | ".join(report.meta))
-        # Text columns share the free width; numbers and dates fit their content (#31).
+        # Long text (names) shares the free width; codes, units, numbers and dates fit their content
+        # (#31). Nothing is squeezed below a readable width: the table scrolls instead (#17).
         header = self.table.horizontalHeader()
         header.setStretchLastSection(False)
+        header.setMinimumSectionSize(MIN_COLUMN)
         for i, column in enumerate(cols):
-            header.setSectionResizeMode(i, QHeaderView.ResizeMode.Stretch if column.kind == "text"
+            stretch = column.kind == "text" and column.title not in SHORT_TEXT_COLUMNS
+            header.setSectionResizeMode(i, QHeaderView.ResizeMode.Stretch if stretch
                                         else QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.table.set_empty_text("موردی برای این گزارش پیدا نشد.")
         self.totals.setText(" — ".join(f"{cols[i].title}: {format_cell(v, cols[i].kind)}"
                                        for i, v in report.totals.items()))
@@ -225,10 +235,15 @@ class ReportsPage(QWidget):
         self.only_order = QCheckBox("فقط کالاهای نیازمند سفارش")
         self.only_order.setChecked(True)
         for w in (QLabel("بازه مصرف (روز):"), self.lookback, QLabel("زمان تحویل:"), self.lead,
-                  QLabel("پوشش سفارش:"), self.cover, QLabel("ذخیره اطمینان:"), self.safety,
-                  QLabel("انبار:"), self.burn_wh, self.only_order):
+                  QLabel("پوشش سفارش:"), self.cover, QLabel("ذخیره اطمینان:"), self.safety):
             self.burn.filters.addWidget(w)
         self.burn.filters.addStretch(1)
+        # A second filter row: on one row the checkbox label was clipped (#17).
+        second = QHBoxLayout()
+        for w in (QLabel("انبار:"), self.burn_wh, self.only_order):
+            second.addWidget(w)
+        second.addStretch(1)
+        self.burn.layout().insertLayout(self.burn.layout().indexOf(self.burn.filters) + 1, second)
         self.apply_rp = QPushButton("اعمال نقطه سفارش پیشنهادی برای ردیف‌های انتخاب‌شده")
         self.apply_rp.clicked.connect(self.on_apply_reorder_points)
         self.burn.extra_actions.insertWidget(0, self.apply_rp)

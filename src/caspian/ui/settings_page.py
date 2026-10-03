@@ -314,7 +314,7 @@ class AITab(QWidget):
             return
         finally:
             self.test_button.setEnabled(True)
-        text = f"«{p.name}»: {message} ({to_persian_digits(f'{seconds:.1f}')} ثانیه)"
+        text = f"«{ltr(p.name)}»: {message} ({to_persian_digits(f'{seconds:.1f}')} ثانیه)"
         (show_info if ok else show_error)(self, text)
 
 

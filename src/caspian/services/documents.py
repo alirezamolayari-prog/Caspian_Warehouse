@@ -502,6 +502,11 @@ async def print_sheet(db: Database, actor: Actor, doc_id: int) -> PrintSheet:
             row = await s.get(model, pk) if pk else None
             return getattr(row, attr) if row else ""
 
+        async def person_name(user_id) -> str:
+            """Full name on paper (QA round 1 #16), the login name only as a fallback."""
+            user = await s.get(User, user_id) if user_id else None
+            return (user.full_name or user.username) if user else ""
+
         lines = []
         for ln in doc.lines:
             item = await s.get(Item, ln.item_id)
@@ -514,9 +519,8 @@ async def print_sheet(db: Database, actor: Actor, doc_id: int) -> PrintSheet:
             await name_of(Warehouse, doc.dest_warehouse_id), await name_of(Person, doc.person_id),
             PERSON_LABELS.get(doc.doc_type, "طرف حساب"), doc.description, lines,
             str(company.value) if company and company.value else "",
-            await name_of(User, doc.created_by_id, "username"),
-            await name_of(User, doc.posted_by_id, "username"), doc.print_count,
-            await name_of(User, doc.last_printed_by_id, "username"))
+            await person_name(doc.created_by_id), await person_name(doc.posted_by_id),
+            doc.print_count, await person_name(doc.last_printed_by_id))
 
 
 async def record_print(db: Database, actor: Actor, doc_id: int, kind: str) -> int:

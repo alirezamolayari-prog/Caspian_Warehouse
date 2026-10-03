@@ -291,7 +291,7 @@ async def test_record_print_counts_copies_and_audits(env):
     assert await docs.record_print(db, admin, doc_id, "printer") == 1
     assert await docs.record_print(db, admin, doc_id, "pdf") == 2
     sheet = await docs.print_sheet(db, admin, doc_id)
-    assert sheet.print_count == 2 and sheet.last_printed_by == "admin"
+    assert sheet.print_count == 2 and sheet.last_printed_by == admin.display_name  # full name (#16)
     [row] = [r for r in await docs.list_documents(db, admin) if r.id == doc_id]
     assert row.print_count == 2
     from caspian.db.models import AuditLog
