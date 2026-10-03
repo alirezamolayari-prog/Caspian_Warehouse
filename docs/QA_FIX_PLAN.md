@@ -120,3 +120,4 @@ Details: one commit per item, see the log of `fix/qa-round-2` and the summary be
 
 - [x] Step 0 — in-memory keyring for every test (`tests/conftest.py`), guard `tests/test_keyring_guard.py`
 - [x] 1 — numbering/posting retry on conflicts (IntegrityError, MariaDB 1213/1205/1020, SQLite locked), Persian error; `tests/test_concurrency.py` (SQLite + MariaDB)
+- [x] 2 — health check skips loans (and returns) carried over by the year-end; `test_fiscal.py::test_health_check_ignores_loans_carried_over`
