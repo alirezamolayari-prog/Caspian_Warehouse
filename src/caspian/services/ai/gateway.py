@@ -46,7 +46,8 @@ class Attempt:
     provider: str
     # ok | rate_limited | timeout | unreachable | server_error | auth_error (401) | forbidden (403) | error
     outcome: str
-    detail: str = ""  # the server's explanation, key removed
+    detail: str = ""  # the server's explanation, key removed (log and settings test only)
+    status: int | None = None
 
 
 @dataclass(frozen=True)
@@ -128,7 +129,7 @@ class Gateway:
             raise AIUnavailable(f"دریافت فهرست مدل‌ها ممکن نشد: {_OUTCOME_TEXT['unreachable']}") from exc
         if response.status_code != 200:
             outcome = _status_outcome(response.status_code)
-            raise AIUnavailable(_explain(outcome, _server_detail(response, key)))
+            raise AIUnavailable(_explain(outcome, _server_detail(response, key), response.status_code))
         try:
             rows = response.json().get("data") or response.json().get("models") or []
         except (ValueError, AttributeError):
@@ -172,10 +173,9 @@ class Gateway:
         """One short Persian line per provider tried in the last call (#5)."""
         lines = []
         for attempt in self.last_attempts:
-            reason = _OUTCOME_TEXT.get(attempt.outcome, attempt.outcome).split("\n")[0]
-            if attempt.detail:
-                reason += f" ({ltr(attempt.detail[:120])})"
-            lines.append(f"• {attempt.provider}: {reason}")
+            # Persian reason only; the raw server text (often English JSON) stays in the log (round 2 #3).
+            reason = _status_text(attempt.status, attempt.outcome).split("\n")[0]
+            lines.append(f"• {ltr(attempt.provider)}: {reason}")
         return "\n".join(lines)
 
     async def transcribe(self, audio: bytes, filename: str = "voice.wav",
@@ -205,8 +205,8 @@ class Gateway:
         elapsed = self._clock() - started
         if isinstance(outcome, dict):
             return True, "اتصال برقرار است.", elapsed
-        detail = self.last_attempts[-1].detail if self.last_attempts else ""
-        return False, _explain(outcome, detail), elapsed
+        last = self.last_attempts[-1] if self.last_attempts else None
+        return False, _explain(outcome, last.detail if last else "", last.status if last else None), elapsed
 
     async def _try(self, provider: ProviderConfig, path: str, json_headers: bool = True,
                    record_cooldown: bool = True, **kwargs) -> dict | str:
@@ -241,7 +241,7 @@ class Gateway:
                 detail = _server_detail(response, get_key(provider.id))
                 log.warning("AI provider %s returned %s: %s", provider.name,
                             response.status_code, detail)
-                self.last_attempts.append(Attempt(provider.name, outcome, detail))
+                self.last_attempts.append(Attempt(provider.name, outcome, detail, response.status_code))
                 log.info("AI provider %s -> %s; trying next", provider.name, outcome)
                 return outcome
         self.last_attempts.append(Attempt(provider.name, outcome))
@@ -257,6 +257,22 @@ class Gateway:
         if not await self.is_online():
             return "اینترنت در دسترس نیست و مدل محلی (Ollama) تنظیم نشده است."
         return "همه سرویس‌ها موقتاً محدود شده‌اند. کمی بعد دوباره تلاش کنید."
+
+
+_STATUS_TEXT = {
+    500: "خطای داخلی سرور سرویس (500).",
+    502: "سرور سرویس موقتاً در دسترس نیست (502).",
+    503: "سرور سرویس شلوغ است (503)؛ کمی بعد دوباره امتحان کنید.",
+    504: "سرور سرویس دیر پاسخ داد (504).",
+}
+
+
+def _status_text(status: int | None, outcome: str) -> str:
+    if status in _STATUS_TEXT:
+        return _STATUS_TEXT[status]
+    if outcome == "server_error" and status:
+        return f"خطای سرور سرویس‌دهنده ({status})."
+    return _OUTCOME_TEXT.get(outcome, outcome)
 
 
 _OUTCOME_TEXT = {
@@ -285,12 +301,23 @@ def _status_outcome(status: int) -> str:
     return "server_error" if status >= 500 else "error"
 
 
+def _message_in(data) -> str | None:
+    """The human message inside an error body: {"error": {"message": …}}, [{"error": …}], …"""
+    if isinstance(data, list):
+        return next((m for m in map(_message_in, data) if m), None)
+    if isinstance(data, dict):
+        if isinstance(data.get("message"), str):
+            return data["message"]
+        error = data.get("error")
+        return error if isinstance(error, str) else _message_in(error)
+    return None
+
+
 def _server_detail(response: httpx.Response, key: str | None) -> str:
     """The server's own explanation (JSON error message or text), never including the key."""
     try:
         data = response.json()
-        error = data.get("error", data) if isinstance(data, dict) else data
-        text = error.get("message") if isinstance(error, dict) else str(error)
+        text = _message_in(data) or str(data)
     except ValueError:
         text = response.text
     text = " ".join(str(text or "").split())[:300]
@@ -299,8 +326,9 @@ def _server_detail(response: httpx.Response, key: str | None) -> str:
     return text
 
 
-def _explain(outcome: str, detail: str) -> str:
-    text = _OUTCOME_TEXT.get(outcome, "خطا")
+def _explain(outcome: str, detail: str, status: int | None = None) -> str:
+    """For «تست اتصال» / model list: Persian reason plus the server's own short message."""
+    text = _status_text(status, outcome) if outcome in _OUTCOME_TEXT or status else "خطا"
     return f"{text}\nپاسخ سرور: {ltr(detail)}" if detail else text  # English text isolated (#20)
 
 

@@ -205,8 +205,28 @@ async def test_chat_failure_names_each_provider_and_reason(db, admin, shop):
     with pytest.raises(AIUnavailable) as caught:
         await Assistant(db, gw, admin).send("سلام")
     text = caught.value.message
-    assert "Local" in text and "404" in text and "not found" in text
+    assert "Local" in text and "404" in text and "پیدا نشد" in text
+    assert "not found" not in text  # raw server text only in the log (round 2 #3)
     assert "Groq" in text and "429" in text
+
+
+async def test_gemini_503_shows_a_short_persian_reason(db, admin, shop, caplog):
+    """Chat showed «[{'error': {'code': 503, 'message': 'This model is currently experiencing high
+    demand…'}}]» (round 2 #3)."""
+    body = [{"error": {"code": 503, "message": "This model is currently experiencing high demand. "
+                                               "Spikes in demand are usually temporary.",
+                       "status": "UNAVAILABLE"}}]
+    gw = Gateway(db, httpx.MockTransport(lambda r: httpx.Response(503, json=body)),
+                 online_check=lambda: True)
+    with caplog.at_level("WARNING"), pytest.raises(AIUnavailable) as caught:
+        await Assistant(db, gw, admin).send("سلام")
+    text = caught.value.message
+    assert "سرور سرویس شلوغ است (503)" in text
+    assert "{" not in text and "error" not in text and "high demand" not in text
+    assert "high demand" in caplog.text  # kept for support
+    provider = (await config.list_providers(db))[0]
+    ok, message, _ = await gw.test_provider(provider)  # settings test: short server message, isolated
+    assert not ok and "(503)" in message and "⁦This model is currently" in message
 
 
 async def test_whole_request_times_out(db, admin, shop):
