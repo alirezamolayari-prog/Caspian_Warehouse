@@ -125,3 +125,8 @@ Details: one commit per item, see the log of `fix/qa-round-2` and the summary be
 - [x] 4 — `tests/sim/test_six_months.py` (slow; `CASPIAN_SLOW_TESTS=1`): 943 documents, 7 stocktakes, 30 backups, year-end 1405 with carried loans, restore; ~56 s
 - [x] A — one item per real product: exact duplicates refused, similar ones need «ایجاد کالای مشابه» (PIN) in services (dialog, opening stock, imports, renames; never the AI); live suggestions; health finding + Items filter «فقط کالاهای تکراری/مشابه»; new PIN-protected `items.merge_items` + «ادغام…»; `tests/test_similar_items.py`, `tests/test_similar_items_ui.py`
 - [x] B — assistant chat history: table `assistant_messages` (migration b00de379b8fb), saved in the background after each reply (text ≤ 2,000 chars, no audio); «سوابق گفتگو» dialog (search, newest first, «بیشتر…», «استفاده دوباره», «حذف سوابق من»); own rows only, admins all; never readable by the AI; retention `ai_history_days` (default 30, Settings → AI), purged in batches at startup and daily; `tests/test_chat_history.py`, `tests/test_chat_history_ui.py`
+
+**Round 2 status: done.** Verified: ruff, full pytest incl. MariaDB integration (~415 tests), smoke test,
+six-month simulation. Not verified end-to-end: real AI provider keys (Gemini 503 tested with the recorded
+body), GitHub CI's SQLite-only path for the MariaDB concurrency test (skips there), catalogs above 5,000 items
+for the duplicate grouping (~2.5 s worst case at 5,000, cached and off the UI thread).
