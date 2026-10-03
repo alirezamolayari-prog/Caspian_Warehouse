@@ -389,6 +389,7 @@ async def set_item_active(
     db: Database, actor: Actor, item_id: int, active: bool, approval: Approval | None = None
 ) -> None:
     """Reactivating needs items.edit; deactivating is a protected action."""
+    actor.require_human("فعال/غیرفعال کردن کالا")
     actor.require(Perm.ITEMS_EDIT)
     approver_id = None if active else consume(approval, ProtectedAction.DEACTIVATE_ITEM, actor)
     async with db.session(actor.user_id) as s:
@@ -400,6 +401,7 @@ async def set_item_active(
 
 async def delete_item(db: Database, actor: Actor, item_id: int, approval: Approval | None) -> None:
     """Only items that never appeared in a document can be deleted; others are deactivated."""
+    actor.require_human("حذف کالا")
     actor.require(Perm.ITEMS_EDIT)
     async with db.session(actor.user_id) as s:
         item = await _load(s, item_id)

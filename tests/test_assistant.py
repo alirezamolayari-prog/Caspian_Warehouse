@@ -43,10 +43,12 @@ def call(name, **args):
 
 
 def test_no_destructive_tools_exist():
+    """QA round 1: the assistant may create and post documents (like a user), nothing destructive."""
     names = {t.name for t in TOOLS}
     assert names == {"search_items", "item_stock", "reorder_analysis", "recent_documents",
-                     "open_loans", "suppliers", "create_stock_draft", "send_report", "propose_tasks"}
-    for forbidden in ("post", "delete", "approve", "apply", "cancel", "merge", "restore", "role"):
+                     "open_loans", "suppliers", "create_document", "post_document",
+                     "create_stock_draft", "send_report", "propose_tasks"}
+    for forbidden in ("delete", "approve", "apply", "cancel", "merge", "restore", "role", "deactivate"):
         assert not any(forbidden in n for n in names)
 
 

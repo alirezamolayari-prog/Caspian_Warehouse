@@ -274,6 +274,9 @@ class TextImportDialog(FormDialog):
     async def submit(self) -> None:
         if not self.text.toPlainText().strip():
             raise ValidationError("متن را وارد کنید.")
+        # Inputs are disabled while this runs (FormDialog busy state); say what's happening (#8).
+        self.show_status("در حال پردازش متن… (حداکثر یک دقیقه؛ در صورت نبود پاسخ، بدون هوش مصنوعی "
+                         "پردازش می‌شود)", is_error=False)
         self.batch_id, self.used_ai = await text_to_draft(
             self._ctx.db, self._ctx.ai, self._ctx.actor, self.text.toPlainText(),
             DocType(self.target.doc_type.currentData()), self.target.warehouse.currentData())

@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from caspian.core.text import ltr
 from caspian.db.database import Database
 from caspian.db.models import ProviderKind
 from caspian.services.ai.config import ProviderConfig, get_key, list_providers
@@ -163,8 +164,19 @@ class Gateway:
                 message = outcome["choices"][0]["message"]
                 return ChatResult(message.get("content") or "", message.get("tool_calls") or [],
                                   provider.name, provider.model, message)
-        raise AIUnavailable("هیچ‌یک از سرویس‌های هوش مصنوعی پاسخ نداد. کمی بعد دوباره تلاش کنید "
+        raise AIUnavailable("هیچ‌یک از سرویس‌های هوش مصنوعی پاسخ نداد:\n" + self.attempts_text() +
+                            "\nکمی بعد دوباره تلاش کنید "
                             "یا تنظیمات را بررسی کنید.")
+
+    def attempts_text(self) -> str:
+        """One short Persian line per provider tried in the last call (#5)."""
+        lines = []
+        for attempt in self.last_attempts:
+            reason = _OUTCOME_TEXT.get(attempt.outcome, attempt.outcome).split("\n")[0]
+            if attempt.detail:
+                reason += f" ({ltr(attempt.detail[:120])})"
+            lines.append(f"• {attempt.provider}: {reason}")
+        return "\n".join(lines)
 
     async def transcribe(self, audio: bytes, filename: str = "voice.wav",
                          language: str = "fa") -> str:

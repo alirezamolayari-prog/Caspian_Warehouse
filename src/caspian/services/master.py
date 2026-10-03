@@ -93,6 +93,7 @@ async def save_category(db: Database, actor: Actor, name: str, category_id: int 
 
 
 async def delete_category(db: Database, actor: Actor, category_id: int) -> None:
+    actor.require_human("حذف گروه")
     actor.require(Perm.ITEMS_EDIT)
     async with db.session(actor.user_id) as s:
         cat = await _get(s, Category, category_id, "گروه")
@@ -152,6 +153,7 @@ async def save_unit(db: Database, actor: Actor, name: str, unit_id: int | None =
 
 
 async def set_unit_active(db: Database, actor: Actor, unit_id: int, active: bool) -> None:
+    actor.require_human("غیرفعال کردن واحد")
     actor.require(Perm.ITEMS_EDIT)
     async with db.session(actor.user_id) as s:
         unit = await _get(s, Unit, unit_id, "واحد")
@@ -213,6 +215,7 @@ async def save_warehouse(db: Database, actor: Actor, code: str, name: str, notes
 
 
 async def set_warehouse_active(db: Database, actor: Actor, warehouse_id: int, active: bool) -> None:
+    actor.require_human("غیرفعال کردن انبار")
     actor.require(Perm.WAREHOUSES_EDIT)
     async with db.session(actor.user_id) as s:
         wh = await _get(s, Warehouse, warehouse_id, "انبار")
@@ -313,6 +316,7 @@ async def save_person(
 
 
 async def set_person_active(db: Database, actor: Actor, person_id: int, active: bool) -> None:
+    actor.require_human("غیرفعال کردن شخص")
     actor.require(Perm.PERSONS_EDIT)
     async with db.session(actor.user_id) as s:
         person = await _get(s, Person, person_id, "شخص")

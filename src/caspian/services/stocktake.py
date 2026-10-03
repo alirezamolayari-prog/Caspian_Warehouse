@@ -312,6 +312,7 @@ async def submit_counts(db: Database, actor: Actor, stocktake_id: int,
 
 async def approve(db: Database, actor: Actor, stocktake_id: int) -> int | None:
     """Post an adjustment for all differences. Returns the document id (None if no diffs)."""
+    actor.require_human("تأیید انبارگردانی")
     actor.require(Perm.STOCKTAKE_APPROVE)
     actor.require(Perm.DOCUMENTS_POST)
     async with db.session(actor.user_id) as s:
@@ -342,6 +343,7 @@ async def approve(db: Database, actor: Actor, stocktake_id: int) -> int | None:
 
 
 async def cancel(db: Database, actor: Actor, stocktake_id: int) -> None:
+    actor.require_human("لغو انبارگردانی")
     actor.require(Perm.STOCKTAKE_APPROVE)
     async with db.session(actor.user_id) as s:
         st = await _load(s, stocktake_id)

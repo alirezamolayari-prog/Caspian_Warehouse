@@ -195,7 +195,8 @@ class MainWindow(QMainWindow):
             elif spec.key == "reports":
                 page = ReportsPage(self.ctx)
             elif spec.key == "assistant":
-                page = AssistantPage(self.ctx, open_batch=self.open_import_batch)
+                page = AssistantPage(self.ctx, open_batch=self.open_import_batch,
+                                     open_document=self.open_document)
             elif spec.key == "settings":
                 page = SettingsPage(self.ctx)
             elif spec.key == "users":

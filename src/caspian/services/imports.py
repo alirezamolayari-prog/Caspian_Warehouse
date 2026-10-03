@@ -43,6 +43,7 @@ from caspian.services.protected import Approval, ProtectedAction, consume
 
 AUTO_MATCH = 90  # fuzzy score accepted without asking (stock lines only)
 SUGGEST = 70  # below this a name is treated as a new item
+AMBIGUOUS_GAP = 2  # top two candidates this close: ask, don't pick
 DEFAULT_UNIT = "عدد"
 
 STATUS_NAMES = {
@@ -164,7 +165,10 @@ def evaluate(index: ItemIndex, kind: ImportKind, line: ImportLine,
             best_id, best = found[0]
             second = found[1][1] if len(found) > 1 else 0
             alternatives = [[i, sc] for i, sc in found]
-            if best >= 99 and kind == ImportKind.STOCK:
+            # Two items scoring (almost) the same — e.g. two active «جارو» — must be chosen by a person,
+            # never guessed (QA round 1, #3).
+            ambiguous = second >= best - AMBIGUOUS_GAP
+            if best >= 99 and kind == ImportKind.STOCK and not ambiguous:
                 return Evaluation(LineStatus.EXISTING_MATCH, "", best_id, best, alternatives)
             if kind == ImportKind.STOCK and best >= AUTO_MATCH and best - second >= 6:
                 return Evaluation(LineStatus.EXISTING_MATCH,
@@ -442,6 +446,7 @@ async def create_variant(db: Database, actor: Actor, line_id: int, name: str) ->
 
 
 async def discard_batch(db: Database, actor: Actor, batch_id: int) -> None:
+    actor.require_human("حذف پیش‌نویس ورود اطلاعات")
     actor.require(Perm.IMPORT_RUN)
     async with db.session(actor.user_id) as s:
         batch = await _load(s, batch_id)

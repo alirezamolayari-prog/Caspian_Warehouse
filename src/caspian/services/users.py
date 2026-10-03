@@ -100,6 +100,7 @@ async def create_user(
 
     Creating an admin is a role grant, so it needs a CHANGE_ROLE approval.
     """
+    actor.require_human("تعریف کاربر")
     actor.require(Perm.USERS_MANAGE)
     username = _validate_username(username)
     # A taken name is reported first (before password rules), and never burns an approval.
@@ -136,6 +137,7 @@ async def update_user(db: Database, actor: Actor, user_id: int, full_name: str) 
 
 async def rename_user(db: Database, actor: Actor, user_id: int, new_username: str) -> None:
     """Change the login name (unique, audited). The password and everything else stay."""
+    actor.require_human("تغییر نام کاربری")
     actor.require(Perm.USERS_MANAGE)
     username = _validate_username(new_username)
     async with db.session(actor.user_id) as s:
@@ -149,6 +151,7 @@ async def rename_user(db: Database, actor: Actor, user_id: int, new_username: st
 
 
 async def set_active(db: Database, actor: Actor, user_id: int, active: bool) -> None:
+    actor.require_human("فعال/غیرفعال کردن کاربر")
     actor.require(Perm.USERS_MANAGE)
     if not active and user_id == actor.user_id:
         raise ValidationError("نمی‌توانید حساب خودتان را غیرفعال کنید.")
@@ -163,6 +166,7 @@ async def set_active(db: Database, actor: Actor, user_id: int, active: bool) -> 
 
 async def reset_password(db: Database, actor: Actor, user_id: int, new_password: str) -> None:
     """Admin sets a temporary password; the user must change it at next login."""
+    actor.require_human("بازنشانی رمز")
     actor.require(Perm.USERS_MANAGE)
     async with db.session(actor.user_id) as s:
         user = await _get_user(s, user_id)
@@ -178,6 +182,7 @@ async def reset_password(db: Database, actor: Actor, user_id: int, new_password:
 async def change_role(
     db: Database, actor: Actor, user_id: int, role_code: str, approval: Approval | None
 ) -> None:
+    actor.require_human("تغییر نقش")
     actor.require(Perm.USERS_MANAGE)
     approver_id = consume(approval, ProtectedAction.CHANGE_ROLE, actor)
     async with db.session(actor.user_id) as s:

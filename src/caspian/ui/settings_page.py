@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 from qasync import asyncSlot
 
 from caspian.core.permissions import Perm
-from caspian.core.text import to_persian_digits
+from caspian.core.text import ltr, to_persian_digits
 from caspian.db.models import ProviderKind
 from caspian.services.ai import config
 from caspian.services.ai.config import PRESETS, ProviderConfig
@@ -149,20 +149,30 @@ class ProviderDialog(FormDialog):
             return
         finally:
             self.fetch_models.setEnabled(True)
+        wanted = self.model.currentText().strip()
         self._fill_models()
         free = sum(m.free for m in self._models)
-        self.show_status(f"{to_persian_digits(len(self._models))} مدل دریافت شد"
-                         + (f" ({to_persian_digits(free)} رایگان)." if free else "."), is_error=False)
-        self.model.showPopup()
+        text = f"{to_persian_digits(len(self._models))} مدل دریافت شد" + (
+            f" ({to_persian_digits(free)} رایگان)." if free else ".")
+        if wanted and wanted not in {m.id for m in self._models}:
+            # Keep the user's model; just say the provider doesn't list it (#7).
+            text += f" مدل فعلی «{ltr(wanted)}» در فهرست این سرویس نیست؛ آن را بررسی کنید."
+        self.show_status(text, is_error=bool(wanted) and wanted not in {m.id for m in self._models})
 
     def _fill_models(self, *_args) -> None:
+        """Offer the fetched models without ever changing the selected one (#7)."""
         current = self.model.currentText()
+        self.model.blockSignals(True)
         self.model.clear()
         only_free = not self.free_only.isHidden() and self.free_only.isChecked()
         for m in self._models:
             if m.free or not only_free:
                 self.model.addItem(f"{m.id}", m.id)
-        self.model.setEditText(current)
+        index = self.model.findText(current)
+        self.model.setCurrentIndex(index)
+        if index < 0:
+            self.model.setEditText(current)
+        self.model.blockSignals(False)
 
     async def submit(self) -> None:
         # "" removes the stored key; None leaves it unchanged.
@@ -187,6 +197,11 @@ class AITab(QWidget):
             "برنامه کاملاً آفلاین کار می‌کند.", objectName="Muted")
         intro.setWordWrap(True)
         layout.addWidget(intro)
+        self.allow_post = QCheckBox("اجازه ثبت نهایی سند توسط دستیار (با همه کنترل‌های موجودی و تاریخ؛ "
+                                    "حذف و ابطال هرگز)")
+        self.allow_post.setToolTip("خاموش: دستیار فقط پیش‌نویس می‌سازد و ثبت نهایی با کاربر است.")
+        self.allow_post.toggled.connect(self.on_allow_post)
+        layout.addWidget(self.allow_post)
         toolbar = QHBoxLayout()
         self.status = QLabel(objectName="Muted")
         toolbar.addWidget(self.status, 1)
@@ -225,8 +240,18 @@ class AITab(QWidget):
         super().showEvent(event)
         self.refresh()
 
+    @asyncSlot(bool)
+    async def on_allow_post(self, allowed: bool) -> None:
+        try:
+            await config.set_ai_may_post(self._ctx.db, self._ctx.actor, allowed)
+        except ServiceError as exc:
+            show_error(self, exc.message)
+
     @asyncSlot()
     async def refresh(self) -> None:
+        self.allow_post.blockSignals(True)
+        self.allow_post.setChecked(await config.ai_may_post(self._ctx.db))
+        self.allow_post.blockSignals(False)
         rows = await config.list_providers(self._ctx.db)
         self._rows = {p.id: p for p in rows}
         theme = self._ctx.themes.current

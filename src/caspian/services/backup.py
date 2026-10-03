@@ -407,6 +407,7 @@ async def restore_backup(db: Database, actor: Actor, dumper: Dumper, path: str |
     Order: validate approval -> verify the whole file (tag + gzip) -> safety backup of the
     current data -> drop & reload -> migrate/seed via `after_restore` -> audit.
     """
+    actor.require_human("بازیابی نسخه پشتیبان")
     approver_id = consume(approval, ProtectedAction.RESTORE_BACKUP, actor)
     path = Path(path)
     info = await verify_backup(path, password)

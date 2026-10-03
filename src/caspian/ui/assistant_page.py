@@ -17,13 +17,14 @@ from PySide6.QtWidgets import (
 )
 from qasync import asyncSlot
 
-from caspian.core.recorder import Recorder, RecorderError, has_microphone
+from caspian.core.recorder import Recorder, RecorderError, has_microphone, is_silent
 from caspian.core.text import to_persian_digits
 from caspian.services.ai.assistant import Assistant
 from caspian.services.ai.gateway import AIUnavailable
 from caspian.services.errors import ServiceError
 from caspian.ui.app_context import AppContext
 from caspian.ui.icons import icon
+from caspian.ui.tasks import spawn
 from caspian.ui.widgets import Card
 
 log = logging.getLogger(__name__)
@@ -45,10 +46,12 @@ def _to_html(text: str) -> str:
 
 
 class AssistantPage(QWidget):
-    def __init__(self, ctx: AppContext, open_batch=None, parent: QWidget | None = None) -> None:
+    def __init__(self, ctx: AppContext, open_batch=None, parent: QWidget | None = None,
+                 open_document=None) -> None:
         super().__init__(parent)
         self._ctx = ctx
         self._open_batch = open_batch  # callable(batch_id) supplied by the main window
+        self._open_document = open_document  # async (doc_id) -> None
         self._assistant = Assistant(ctx.db, ctx.ai, ctx.actor, ctx.messenger)
         self._recorder = Recorder()
         self._busy = False
@@ -131,9 +134,9 @@ class AssistantPage(QWidget):
         self.transcript.clear()
         self._append("assistant",
                      "سلام! می‌توانم موجودی و اسناد را برایتان جستجو کنم، کالاهای نیازمند سفارش را "
-                     "پیشنهاد بدهم، پیام درخواست خرید بنویسم یا از فهرستی که می‌گویید «پیش‌نویس» "
-                     "رسید/حواله بسازم.\nمن فقط پیش‌نویس می‌سازم؛ ثبت نهایی و عملیات حساس همیشه با "
-                     "خود شماست.")
+                     "پیشنهاد بدهم، پیام درخواست خرید بنویسم یا مثل شما رسید و حواله بزنم؛ مثلاً: "
+                     "«حواله خروج بزن برای آقای مولایاری که یک عدد جارو برده».\nحذف، ابطال، "
+                     "غیرفعال‌سازی و عملیات حساس همیشه با خود شماست.")
 
     def _set_busy(self, busy: bool, text: str = "") -> None:
         self._busy = busy
@@ -158,7 +161,8 @@ class AssistantPage(QWidget):
         online = await self._ctx.ai.is_online()
         ready = len(await self._ctx.ai.candidates())
         if ready:
-            self.status.setText(f"دستیار آماده است — {to_persian_digits(ready)} سرویس در دسترس"
+            # Configured is not the same as answering: the first reply proves it (#5).
+            self.status.setText(f"{to_persian_digits(ready)} سرویس هوش مصنوعی تنظیم شده"
                                 + ("" if online else " (آفلاین: فقط مدل محلی)"))
         else:
             self.status.setText("دستیار در دسترس نیست — سرویس هوش مصنوعی تنظیم نشده یا اینترنت قطع است. "
@@ -180,7 +184,7 @@ class AssistantPage(QWidget):
             self._append("error", f"{exc.message}\nبرای ساخت پیش‌نویس از فهرست تایپ‌شده، بدون "
                                   "اینترنت هم می‌توانید از «ورود اطلاعات ← از متن» استفاده کنید.")
             self._set_busy(False)
-            await self.update_status()
+            self.status.setText("آخرین درخواست پاسخ نگرفت — جزئیات در پیام بالا.")
             return
         except ServiceError as exc:
             self._append("error", exc.message)
@@ -194,6 +198,10 @@ class AssistantPage(QWidget):
         links = "".join(
             f'<br><a href="batch:{b}">بررسی پیش‌نویس شماره {to_persian_digits(b)} ←</a>'
             for b in reply.created_batches)
+        links += "".join(
+            f'<br><a href="doc:{d["document_id"]}">باز کردن {d["type"]} {d["number"]} '
+            f'({"ثبت نهایی" if d.get("status") == "POSTED" else "پیش‌نویس"}) ←</a>'
+            for d in reply.created_documents)
         self._append("assistant", reply.text, links)
         self._set_busy(False, f"پاسخ از «{reply.provider}»" if reply.provider else "")
 
@@ -218,6 +226,9 @@ class AssistantPage(QWidget):
             self._append("error", str(exc))
             return
         self._refresh_icons()
+        if is_silent(audio):
+            self.status.setText("صدایی شنیده نشد؛ دوباره و نزدیک‌تر به میکروفون صحبت کنید.")
+            return
         self._set_busy(True, "در حال تبدیل گفتار به متن…")
         try:
             text = await self._ctx.ai.transcribe(audio)
@@ -229,7 +240,11 @@ class AssistantPage(QWidget):
             del audio  # voice isn't kept anywhere
         self._set_busy(False)
         if text:
-            await self.send(text)
+            # Shown for checking, not sent: speech-to-text can mishear (#6).
+            self.input.setText(text)
+            self.input.setFocus()
+            self.input.end(False)
+            self.status.setText("متن گفته‌شده در کادر پایین است؛ بررسی کنید و «ارسال» را بزنید.")
         else:
             self.status.setText("صدایی تشخیص داده نشد.")
 
@@ -241,3 +256,5 @@ class AssistantPage(QWidget):
         target = url.toString()
         if target.startswith("batch:") and self._open_batch:
             self._open_batch(int(target.split(":", 1)[1]))
+        elif target.startswith("doc:") and self._open_document:
+            spawn(self._open_document(int(target.split(":", 1)[1])))

@@ -42,7 +42,13 @@ from caspian.db.models import (
 )
 from caspian.services import audit
 from caspian.services.actor import Actor
-from caspian.services.errors import ConcurrencyError, NotFound, StocktakeFrozen, ValidationError
+from caspian.services.errors import (
+    ConcurrencyError,
+    NotFound,
+    PermissionDenied,
+    StocktakeFrozen,
+    ValidationError,
+)
 from caspian.services.fiscal_state import ensure_open_year
 from caspian.services.protected import Approval, ProtectedAction, consume
 
@@ -716,6 +722,7 @@ async def update_document(db: Database, actor: Actor, doc_id: int, expected_vers
 
 
 async def delete_draft(db: Database, actor: Actor, doc_id: int) -> None:
+    actor.require_human("حذف سند")
     actor.require(Perm.DOCUMENTS_EDIT)
     async with db.session(actor.user_id) as s:
         doc = await _load(s, doc_id)
@@ -747,6 +754,12 @@ async def post_document_in(s: AsyncSession, actor: Actor, doc: Document, *,
     """Post inside the caller's transaction. `stocktake_id`: the stocktake whose own adjustment
     this is (exempt from its freeze)."""
     actor.require(Perm.DOCUMENTS_POST)
+    if actor.is_ai:
+        from caspian.services.ai.config import ai_may_post_in
+
+        if not await ai_may_post_in(s):
+            raise PermissionDenied("ثبت نهایی سند توسط دستیار در تنظیمات غیرفعال است؛ پیش‌نویس ساخته شد "
+                                   "و باید خودتان آن را ثبت نهایی کنید.")
     if doc.status != DocStatus.DRAFT:
         raise ValidationError("این سند قبلاً ثبت یا ابطال شده است.")
     # Re-validate: items/warehouses may have been deactivated since the draft was saved.
@@ -779,6 +792,7 @@ def _input_of(doc: Document) -> DocumentInput:
 async def cancel_document(db: Database, actor: Actor, doc_id: int, reason: str = "",
                           approval: Approval | None = None) -> None:
     """Void a posted document with reversal ledger rows (history is never deleted)."""
+    actor.require_human("ابطال سند")
     actor.require(Perm.DOCUMENTS_POST)
     async with db.session(actor.user_id) as s:
         doc = await _load(s, doc_id)

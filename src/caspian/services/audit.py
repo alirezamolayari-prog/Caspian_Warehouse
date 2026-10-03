@@ -22,7 +22,8 @@ def record(
 ) -> AuditLog:
     """Add an audit row to the session (committed with the surrounding unit of work)."""
     if actor is not None and actor.is_ai:
-        details = {**(details or {}), "via_ai": True}
+        # Done by the assistant on behalf of this user (#2: visible in the activity report).
+        details = {**(details or {}), "via_ai": True, "on_behalf_of": actor.display_name}
     entry = AuditLog(
         user_id=user_id if user_id is not None else (actor.user_id if actor else None),
         action=action,

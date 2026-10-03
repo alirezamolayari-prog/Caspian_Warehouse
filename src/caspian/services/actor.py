@@ -43,6 +43,12 @@ class Actor:
         if not self.can(perm):
             raise PermissionDenied("شما مجوز انجام این کار را ندارید.")
 
+    def require_human(self, what: str) -> None:
+        """Destructive or protected actions are never done by the AI assistant (on any channel)."""
+        if self.is_ai:
+            raise PermissionDenied(f"دستیار هوشمند اجازه {what} را ندارد؛ این کار را خودتان از برنامه "
+                                   "انجام دهید.")
+
     def as_ai(self) -> "Actor":
         """The same user's identity, restricted for use by the AI assistant."""
         return Actor(self.user_id, self.username, self.full_name, self.role_code,

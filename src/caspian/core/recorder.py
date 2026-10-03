@@ -37,6 +37,37 @@ def has_microphone() -> bool:
         return False
 
 
+MIN_SECONDS = 0.6
+MIN_RMS = 300  # 16-bit samples; room noise is far below speech
+
+
+def wav_stats(data: bytes) -> tuple[float, float]:
+    """(duration in seconds, RMS level) of a 16-bit PCM WAV; (0, 0) if unreadable."""
+    import array
+    import io
+    import math
+    import wave
+
+    try:
+        with wave.open(io.BytesIO(data)) as w:
+            if w.getsampwidth() != 2 or not w.getframerate():
+                return 0.0, 0.0
+            frames = w.readframes(w.getnframes())
+            duration = w.getnframes() / w.getframerate()
+    except (wave.Error, EOFError):
+        return 0.0, 0.0
+    samples = array.array("h", frames[: len(frames) // 2 * 2])
+    if not samples:
+        return duration, 0.0
+    return duration, math.sqrt(sum(x * x for x in samples) / len(samples))
+
+
+def is_silent(data: bytes) -> bool:
+    """Too short or too quiet to be speech: speech-to-text would invent a sentence (#6)."""
+    duration, rms = wav_stats(data)
+    return duration < MIN_SECONDS or rms < MIN_RMS
+
+
 class Recorder:
     def __init__(self) -> None:
         self.recording = False

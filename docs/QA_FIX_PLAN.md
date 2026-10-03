@@ -12,7 +12,7 @@ validation, printing and polish problems. Goal: fix all 23 without breaking anyt
 - Per phase: tests first → fix → `uv run ruff check`, full pytest (offscreen, + local MariaDB via the
   keyring runner), `uv run caspian --smoke-test` → one commit (`git commit -F`), push the branch.
 
-## Phase 1 — AI assistant (#1–#8)
+## Phase 1 — AI assistant (#1–#8) ✅
 Verified causes: `ai/tools.py::_create_stock_draft` has no person arg and only builds an import batch;
 `imports.evaluate` auto-matches `best >= 99` even when the 2nd score is equal; `Gateway.chat` raises a
 generic error and drops `last_attempts`; `assistant_page.on_mic` auto-sends; `ProviderDialog._fill_models`
