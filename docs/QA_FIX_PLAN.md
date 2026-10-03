@@ -119,3 +119,4 @@ simulation; feature A one item per real product (+ merge); feature B assistant c
 Details: one commit per item, see the log of `fix/qa-round-2` and the summary below as items land.
 
 - [x] Step 0 — in-memory keyring for every test (`tests/conftest.py`), guard `tests/test_keyring_guard.py`
+- [x] 1 — numbering/posting retry on conflicts (IntegrityError, MariaDB 1213/1205/1020, SQLite locked), Persian error; `tests/test_concurrency.py` (SQLite + MariaDB)
