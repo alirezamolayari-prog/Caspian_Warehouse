@@ -109,3 +109,13 @@ CI slowly (anonymous API) and fix if red. No tag, no version bump. Summary per i
   actions); tests prove AI cannot cancel/delete/deactivate/restore/close.
 - Ambiguity rule may turn some previous auto-matches into CONFLICT; existing import tests are kept; any
   test whose data had genuine ties is only adjusted if the new behaviour is the requested one.
+
+---
+
+# QA round 2 (branch `fix/qa-round-2`)
+
+Step 0 keyring isolation; bugs 1 numbering, 2 health vs carried loans, 3 gateway text, 4 six-month
+simulation; feature A one item per real product (+ merge); feature B assistant chat history (30 days).
+Details: one commit per item, see the log of `fix/qa-round-2` and the summary below as items land.
+
+- [x] Step 0 — in-memory keyring for every test (`tests/conftest.py`), guard `tests/test_keyring_guard.py`

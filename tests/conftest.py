@@ -1,13 +1,54 @@
 import asyncio
 import shutil
 
+import keyring
 import pytest
 from argon2 import PasswordHasher
+from keyring.backend import KeyringBackend
+from keyring.errors import PasswordDeleteError
 from sqlalchemy import event
 
 from caspian.core import security
 from caspian.db.bootstrap import prepare
 from caspian.db.database import Database
+
+
+class MemoryKeyring(KeyringBackend):
+    """Tests must never read or write the real Windows Credential Manager (a test once deleted a
+    real API key through config.delete_provider). Every test gets a fresh, empty store."""
+
+    priority = 1
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.store: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service, username):
+        return self.store.get((service, username))
+
+    def set_password(self, service, username, password):
+        self.store[(service, username)] = password
+
+    def delete_password(self, service, username):
+        if self.store.pop((service, username), None) is None:
+            raise PasswordDeleteError("not found")
+
+
+_REAL_KEYRING = keyring.get_keyring()
+keyring.set_keyring(MemoryKeyring())  # before any test module is even imported
+
+
+@pytest.fixture(autouse=True)
+def memory_keyring():
+    backend = MemoryKeyring()
+    keyring.set_keyring(backend)
+    yield backend
+    keyring.set_keyring(MemoryKeyring())  # never back to the real store while tests run
+
+
+def pytest_unconfigure(config):
+    keyring.set_keyring(_REAL_KEYRING)
+
 
 FAST_HASHER = PasswordHasher(time_cost=1, memory_cost=64, parallelism=1)
 
