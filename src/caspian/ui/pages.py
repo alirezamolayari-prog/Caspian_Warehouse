@@ -7,6 +7,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QGridLayout,
     QLabel,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -15,7 +16,8 @@ from qasync import asyncSlot
 from caspian.core import jalali
 from caspian.core.permissions import Perm
 from caspian.core.text import to_persian_digits
-from caspian.services import documents, items
+from caspian.services import documents, health, items
+from caspian.ui.health_dialog import show_health
 from caspian.ui.widgets import Card, DataTable, EmptyState, StatCard
 
 
@@ -55,6 +57,12 @@ class DashboardPage(QWidget):
 
         greeting = QLabel(f"امروز {jalali.format_long(dt.date.today())}", objectName="Muted")
         layout.addWidget(greeting)
+        # Old data that today's validation would refuse (QA round 1 #10); hidden when clean.
+        self.health_warning = QPushButton(objectName="HealthWarning")
+        self.health_warning.setProperty("variant", "danger")
+        self.health_warning.hide()
+        self.health_warning.clicked.connect(self.on_health)
+        layout.addWidget(self.health_warning)
 
         grid = QGridLayout()
         grid.setSpacing(16)
@@ -85,6 +93,11 @@ class DashboardPage(QWidget):
         activity.body.addWidget(self.empty)
         layout.addWidget(activity, 1)
 
+    @asyncSlot()
+    async def on_health(self) -> None:
+        await show_health(self._ctx, self)
+        await self.refresh()
+
     def _open_pending(self) -> None:
         """Draft documents first (they hold stock back); otherwise the open imports."""
         if self.pending is None or self.pending.draft_documents or not self.pending.open_imports:
@@ -112,6 +125,10 @@ class DashboardPage(QWidget):
         self.cards["loans"].set_value(to_persian_digits(loans))
         if not self._ctx.actor.can(Perm.DOCUMENTS_VIEW):
             return
+        findings = await health.check(self._ctx.db, self._ctx.actor)
+        self.health_warning.setText(f"⚠ {to_persian_digits(len(findings))} مورد داده نیازمند بررسی "
+                                    "(تاریخ نامعتبر یا موجودی اعشاری) — برای دیدن بزنید")
+        self.health_warning.setVisible(bool(findings))
         rows = await documents.list_documents(self._ctx.db, self._ctx.actor, limit=10)
         self.recent.set_rows([(r.id, (r.number_text, r.type_name,
                                       jalali.format_date(r.doc_date), r.person or "—",

@@ -264,3 +264,10 @@ async def test_items_are_listed_by_code(db, admin):
     for code, name in (("30", "الف"), ("10", "ی"), ("20", "ب")):
         await _drill(db, admin, code=code, name=name)
     assert [r.code for r in await items.search_items(db, admin)] == ["10", "20", "30"]
+
+
+async def test_same_name_items_are_found_for_a_warning(db, admin):
+    """#13: a second active «دریل بوش» is allowed but the form warns first."""
+    first = await _drill(db, admin, code="1001", name="دریل بوش")
+    assert await items.same_name_items(db, " دريل  بوش ") == [("1001", "دریل بوش")]
+    assert await items.same_name_items(db, "دریل بوش", exclude_id=first) == []

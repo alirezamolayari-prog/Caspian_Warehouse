@@ -28,8 +28,8 @@ from caspian.services.master import CategoryRow, UnitRow
 from caspian.services.protected import ProtectedAction
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import request_approval
-from caspian.ui.dialogs import FormDialog, ltr_field
-from caspian.ui.messages import show_error, show_info
+from caspian.ui.dialogs import Cancelled, FormDialog, ltr_field
+from caspian.ui.messages import confirm, show_error, show_info
 from caspian.ui.widgets import Card, DataTable, EmptyState, QtyEdit, SearchableCombo, SearchBox
 
 COLUMNS = ("کد", "نام کالا", "گروه", "واحد", "موجودی", "نقطه سفارش", "وضعیت")
@@ -234,6 +234,12 @@ class ItemDialog(FormDialog):
 
     async def submit(self) -> None:
         data = self.collect()
+        same = await items.same_name_items(self._ctx.db, data.name,
+                                           self._detail.id if self._detail else None)
+        if same and not await confirm(
+                self, f"کالای فعال دیگری با همین نام وجود دارد (کد {'، '.join(c for c, _n in same)}). "
+                      "باز هم ذخیره شود؟", "ذخیره"):
+            raise Cancelled
         if self._detail is None:
             created = await items.create_item_with_opening(self._ctx.db, self._ctx.actor, data,
                                                            self.collect_opening())

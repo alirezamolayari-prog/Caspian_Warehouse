@@ -303,6 +303,18 @@ async def create_item_in(s: AsyncSession, actor: Actor, data: ItemInput) -> Item
     return item
 
 
+async def same_name_items(db: Database, name: str, exclude_id: int | None = None) -> list[tuple[str, str]]:
+    """(code, name) of active items whose normalized name equals `name` (#13: warn, don't block)."""
+    key = normalize(" ".join(name.split()))
+    if not key:
+        return []
+    stmt = select(Item.code, Item.name).where(Item.is_active, Item.name_normalized == key)
+    if exclude_id is not None:
+        stmt = stmt.where(Item.id != exclude_id)
+    async with db.session() as s:
+        return [(c, n) for c, n in (await s.execute(stmt)).all()]
+
+
 async def create_item(db: Database, actor: Actor, data: ItemInput) -> int:
     async with db.session(actor.user_id) as s:
         return (await create_item_in(s, actor, data)).id

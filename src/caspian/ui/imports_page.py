@@ -56,7 +56,7 @@ from caspian.ui.auth_dialogs import request_approval
 from caspian.ui.dialogs import FormDialog, ltr_field
 from caspian.ui.file_dialogs import ask_open_path
 from caspian.ui.master_page import person_picker
-from caspian.ui.messages import ask, show_error, show_info
+from caspian.ui.messages import ask, confirm, show_error, show_info
 from caspian.ui.widgets import Card, DataTable, QtyEdit, SearchableCombo
 
 STOCK_DOC_TYPES = (DocType.RECEIPT, DocType.ISSUE, DocType.OPENING, DocType.LOAN_OUT)
@@ -696,6 +696,9 @@ class ImportsPage(QWidget):
     @asyncSlot()
     async def on_discard(self) -> None:
         if (batch_id := self.table.selected_id()) is None:
+            return
+        if not await confirm(self, "این پیش‌نویس ورود اطلاعات حذف شود؟ ردیف‌های آن دیگر قابل بررسی و "
+                             "اعمال نیستند.", "حذف پیش‌نویس", danger=True):
             return
         try:
             await imports.discard_batch(self._ctx.db, self._ctx.actor, batch_id)

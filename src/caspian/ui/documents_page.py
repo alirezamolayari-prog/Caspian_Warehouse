@@ -433,6 +433,8 @@ class DocumentDialog(FormDialog):
         return self.saved_id
 
     async def submit(self) -> None:
+        # Problems first (e.g. no lines), then the question (#15).
+        await docs.validate_input(self._ctx.db, self._ctx.actor, self.collect())
         if not await confirm(self, "سند ذخیره و ثبت نهایی شود؟ موجودی تغییر می‌کند و سند پس از آن فقط با "
                              "ابطال قابل برگشت است.", "ثبت نهایی"):
             raise Cancelled

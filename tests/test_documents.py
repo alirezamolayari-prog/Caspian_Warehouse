@@ -408,3 +408,13 @@ async def test_pending_summary_is_one_consistent_source(env):
     summary = await docs.pending_summary(db)
     assert (summary.draft_documents, summary.open_imports, summary.total) == (1, 0, 1)
     assert summary.hint == "۱ سند، ۰ ورود اطلاعات"
+
+
+async def test_validate_input_writes_nothing(env):
+    """#15: the editor validates before asking «ثبت نهایی شود؟»."""
+    db, admin = env["db"], env["admin"]
+    with pytest.raises(ValidationError, match="حداقل یک ردیف"):
+        await docs.validate_input(db, admin, doc(DocType.RECEIPT, env["wh1"]))
+    await docs.validate_input(db, admin, doc(DocType.RECEIPT, env["wh1"],
+                                             (env["drill"], env["u"]["عدد"], Decimal(1))))
+    assert await docs.list_documents(db, admin) == []

@@ -101,3 +101,22 @@ async def _business_data_again(db: Database) -> dict:
     batch = await imports.create_batch(db, admin, ImportKind.STOCK, ImportSource.SCAN,
                                        [RawRow(code="M-1", qty=Decimal(2))], "b2", DocType.RECEIPT, wh)
     return {"admin": admin, "draft": (await imports.apply_batch(db, admin, batch)).document_id}
+
+
+async def test_newer_database_is_refused_untouched(tmp_path):
+    """An older app met a DB migrated by a newer one: raw English Alembic error before (#9)."""
+    from caspian.db.database import describe_error
+    from caspian.db.migrate import SchemaTooNew
+
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'n.db'}")
+    try:
+        await prepare(db)
+        async with db.engine.begin() as conn:
+            await conn.execute(text("UPDATE alembic_version SET version_num = 'ffffffffffff'"))
+        before = await _counts(db)
+        with pytest.raises(SchemaTooNew) as caught:
+            await prepare(db)
+        assert "نسخه جدیدتری" in describe_error(caught.value)
+        assert await current_revision(db) == "ffffffffffff" and await _counts(db) == before
+    finally:
+        await db.dispose()

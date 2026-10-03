@@ -395,6 +395,10 @@ class StocktakePage(QWidget):
     async def on_cancel(self) -> None:
         if (row := self.selected()) is None:
             return
+        if not await confirm(self, f"انبارگردانی شماره {to_persian_digits(row.number)} لغو شود؟ شمارش‌های "
+                             "ثبت‌شده کنار گذاشته می‌شوند و موجودی تغییری نمی‌کند.", "لغو انبارگردانی",
+                             danger=True):
+            return
         try:
             await st.cancel(self._ctx.db, self._ctx.actor, row.id)
         except ServiceError as exc:

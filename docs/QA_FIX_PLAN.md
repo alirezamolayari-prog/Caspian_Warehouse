@@ -59,7 +59,7 @@ re-sets the text but `setEditText` after `clear()` + list makes the first item w
    offline parser on timeout; event loop stays free (already async; verify no sync work). Test: slow
    fake gateway → dialog busy, then offline result.
 
-## Phase 2 — Data integrity & business logic (#9–#15)
+## Phase 2 — Data integrity & business logic (#9–#15) ✅
 9. **Newer DB** (`db/migrate.py`, `app.py`, `db/bootstrap.py`): before upgrading, read current revision;
    if unknown to this app's script directory → raise `SchemaTooNew`; `connect_database` shows the Persian
    message and exits without touching the DB. Test: stamp a fake revision in SQLite.

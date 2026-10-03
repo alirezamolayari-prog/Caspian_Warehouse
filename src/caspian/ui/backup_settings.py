@@ -32,6 +32,7 @@ from caspian.services.protected import ProtectedAction
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import request_approval
 from caspian.ui.dialogs import FormDialog, password_field
+from caspian.ui.health_dialog import show_health
 from caspian.ui.messages import show_error, show_info
 from caspian.ui.widgets import Card, DataTable
 
@@ -153,6 +154,9 @@ class BackupTab(QWidget):
         toolbar = QHBoxLayout()
         self.status = QLabel(objectName="Muted")
         toolbar.addWidget(self.status, 1)
+        self.health_button = QPushButton("بررسی سلامت داده")
+        self.health_button.clicked.connect(self.on_health)
+        toolbar.addWidget(self.health_button)
         self.open_button = QPushButton("باز کردن پوشه")
         self.verify_button = QPushButton("بررسی سلامت")
         self.restore_button = QPushButton("بازیابی…")
@@ -239,6 +243,10 @@ class BackupTab(QWidget):
     async def on_password(self) -> None:
         if await exec_dialog(BackupPasswordDialog(self)):
             self._refresh_status()
+
+    @asyncSlot()
+    async def on_health(self) -> None:
+        await show_health(self._ctx, self)
 
     def on_open_folder(self) -> None:
         folder = Path(self.folder.text())

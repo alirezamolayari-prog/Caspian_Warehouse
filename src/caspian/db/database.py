@@ -121,6 +121,8 @@ _ERROR_MESSAGES = {
 
 def describe_error(exc: BaseException) -> str:
     """Persian, user-facing explanation of a connection failure."""
+    if hasattr(exc, "revision") and hasattr(exc, "message"):  # migrate.SchemaTooNew
+        return exc.message
     orig = getattr(exc, "orig", None) or exc
     code = orig.args[0] if getattr(orig, "args", None) else None
     if isinstance(code, int) and code in _ERROR_MESSAGES:

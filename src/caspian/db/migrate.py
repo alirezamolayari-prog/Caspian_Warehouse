@@ -46,7 +46,33 @@ async def _run(db: Database, action, revision: str) -> None:
             await conn.commit()
 
 
+class SchemaTooNew(Exception):
+    """The database was migrated by a newer version of the app; this one must not touch it."""
+
+    message = ("پایگاه داده با نسخه جدیدتری از برنامه به‌روز شده است؛ لطفاً برنامه را به‌روزرسانی کنید. "
+               "(این نسخه هیچ تغییری در پایگاه داده نداد.)")
+
+    def __init__(self, revision: str) -> None:
+        super().__init__(self.message)
+        self.revision = revision
+
+
+def known_revisions() -> set[str]:
+    return {rev.revision for rev in ScriptDirectory.from_config(alembic_config()).walk_revisions()}
+
+
+async def check_not_newer(db: Database) -> None:
+    """Raise SchemaTooNew (without writing anything) if the DB is at a revision this app doesn't know."""
+    try:
+        current = await current_revision(db)
+    except Exception:  # no alembic_version yet: a new database
+        return
+    if current is not None and current not in known_revisions():
+        raise SchemaTooNew(current)
+
+
 async def upgrade(db: Database, revision: str = "head") -> None:
+    await check_not_newer(db)
     await _run(db, command.upgrade, revision)
 
 

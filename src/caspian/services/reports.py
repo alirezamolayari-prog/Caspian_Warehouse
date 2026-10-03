@@ -261,9 +261,12 @@ async def burn_rates(db: Database, actor: Actor, params: ReorderParams = DEFAULT
     result = [compute_burn_rate(i.id, i.code, i.name, unit, Decimal(q), Decimal(c),
                                 i.reorder_point, params) for i, unit, q, c in rows]
     if only_needing_order:
-        result = [r for r in result if r.suggested_order_qty > 0 and (
-            r.on_hand <= (r.reorder_point if r.reorder_point is not None
-                          else r.suggested_reorder_point))]
+        # Same rule as the dashboard's «زیر نقطه سفارش» (at/below the configured reorder point, even
+        # with no recent consumption), plus items whose burn rate says they'll run out (#11).
+        result = [r for r in result
+                  if (r.reorder_point is not None and r.on_hand <= r.reorder_point)
+                  or (r.reorder_point is None and r.suggested_order_qty > 0
+                      and r.on_hand <= r.suggested_reorder_point)]
     return result
 
 

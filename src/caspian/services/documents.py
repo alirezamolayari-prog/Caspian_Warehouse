@@ -666,6 +666,15 @@ async def pending_counts(db: Database) -> tuple[int, int]:
 # ----- commands -----
 
 
+async def validate_input(db: Database, actor: Actor, data: DocumentInput) -> None:
+    """All checks of saving a document, without writing anything (lets the UI validate before
+    asking for confirmation, #15)."""
+    actor.require(Perm.DOCUMENTS_EDIT)
+    async with db.session() as s:
+        await _validate(s, data)
+        await s.rollback()
+
+
 async def create_document_in(s: AsyncSession, actor: Actor, data: DocumentInput) -> Document:
     """Create a draft inside the caller's transaction (used by imports)."""
     actor.require(Perm.DOCUMENTS_EDIT)
