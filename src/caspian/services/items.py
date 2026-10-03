@@ -1,13 +1,18 @@
 """Items: search, create/edit, units & barcodes, activation (protected) and deletion."""
 
+import asyncio
+import bisect
 import datetime as dt
+import re
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from sqlalchemy import and_, exists, func, or_, select
+from rapidfuzz import fuzz, process
+from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
+from caspian.core.numbers import format_qty
 from caspian.core.permissions import Perm
 from caspian.core.text import normalize, to_ascii_digits
 from caspian.db.database import Database
@@ -15,15 +20,20 @@ from caspian.db.models import (
     Category,
     DocType,
     DocumentLine,
+    ImportLine,
     Item,
     ItemBarcode,
     ItemUnit,
     StockBalance,
+    StockLedger,
+    Stocktake,
+    StocktakeLine,
+    StocktakeStatus,
     Unit,
 )
 from caspian.services import audit, documents
 from caspian.services.actor import Actor
-from caspian.services.errors import ConcurrencyError, NotFound, ValidationError
+from caspian.services.errors import ConcurrencyError, NotFound, SimilarItems, ValidationError
 from caspian.services.protected import Approval, ProtectedAction, consume
 
 FIRST_CODE = 1001
@@ -290,10 +300,232 @@ def _snapshot(item: Item) -> dict:
 # ----- commands -----
 
 
-async def create_item_in(s: AsyncSession, actor: Actor, data: ItemInput) -> Item:
-    """Create inside the caller's transaction (used by imports)."""
+# ----- one item per real product (QA round 2, feature A) -----
+
+SIMILAR_SCORE = 85  # rapidfuzz ratio on normalized names; tuned in tests/test_similar_items.py
+_NUMBERS = re.compile(r"\d+(?:\.\d+)?")
+
+
+@dataclass(frozen=True)
+class SimilarItem:
+    id: int
+    code: str
+    name: str
+    unit: str
+    stock: Decimal
+    score: int
+
+    def label(self) -> str:
+        return f"{self.code} – {self.name} – موجودی {format_qty(self.stock)} {self.unit}"
+
+
+def similarity(a: str, b: str) -> int:
+    """0–100 for two normalized names. Names whose numbers differ («پیچ ۴ در ۴۰» / «پیچ ۴ در ۵۰»,
+    «لیتر ۱» / «لیتر ۲») are different products, never similar."""
+    if a == b:
+        return 100
+    if _NUMBERS.findall(a) != _NUMBERS.findall(b):
+        return 0
+    return round(fuzz.ratio(a, b))
+
+
+async def similar_items_in(s: AsyncSession, name: str, exclude_id: int | None = None,
+                           limit: int = 5) -> list[SimilarItem]:
+    """Active items whose name equals or closely resembles `name` (best first)."""
+    key = normalize(" ".join(name.split()))
+    if not key:
+        return []
+    rows = (await s.execute(select(Item.id, Item.name_normalized).where(Item.is_active))).all()
+    names = {i: n for i, n in rows if i != exclude_id}
+    hits = process.extract(key, names, scorer=fuzz.ratio, score_cutoff=SIMILAR_SCORE, limit=limit * 4)
+    scored = sorted(((similarity(key, n), i) for n, _sc, i in hits), reverse=True)
+    ids = [i for sc, i in scored if sc >= SIMILAR_SCORE][:limit]
+    if not ids:
+        return []
+    on_hand = _on_hand_subquery()
+    found = {row[0]: row for row in (await s.execute(
+        select(Item.id, Item.code, Item.name, Unit.name, func.coalesce(on_hand.c.on_hand, 0))
+        .join(Unit, Unit.id == Item.base_unit_id).outerjoin(on_hand, on_hand.c.item_id == Item.id)
+        .where(Item.id.in_(ids)))).all()}
+    score = {i: sc for sc, i in scored}
+    return [SimilarItem(i, found[i][1], found[i][2], found[i][3], Decimal(found[i][4] or 0), score[i])
+            for i in ids if i in found]
+
+
+async def similar_items(db: Database, name: str, exclude_id: int | None = None,
+                        limit: int = 5) -> list[SimilarItem]:
+    async with db.session() as s:
+        return await similar_items_in(s, name, exclude_id, limit)
+
+
+async def _check_name(s: AsyncSession, name: str, exclude_id: int | None, allow_similar: bool) -> None:
+    """Exact (normalized) duplicates are always refused; similar names need an admin approval."""
+    found = await similar_items_in(s, name, exclude_id)
+    exact = [f for f in found if f.score == 100]
+    if exact:
+        raise ValidationError("کالایی با همین نام وجود دارد: " + "؛ ".join(f.label() for f in exact)
+                              + ". همان کالا را استفاده کنید.")
+    if found and not allow_similar:
+        raise SimilarItems("کالای مشابه وجود دارد: " + "؛ ".join(f.label() for f in found)
+                           + ". یکی از آن‌ها را انتخاب کنید؛ ایجاد کالای جدید نیاز به تأیید مدیر دارد.",
+                           found)
+
+
+def similar_ok(approval: Approval | None, actor: Actor) -> int | None:
+    """Consume a CREATE_SIMILAR_ITEM approval (never for the AI); returns the approver id."""
+    return consume(approval, ProtectedAction.CREATE_SIMILAR_ITEM, actor) if approval is not None else None
+
+
+_GROUPS_CACHE: dict[str, tuple[tuple, list[list[int]]]] = {}  # recomputed when active items change
+
+
+def _group_ids(names: dict[int, str]) -> list[list[int]]:
+    """Connected groups of similar names. Pure CPU work: run it in a thread.
+
+    Names whose numbers differ are never similar, so only names with the same digit signature are
+    compared, and ratio >= 85 needs similar lengths, so each name only meets a narrow length window.
+    """
+    buckets: dict[tuple, list[tuple[int, int, str]]] = {}
+    for item_id, key in names.items():
+        buckets.setdefault(tuple(_NUMBERS.findall(key)), []).append((len(key), item_id, key))
+    parent = {i: i for i in names}
+
+    def root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for bucket in buckets.values():
+        bucket.sort()
+        lengths = [b[0] for b in bucket]
+        for n, (length, item_id, key) in enumerate(bucket):
+            # ratio = 2*matches/(len_a+len_b) <= 2*len_a/(len_a+len_b): longer names can't reach 85.
+            hi = bisect.bisect_right(lengths, length * (200 - SIMILAR_SCORE) // SIMILAR_SCORE)
+            window = bucket[n + 1:hi]
+            if not window:
+                continue
+            for _key, _score, k in process.extract(key, [w[2] for w in window], scorer=fuzz.ratio,
+                                                   score_cutoff=SIMILAR_SCORE, limit=None):
+                parent[root(window[k][1])] = root(item_id)
+    groups: dict[int, list[int]] = {}
+    for i in names:
+        groups.setdefault(root(i), []).append(i)
+    return [sorted(g) for g in groups.values() if len(g) > 1]
+
+
+async def duplicate_groups(db: Database, actor: Actor) -> list[list[SimilarItem]]:
+    """Groups of active items that are the same or similar products (for the health check and the
+    Items filter). Data is never changed here; merge them with merge_items."""
+    actor.require(Perm.ITEMS_VIEW)
+    async with db.session() as s:
+        fingerprint = tuple((await s.execute(select(func.count(Item.id), func.max(Item.updated_at),
+                                                    func.sum(Item.id)).where(Item.is_active))).one())
+        cached = _GROUPS_CACHE.get(str(db.url))
+        if cached and cached[0] == fingerprint:
+            groups = cached[1]
+        else:
+            rows = (await s.execute(select(Item.id, Item.name_normalized).where(Item.is_active))).all()
+            groups = None
+    if groups is None:
+        groups = await asyncio.to_thread(_group_ids, dict(rows))  # never blocks the window
+        _GROUPS_CACHE[str(db.url)] = (fingerprint, groups)
+    if not groups:
+        return []
+    ids = [i for g in groups for i in g]
+    on_hand = _on_hand_subquery()
+    async with db.session() as s:
+        info = {r[0]: r for r in (await s.execute(
+            select(Item.id, Item.code, Item.name, Unit.name, func.coalesce(on_hand.c.on_hand, 0))
+            .join(Unit, Unit.id == Item.base_unit_id).outerjoin(on_hand, on_hand.c.item_id == Item.id)
+            .where(Item.id.in_(ids)))).all()}
+    out = [[SimilarItem(i, info[i][1], info[i][2], info[i][3], Decimal(info[i][4] or 0), 100)
+            for i in g] for g in groups]
+    return sorted((sorted(g, key=lambda x: x.code) for g in out), key=lambda g: g[0].code)
+
+
+@dataclass(frozen=True)
+class MergeResult:
+    target_code: str
+    merged_codes: list[str]
+    moved_lines: int
+
+
+async def merge_items(db: Database, actor: Actor, target_id: int, source_ids: list[int],
+                      approval: Approval | None, reason: str = "") -> MergeResult:
+    """Combine duplicates into one item: documents, ledger, balances, barcodes and units of the
+    sources move to the target; the sources are deactivated (codes kept). History is preserved
+    (re-pointed, audited with the full mapping); a backup restores the old state if ever needed."""
+    actor.require_human("ادغام کالا")
+    actor.require(Perm.ITEMS_MERGE)
+    sources = [i for i in dict.fromkeys(source_ids) if i != target_id]
+    if not sources:
+        raise ValidationError("کالای دیگری برای ادغام انتخاب نشده است.")
+    if not reason.strip():
+        raise ValidationError("علت ادغام را بنویسید.")
+    approver_id = consume(approval, ProtectedAction.MERGE_ITEMS, actor)
+    async with db.session(actor.user_id) as s:
+        target = await _load(s, target_id)
+        items_ = [await _load(s, i) for i in sources]
+        target_units = {u.unit_id: u.factor for u in target.units}
+        for src in items_:
+            if src.base_unit_id != target.base_unit_id:
+                raise ValidationError(f"واحد اصلی «{src.name}» با «{target.name}» یکسان نیست؛ "
+                                      "ادغام ممکن نیست.")
+            for u in src.units:
+                if u.unit_id in target_units and target_units[u.unit_id] != u.factor:
+                    raise ValidationError(f"ضریب واحد «{u.unit.name}» در «{src.name}» با کالای مقصد "
+                                          "فرق دارد.")
+        busy = await s.scalar(select(Stocktake.number).join(StocktakeLine).where(
+            Stocktake.status.in_([StocktakeStatus.OPEN, StocktakeStatus.COUNTED]),
+            StocktakeLine.item_id.in_([target_id, *sources])))
+        if busy:
+            raise ValidationError(f"این کالاها در انبارگردانی باز شماره {busy} هستند؛ پس از آن "
+                                  "ادغام کنید.")
+        moved = 0
+        mapping = {}
+        for src in items_:
+            lines = (await s.execute(update(DocumentLine).where(DocumentLine.item_id == src.id)
+                                     .values(item_id=target.id))).rowcount or 0
+            await s.execute(update(StockLedger).where(StockLedger.item_id == src.id)
+                            .values(item_id=target.id))
+            await s.execute(update(ImportLine).where(ImportLine.match_item_id == src.id)
+                            .values(match_item_id=target.id))
+            for bal in (await s.scalars(select(StockBalance).where(StockBalance.item_id == src.id))).all():
+                into = await s.get(StockBalance, (target.id, bal.warehouse_id))
+                if into is None:
+                    s.add(StockBalance(item_id=target.id, warehouse_id=bal.warehouse_id, qty=bal.qty))
+                else:
+                    into.qty += bal.qty
+                await s.delete(bal)
+            for barcode in list(src.barcodes):
+                src.barcodes.remove(barcode)
+                await s.flush()
+                target.barcodes.append(ItemBarcode(barcode=barcode.barcode, unit_id=barcode.unit_id))
+            for u in list(src.units):
+                if u.unit_id not in target_units:
+                    target.units.append(ItemUnit(unit_id=u.unit_id, factor=u.factor))
+                    target_units[u.unit_id] = u.factor
+            src.is_active = False
+            src.name = f"{src.name} (ادغام‌شده در {target.code})"[:255]
+            src.name_normalized = normalize(src.name)
+            flag_modified(src, "description")
+            mapping[src.code] = {"document_lines": lines}
+            moved += lines
+        flag_modified(target, "description")
+        audit.record(s, actor, "item.merged", "item", target.id,
+                     {"target": target.code, "sources": mapping, "reason": reason.strip()},
+                     approved_by_id=approver_id)
+        return MergeResult(target.code, [i.code for i in items_], moved)
+
+
+async def create_item_in(s: AsyncSession, actor: Actor, data: ItemInput,
+                         allow_similar: bool = False) -> Item:
+    """Create inside the caller's transaction (used by imports). `allow_similar` only after a
+    consumed CREATE_SIMILAR_ITEM approval (see similar_ok)."""
     actor.require(Perm.ITEMS_EDIT)
     data = await _validate(s, data, None)
+    await _check_name(s, data.name, None, allow_similar)
     item = Item(code=data.code, name=data.name, name_normalized="", base_unit_id=0)
     _apply(item, data)
     s.add(item)
@@ -315,9 +547,15 @@ async def same_name_items(db: Database, name: str, exclude_id: int | None = None
         return [(c, n) for c, n in (await s.execute(stmt)).all()]
 
 
-async def create_item(db: Database, actor: Actor, data: ItemInput) -> int:
+async def create_item(db: Database, actor: Actor, data: ItemInput,
+                      similar_approval: Approval | None = None) -> int:
+    approver = similar_ok(similar_approval, actor)
     async with db.session(actor.user_id) as s:
-        return (await create_item_in(s, actor, data)).id
+        item = await create_item_in(s, actor, data, allow_similar=approver is not None)
+        if approver is not None:
+            audit.record(s, actor, "item.similar_created", "item", item.id, {"name": item.name},
+                         approved_by_id=approver)
+        return item.id
 
 
 @dataclass(frozen=True)
@@ -337,12 +575,17 @@ class CreatedItem:
 
 
 async def create_item_with_opening(db: Database, actor: Actor, data: ItemInput,
-                                   opening: OpeningStock | None) -> CreatedItem:
+                                   opening: OpeningStock | None,
+                                   similar_approval: Approval | None = None) -> CreatedItem:
     """New item plus its opening stock (#12). Stock only ever changes through documents: this
     creates an OPENING document and posts it when the user may post (else it stays a draft).
     Item and document are saved together or not at all."""
+    approver = similar_ok(similar_approval, actor)
     async with db.session(actor.user_id) as s:
-        item = await create_item_in(s, actor, data)
+        item = await create_item_in(s, actor, data, allow_similar=approver is not None)
+        if approver is not None:
+            audit.record(s, actor, "item.similar_created", "item", item.id, {"name": item.name},
+                         approved_by_id=approver)
         if opening is None:
             return CreatedItem(item.id, None, False)
         doc = await documents.create_document_in(s, actor, documents.DocumentInput(
@@ -357,7 +600,8 @@ async def create_item_with_opening(db: Database, actor: Actor, data: ItemInput,
 
 
 async def update_item(
-    db: Database, actor: Actor, item_id: int, expected_version: int, data: ItemInput
+    db: Database, actor: Actor, item_id: int, expected_version: int, data: ItemInput,
+    similar_approval: Approval | None = None,
 ) -> None:
     actor.require(Perm.ITEMS_EDIT)
     async with db.session(actor.user_id) as s:
@@ -365,6 +609,8 @@ async def update_item(
         if item.version_id != expected_version:
             raise ConcurrencyError()
         data = await _validate(s, data, item_id)
+        if normalize(data.name) != item.name_normalized:  # a rename must not create a duplicate
+            await _check_name(s, data.name, item_id, similar_ok(similar_approval, actor) is not None)
         if data.base_unit_id != item.base_unit_id and await _has_movements(s, item_id):
             raise ValidationError("واحد اصلی کالایی که گردش دارد قابل تغییر نیست.")
         if data.code != item.code and await _has_movements(s, item_id):  # #23

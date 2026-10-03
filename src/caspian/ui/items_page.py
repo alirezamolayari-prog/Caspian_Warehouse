@@ -1,11 +1,13 @@
 """Items list and the item editor."""
 
+import html
 from decimal import Decimal
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -23,14 +25,14 @@ from caspian.core.permissions import Perm
 from caspian.core.text import to_persian_digits
 from caspian.core.text import to_persian_digits as fa  # display-only digits (#19)
 from caspian.services import items, master
-from caspian.services.errors import ServiceError, ValidationError
+from caspian.services.errors import ServiceError, SimilarItems, ValidationError
 from caspian.services.items import ItemDetail, ItemInput, ItemRow
 from caspian.services.master import CategoryRow, UnitRow
 from caspian.services.protected import ProtectedAction
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import request_approval
 from caspian.ui.dialogs import Cancelled, FormDialog, ltr_field
-from caspian.ui.messages import confirm, show_error, show_info
+from caspian.ui.messages import show_error, show_info
 from caspian.ui.widgets import Card, DataTable, EmptyState, QtyEdit, SearchableCombo, SearchBox, Toast
 
 COLUMNS = ("کد", "نام کالا", "گروه", "واحد", "موجودی", "نقطه سفارش", "وضعیت")
@@ -89,6 +91,45 @@ def _unit_combo(units: list[UnitRow], selected: int | None = None,
     return combo
 
 
+class SimilarItemsDialog(FormDialog):
+    """The item being saved looks like existing ones: use one of them, or create it with the
+    admin's PIN (QA round 2, feature A)."""
+
+    confirm_discard = False
+
+    def __init__(self, candidates: list[items.SimilarItem], parent=None) -> None:
+        super().__init__("کالای مشابه وجود دارد",
+                         "برای هر کالای واقعی فقط یک کد نگه دارید. یکی از کالاهای زیر را انتخاب کنید؛ "
+                         "ساخت کالای جدید با این نام نیاز به تأیید مدیر (PIN) دارد.",
+                         submit_text="ایجاد با تأیید مدیر", cancel_text="انصراف", parent=parent)
+        self.setMinimumWidth(620)
+        self.chosen: items.SimilarItem | None = None
+        self.table = DataTable(("کد", "نام کالا", "واحد", "موجودی", "شباهت"))
+        self.table.set_rows([(c.id, (fa(c.code), c.name, c.unit, format_qty(c.stock),
+                                     f"{fa(c.score)}٪")) for c in candidates])
+        self._by_id = {c.id: c for c in candidates}
+        self.body.addWidget(self.table)
+        self.use_button = QPushButton("انتخاب این کالا")
+        self.use_button.clicked.connect(self.on_use)
+        self.buttons.insertWidget(1, self.use_button)
+        self.reason = self.add_row("علت ایجاد کالای جدید:", QLineEdit())
+        self.table.doubleClicked.connect(lambda _i: self.on_use())
+
+    def on_use(self) -> None:
+        if (item_id := self.table.selected_id()) is None:
+            self.show_status("کالای موردنظر را در جدول انتخاب کنید.")
+            return
+        self.chosen = self._by_id[item_id]
+        self.done(USE_EXISTING)
+
+    async def submit(self) -> None:
+        if not self.reason.text().strip():
+            raise ValidationError("علت ایجاد کالای مشابه را بنویسید (در گزارش فعالیت ثبت می‌شود).")
+
+
+USE_EXISTING = 2  # SimilarItemsDialog result: the user picked an existing item
+
+
 class ItemDialog(FormDialog):
     def __init__(self, ctx: AppContext, units: list[UnitRow], categories: list[CategoryRow],
                  detail: ItemDetail | None = None, suggested_code: str = "",
@@ -105,6 +146,17 @@ class ItemDialog(FormDialog):
 
         self.code = self.add_row("کد کالا:", ltr_field(data.code))
         self.name = self.add_row("نام کالا:", QLineEdit(data.name))
+        # Live hints of existing similar items while typing (debounced, never blocks).
+        self.similar_hint = QLabel(objectName="Muted")
+        self.similar_hint.setWordWrap(True)
+        self.similar_hint.setTextFormat(Qt.TextFormat.RichText)
+        self.similar_hint.linkActivated.connect(self._on_similar_link)
+        self.similar_hint.hide()
+        self.form.addRow("", self.similar_hint)
+        self.chosen_existing: int | None = None
+        self._suggest_timer = QTimer(self, singleShot=True, interval=300)
+        self._suggest_timer.timeout.connect(self.update_suggestions)
+        self.name.textEdited.connect(lambda _t: self._suggest_timer.start())
         self.category = SearchableCombo()
         self.category.addItem("بدون گروه", None)
         for cat in categories:
@@ -233,25 +285,87 @@ class ItemDialog(FormDialog):
         return items.OpeningStock(self.opening_wh.currentData(), self.opening_qty.value(),
                                   self.opening_price.value())
 
+    @asyncSlot()
+    async def update_suggestions(self) -> None:
+        found = await items.similar_items(self._ctx.db, self.name.text(),
+                                          self._detail.id if self._detail else None)
+        if not found:
+            self.similar_hint.hide()
+            return
+        links = "، ".join(f'<a href="{f.id}">{fa(f.code)} – {html.escape(f.name)}</a>' for f in found)
+        self.similar_hint.setText(f"کالای مشابه موجود است: {links} (برای استفاده از آن کلیک کنید)")
+        self.similar_hint.show()
+
+    def _on_similar_link(self, href: str) -> None:
+        """Use the existing item instead of defining a duplicate."""
+        self.chosen_existing = int(href)
+        self.saved_id = self.chosen_existing
+        self.dirty = False
+        self.done(USE_EXISTING)
+
     async def submit(self) -> None:
         data = self.collect()
-        same = await items.same_name_items(self._ctx.db, data.name,
-                                           self._detail.id if self._detail else None)
-        if same and not await confirm(
-                self, f"کالای فعال دیگری با همین نام وجود دارد (کد {'، '.join(c for c, _n in same)}). "
-                      "باز هم ذخیره شود؟", "ذخیره"):
-            raise Cancelled
+        try:
+            await self._save(data, None)
+        except SimilarItems as exc:
+            choice = SimilarItemsDialog(exc.candidates, self)
+            result = await exec_dialog(choice)
+            if result == USE_EXISTING and choice.chosen:
+                self.chosen_existing = self.saved_id = choice.chosen.id
+                self.dirty = False
+                self.done(USE_EXISTING)
+                raise Cancelled from None
+            if result != QDialog.DialogCode.Accepted:
+                raise Cancelled from None
+            approval = await request_approval(
+                self._ctx.db, self._ctx.actor, ProtectedAction.CREATE_SIMILAR_ITEM,
+                f"ایجاد کالای «{data.name}» با وجود کالای مشابه. علت: {choice.reason.text().strip()}",
+                self, details={"reason": choice.reason.text().strip()})
+            if approval is None:
+                raise Cancelled from None
+            await self._save(data, approval)
+
+    async def _save(self, data, approval) -> None:
         if self._detail is None:
             created = await items.create_item_with_opening(self._ctx.db, self._ctx.actor, data,
-                                                           self.collect_opening())
+                                                           self.collect_opening(), approval)
             self.saved_id = created.item_id
             if created.document_id and not created.posted:
                 self.result_message = ("کالا ساخته شد. سند «موجودی اول دوره» به‌صورت پیش‌نویس ثبت شد؛ "
                                        "کاربر دارای مجوز ثبت نهایی باید آن را در «اسناد انبار» ثبت کند.")
         else:
             await items.update_item(self._ctx.db, self._ctx.actor, self._detail.id,
-                                    self._detail.version_id, data)
+                                    self._detail.version_id, data, approval)
             self.saved_id = self._detail.id
+
+
+class MergeDialog(FormDialog):
+    """Combine duplicates into one item (PIN, audited). QA round 2, feature A."""
+
+    def __init__(self, ctx: AppContext, source: ItemRow, targets: list[ItemRow], parent=None) -> None:
+        super().__init__(f"ادغام کالای «{source.name}»",
+                         "همه اسناد، گردش، موجودی، بارکدها و واحدهای این کالا به کالای مقصد منتقل می‌شود و "
+                         "این کالا غیرفعال می‌شود (کد آن باقی می‌ماند). پیش از آن یک نسخه پشتیبان بگیرید؛ "
+                         "این کار نیاز به تأیید مدیر (PIN) دارد.", submit_text="ادغام", parent=parent)
+        self.submit_button.setProperty("variant", "danger")
+        self._ctx, self._source = ctx, source
+        self.target = SearchableCombo("کالای مقصد…")
+        self.target.set_items((f"{fa(t.code)} – {t.name}", t.id) for t in targets if t.id != source.id)
+        self.add_row("ادغام در کالای:", self.target)
+        self.reason = self.add_row("علت:", QLineEdit("کالای تکراری"))
+        self.result: items.MergeResult | None = None
+
+    async def submit(self) -> None:
+        if self.target.currentData() is None:
+            raise ValidationError("کالای مقصد را انتخاب کنید.")
+        approval = await request_approval(
+            self._ctx.db, self._ctx.actor, ProtectedAction.MERGE_ITEMS,
+            f"ادغام «{self._source.name}» در «{self.target.currentText()}». علت: {self.reason.text()}",
+            self, details={"reason": self.reason.text().strip()})
+        if approval is None:
+            raise Cancelled
+        self.result = await items.merge_items(self._ctx.db, self._ctx.actor, self.target.currentData(),
+                                              [self._source.id], approval, self.reason.text())
 
 
 class ItemsPage(QWidget):
@@ -278,6 +392,9 @@ class ItemsPage(QWidget):
         self.low_only.toggled.connect(lambda _: self.refresh())
         self.low_only.setVisible(ctx.actor.can(Perm.STOCK_VIEW))
         toolbar.addWidget(self.low_only)
+        self.duplicates_only = QCheckBox("فقط کالاهای تکراری/مشابه")
+        self.duplicates_only.toggled.connect(lambda _: self.refresh())
+        toolbar.addWidget(self.duplicates_only)
         self.show_inactive = QCheckBox("نمایش غیرفعال‌ها")
         self.show_inactive.toggled.connect(lambda _: self.refresh())
         toolbar.addWidget(self.show_inactive)
@@ -295,10 +412,14 @@ class ItemsPage(QWidget):
         self.edit_button = QPushButton("ویرایش")
         self.active_button = QPushButton("غیرفعال‌سازی")
         self.delete_button = QPushButton("حذف")
+        self.merge_button = QPushButton("ادغام…")
+        self.merge_button.setToolTip("یکی کردن کالای تکراری با کالای دیگر (با PIN مدیر)")
+        self.merge_button.clicked.connect(self.on_merge)
+        self.merge_button.setVisible(ctx.actor.can(Perm.ITEMS_MERGE))
         self.edit_button.clicked.connect(self.on_edit)
         self.active_button.clicked.connect(self.on_toggle_active)
         self.delete_button.clicked.connect(self.on_delete)
-        for b in (self.edit_button, self.active_button, self.delete_button):
+        for b in (self.edit_button, self.merge_button, self.active_button, self.delete_button):
             actions.addWidget(b)
         layout.addLayout(actions)
 
@@ -361,6 +482,11 @@ class ItemsPage(QWidget):
         except ServiceError as exc:
             show_error(self, exc.message)
             return
+        if self.duplicates_only.isChecked():
+            groups = await items.duplicate_groups(self._ctx.db, self._ctx.actor)
+            order = [m.id for g in groups for m in g]
+            by_id = {r.id: r for r in rows}
+            rows = [by_id[i] for i in order if i in by_id]  # members of a group next to each other
         if seq != self._seq:  # a newer search started while this one ran; drop stale results
             return
         self._rows = {r.id: r for r in rows}
@@ -378,6 +504,20 @@ class ItemsPage(QWidget):
         self.count_label.setText(f"{to_persian_digits(len(rows))} کالا")
         self._update_buttons()
 
+    @asyncSlot()
+    async def on_merge(self) -> None:
+        if (row := self.selected()) is None:
+            return
+        targets = await items.search_items(self._ctx.db, self._ctx.actor, limit=100_000)
+        similar = {s.id for s in await items.similar_items(self._ctx.db, row.name, row.id)}
+        targets.sort(key=lambda t: (t.id not in similar, t.code))  # similar items first
+        dialog = MergeDialog(self._ctx, row, targets, self)
+        if await exec_dialog(dialog) and dialog.result:
+            await self.refresh()
+            r = dialog.result
+            show_info(self, f"کالای {fa('، '.join(r.merged_codes))} در {fa(r.target_code)} ادغام شد "
+                            f"({fa(r.moved_lines)} ردیف سند منتقل شد).")
+
     def selected(self) -> ItemRow | None:
         item_id = self.table.selected_id()
         return self._rows.get(item_id) if item_id is not None else None
@@ -394,7 +534,13 @@ class ItemsPage(QWidget):
         code = "" if detail else await items.next_code(self._ctx.db)
         warehouses = [] if detail else await master.list_warehouses(self._ctx.db)
         dialog = ItemDialog(self._ctx, units, self._categories, detail, code, self, warehouses)
-        if await exec_dialog(dialog):
+        result = await exec_dialog(dialog)
+        if result == USE_EXISTING and dialog.chosen_existing:  # an existing item instead of a duplicate
+            await self.refresh()
+            self.table.select_id(dialog.chosen_existing)
+            self.toast = Toast(self, "از کالای موجود استفاده شد؛ کالای تکراری ساخته نشد.")
+            return
+        if result:
             await self.refresh()
             self.table.select_id(dialog.saved_id)
             if dialog.result_message:

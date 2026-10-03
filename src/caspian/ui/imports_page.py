@@ -33,7 +33,7 @@ from caspian.db.models import BatchStatus, DocType, ImportKind, ImportSource, Li
 from caspian.services import imports, items, master
 from caspian.services.ai.assistant import text_to_draft
 from caspian.services.documents import DOC_TYPE_NAMES
-from caspian.services.errors import ServiceError, ValidationError
+from caspian.services.errors import ServiceError, SimilarItems, ValidationError
 from caspian.services.import_files import (
     FIELDS,
     RawRow,
@@ -53,7 +53,7 @@ from caspian.services.imports import (
 from caspian.services.protected import ProtectedAction
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import request_approval
-from caspian.ui.dialogs import FormDialog, ltr_field
+from caspian.ui.dialogs import Cancelled, FormDialog, ltr_field
 from caspian.ui.file_dialogs import ask_open_path
 from caspian.ui.master_page import person_picker
 from caspian.ui.messages import ask, confirm, show_error, show_info
@@ -531,7 +531,27 @@ class ReviewDialog(FormDialog):
                 f"بازنویسی اطلاعات {to_persian_digits(n)} کالای موجود با داده‌های فایل.", self)
             if approval is None:
                 raise ValidationError("اعمال لغو شد.")
-        result = await imports.apply_batch(self._ctx.db, self._ctx.actor, self._batch_id, approval)
+        try:
+            result = await imports.apply_batch(self._ctx.db, self._ctx.actor, self._batch_id, approval)
+        except SimilarItems as exc:
+            # A «کالای جدید» row looks like an existing item (round 2, feature A): match it to that item
+            # in the review, or create it anyway with the admin's PIN.
+            if not await confirm(self, f"{exc.message}\n\nبا تأیید مدیر (PIN) کالای جدید ساخته شود؟",
+                                 "ایجاد با تأیید مدیر"):
+                raise Cancelled from None
+            similar = await request_approval(
+                self._ctx.db, self._ctx.actor, ProtectedAction.CREATE_SIMILAR_ITEM, exc.message, self,
+                details={"reason": "ورود اطلاعات"})
+            if similar is None:
+                raise Cancelled from None
+            if imports.needs_overwrite_approval(self.detail):  # the first approval was used up
+                approval = await request_approval(
+                    self._ctx.db, self._ctx.actor, ProtectedAction.IMPORT_OVERWRITE,
+                    "بازنویسی کالاهای موجود با داده‌های فایل.", self)
+                if approval is None:
+                    raise Cancelled from None
+            result = await imports.apply_batch(self._ctx.db, self._ctx.actor, self._batch_id, approval,
+                                               similar)
         self.result_document_id = result.document_id
         parts = []
         if result.created_items:

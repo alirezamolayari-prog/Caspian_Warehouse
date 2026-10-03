@@ -6,9 +6,18 @@ from decimal import Decimal
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
-from caspian.db.models import AuditLog, DocStatus, DocType, ImportKind, ImportSource, LineStatus, PersonKind
+from caspian.db.models import (
+    AuditLog,
+    DocStatus,
+    DocType,
+    ImportKind,
+    ImportSource,
+    Item,
+    LineStatus,
+    PersonKind,
+)
 from caspian.services import backup, documents, imports, items, master, stocktake, users
 from caspian.services.ai import config
 from caspian.services.ai.assistant import Assistant
@@ -26,7 +35,10 @@ async def shop(db, admin, monkeypatch):
     u = {x.name: x.id for x in await master.list_units(db)}
     wh = (await master.list_warehouses(db))[0].id
     jaro1 = await items.create_item(db, admin, ItemInput("1006", "جارو", u["عدد"]))
-    jaro2 = await items.create_item(db, admin, ItemInput("1017", "جارو", u["عدد"]))
+    # Two active «جارو» exist in older data (new duplicates are refused since round 2, feature A).
+    jaro2 = await items.create_item(db, admin, ItemInput("1017", "سطل موقت", u["عدد"]))
+    async with db.session() as s:
+        await s.execute(update(Item).where(Item.id == jaro2).values(name="جارو", name_normalized="جارو"))
     drill = await items.create_item(db, admin, ItemInput("1001", "دریل بوش", u["عدد"]))
     await documents.create_and_post(db, admin, documents.DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh,

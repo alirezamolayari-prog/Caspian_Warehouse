@@ -127,7 +127,7 @@ class DashboardPage(QWidget):
             return
         findings = await health.check(self._ctx.db, self._ctx.actor)
         self.health_warning.setText(f"⚠ {to_persian_digits(len(findings))} مورد داده نیازمند بررسی "
-                                    "(تاریخ نامعتبر یا موجودی اعشاری) — برای دیدن بزنید")
+                                    "(تاریخ نامعتبر، موجودی اعشاری یا کالای تکراری) — برای دیدن بزنید")
         self.health_warning.setVisible(bool(findings))
         rows = await documents.list_documents(self._ctx.db, self._ctx.actor, limit=10)
         self.recent.set_rows([(r.id, (r.number_text, r.type_name,

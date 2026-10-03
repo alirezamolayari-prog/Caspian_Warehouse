@@ -14,6 +14,15 @@ class StocktakeFrozen(ValidationError):
     """Stock of items under an open stocktake can't change (an admin may override with a PIN)."""
 
 
+class SimilarItems(ValidationError):
+    """A new/renamed item looks like existing ones (QA round 2, feature A). `candidates` lists them;
+    creating it anyway needs an admin approval (CREATE_SIMILAR_ITEM)."""
+
+    def __init__(self, message: str, candidates: list) -> None:
+        super().__init__(message)
+        self.candidates = candidates
+
+
 class AuthenticationError(ServiceError):
     pass
 

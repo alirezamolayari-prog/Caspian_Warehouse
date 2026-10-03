@@ -31,6 +31,8 @@ class Finding:
 
 FIX_DOCUMENT = "سند را ابطال کنید و با تاریخ درست دوباره ثبت کنید (پیش‌نویس را ویرایش کنید)."
 FIX_BALANCE = "با یک سند «اصلاح موجودی» مقدار را به عدد صحیح برسانید."
+FIX_DUPLICATE = ("در «کالاها» فیلتر «فقط کالاهای تکراری/مشابه» را بزنید و با «ادغام…» (با PIN مدیر) آن‌ها را "
+                 "یکی کنید؛ گردش و موجودی به یک کد منتقل می‌شود.")
 
 
 async def check(db: Database, actor: Actor, today: dt.date | None = None) -> list[Finding]:
@@ -72,4 +74,10 @@ async def check(db: Database, actor: Actor, today: dt.date | None = None) -> lis
                     "fractional_balance", f"کالای {code} — {name}",
                     f"موجودی {format_qty(qty)} {unit} در «{warehouse}»؛ «{unit}» فقط عدد صحیح می‌پذیرد.",
                     FIX_BALANCE))
+    from caspian.services.items import duplicate_groups  # items imports documents imports health
+
+    for group in await duplicate_groups(db, actor):
+        findings.append(Finding(
+            "duplicate_items", "کالاهای تکراری/مشابه: " + "، ".join(to_persian_digits(g.code) for g in group),
+            "؛ ".join(g.name for g in group), FIX_DUPLICATE))
     return findings

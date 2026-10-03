@@ -123,3 +123,4 @@ Details: one commit per item, see the log of `fix/qa-round-2` and the summary be
 - [x] 2 — health check skips loans (and returns) carried over by the year-end; `test_fiscal.py::test_health_check_ignores_loans_carried_over`
 - [x] 3 — gateway: Persian reason per HTTP status (503 «سرور سرویس شلوغ است»), raw JSON only in the log; nested error bodies parsed
 - [x] 4 — `tests/sim/test_six_months.py` (slow; `CASPIAN_SLOW_TESTS=1`): 943 documents, 7 stocktakes, 30 backups, year-end 1405 with carried loans, restore; ~56 s
+- [x] A — one item per real product: exact duplicates refused, similar ones need «ایجاد کالای مشابه» (PIN) in services (dialog, opening stock, imports, renames; never the AI); live suggestions; health finding + Items filter «فقط کالاهای تکراری/مشابه»; new PIN-protected `items.merge_items` + «ادغام…»; `tests/test_similar_items.py`, `tests/test_similar_items_ui.py`
