@@ -16,9 +16,14 @@ license — see LICENSE). Current release: **v1.0.0** (installer on GitHub Relea
   NEW / EXISTING_MATCH / CONFLICT / ERROR / IGNORED; nothing is written until a human applies.
 - Blind stocktake (counters never see system qty; `stock.view` permission), discrepancy report.
 - Reports (stock value, cardex, burn-rate reorder analysis, loans, user activity) → Excel/PDF.
-- AI gateway (OpenAI-compatible, Groq, Hugging Face, Ollama; silent fallback on 429/timeouts,
-  offline → local only), chat + in-app voice button, tool calling. **The AI only creates drafts**
-  (runs as `actor.as_ai()`; services refuse protected actions/applying drafts for AI actors).
+- AI gateway (OpenAI-compatible, Groq, Gemini, OpenRouter, Cerebras, Mistral, Hugging Face, Ollama,
+  custom; silent fallback on 429/timeouts, offline → local only), chat + in-app voice button (transcript
+  is confirmed by the user), tool calling. The AI works like a user: creates documents and, if the admin
+  setting `ai_allow_post` is on (default), posts them through the normal services. It **never** does
+  destructive/protected actions: `Actor.require_human()` in services refuses cancel/delete, deactivation,
+  user management, stocktake approve/cancel, import discard, restore for `actor.is_ai`.
+- Read-only data health check (`services/health.py`, dashboard warning); startup refuses a DB migrated
+  by a newer app (`migrate.SchemaTooNew`) without touching it.
 - Read-only MCP server (`caspian-mcp`), Telegram/SMTP messaging to admin-configured recipients,
   scheduled tasks from `.md` instructions (proposed → admin approves → runs on that PC only).
 - Encrypted backups (`.bak`: mariadb-dump + gzip + AES-256-GCM/scrypt), PIN-protected restore.
@@ -51,7 +56,7 @@ docs/               USER_GUIDE.md (Persian), LAN_SETUP.md, ROADMAP.md, screensho
 ```powershell
 uv sync
 uv run caspian                 # the app (uv run caspian --smoke-test: builds every page headless)
-$env:QT_QPA_PLATFORM="offscreen"; uv run pytest   # ~230 tests (SQLite)
+$env:QT_QPA_PLATFORM="offscreen"; uv run pytest   # ~380 tests (SQLite)
 uv run ruff check
 # Optional MariaDB integration tests (the test DB is wiped):
 $env:CASPIAN_TEST_MARIADB_URL="mariadb+aiomysql://caspian:<pw>@localhost:3306/caspian_test?charset=utf8mb4"
@@ -94,7 +99,8 @@ Model change → `uv run alembic revision --autogenerate -m "..."` (replace gene
 - Tests and scripts must never overwrite the real settings file (conftest isolates it; the smoke
   test uses a non-saving Settings). Don't write to real keyring entries in tests (monkeypatch).
 - Enforce permissions, PIN approvals and AI restrictions in `services/`, not only in the UI.
-  AI tools stay read-only except draft creation. Posted documents are cancelled, never deleted.
+  AI tools may create/post documents only via the normal services; any new destructive service must call
+  `actor.require_human(...)`. Posted documents are cancelled, never deleted.
 - Every schema change needs an Alembic migration. User-facing text is Persian (RTL).
 - Run `uv run ruff check` and the full test suite (plus MariaDB tests when touching DB code)
   before pushing; check CI after pushing. Keep sources LF.
@@ -102,11 +108,16 @@ Model change → `uv run alembic revision --autogenerate -m "..."` (replace gene
   (write the file with `[IO.File]::WriteAllText`, no BOM). Anonymous GitHub API allows only
   60 requests/hour — poll CI slowly.
 - In Inno Setup silent mode wizard callbacks still run — never use plain `MsgBox` there.
+- UI: `@asyncSlot` only on methods (closures: `ui/tasks.callback/spawn`); no blocking `exec()`/static
+  dialogs inside coroutines (`ui/file_dialogs`, `exec_dialog`); printed table cells via
+  `printing.rtl_cells`; QTest `keyClicks` with Persian text kills the test process — type Latin.
 
 ## State, known issues, TODOs
-Done: roadmap M0–M13 (docs/ROADMAP.md) and the installer/release pipeline; v1.0.0 published.
+Done: roadmap M0–M13 (docs/ROADMAP.md) and the installer/release pipeline; v1.0.0 published;
+QA rounds (docs/PROGRESS.md, docs/QA_FIX_PLAN.md) merged to main, not yet released.
 Only tested with mocks / not end-to-end yet:
-- real AI provider keys, Telegram/SMTP sending, voice with real audio;
+- real AI provider keys (the assistant creating/posting documents end-to-end), Telegram/SMTP sending,
+  voice with real audio (silence threshold `recorder.MIN_RMS`);
 - LAN with two real PCs; the interactive (clicked-through) installer wizard — CI covers silent.
 
 Known limitations:

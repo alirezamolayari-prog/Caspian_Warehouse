@@ -98,7 +98,7 @@ re-sets the text but `setEditText` after `clear()` + list makes the first item w
 23. New item saved → non-blocking status in the Items page («کالای «…» ذخیره شد») via a small
     `widgets.Toast` (auto-hides). Test.
 
-## Finish
+## Finish ✅
 Full suite + ruff + smoke; update `CLAUDE.md` (features: AI can post when allowed, health check; known
 issues) and `docs/USER_GUIDE.md` (assistant, health check, voice confirm); tick `docs/QA_FIX_PLAN.md`;
 merge `fix/qa-round-1` into `main` (merge commit, no rewrite), `git push origin main` and the branch; poll
