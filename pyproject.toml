@@ -35,6 +35,7 @@ dev = [
     "pytest-asyncio>=0.24",
     "ruff>=0.6",
     "pyinstaller>=6.10",
+    "time-machine>=3.5.1",
 ]
 
 [tool.uv]
@@ -52,6 +53,7 @@ packages = ["src/caspian"]
 testpaths = ["tests"]
 qt_api = "pyside6"
 asyncio_mode = "auto"
+markers = ["slow: long simulations, run only with CASPIAN_SLOW_TESTS=1"]
 
 [tool.ruff]
 line-length = 110  # Persian UI/error strings run long
