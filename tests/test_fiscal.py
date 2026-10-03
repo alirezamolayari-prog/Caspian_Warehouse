@@ -38,6 +38,8 @@ async def env(db, admin, tmp_path):
     await master.save_person(db, admin, "شخص بی‌استفاده", PersonKind.OTHER)
 
     async def post(doc_type, date, *lines, **kw):
+        if doc_type == DocType.ISSUE:
+            kw.setdefault("person_id", emp)  # issues need a recipient to be posted
         return await docs.create_and_post(db, admin, docs.DocumentInput(
             doc_type, date, wh, [docs.LineInput(ids[c], u["عدد"], D(q)) for c, q in lines], **kw))
 

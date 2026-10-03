@@ -16,12 +16,28 @@ from caspian.ui.stocktake_page import CountDialog, ReportDialog, StocktakePage, 
 from helpers import settle
 
 
+@pytest.fixture(autouse=True)
+def confirmations(monkeypatch):
+    """Answer «بله» to every confirmation (#19) and record the questions asked."""
+    from caspian.ui import stocktake_page
+
+    asked = []
+
+    async def yes(parent, text, yes_text="بله", danger=False, title="تأیید"):
+        asked.append(text)
+        return True
+
+    monkeypatch.setattr(stocktake_page, "confirm", yes)
+    return asked
+
+
 @pytest.fixture
 async def env(themes, db, admin):
     u = {x.name: x.id for x in await master.list_units(db)}
     wh = (await master.list_warehouses(db))[0].id
     a = await items.create_item(db, admin, ItemInput("1001", "دریل", u["عدد"],
-                                                     barcodes=[("111", None)]))
+                                                     units=[(u["کارتن"], Decimal(12))],
+                                                     barcodes=[("111", None), ("111-C", u["کارتن"])]))
     await items.create_item(db, admin, ItemInput("1002", "فرز", u["عدد"]))
     await docs.create_and_post(db, admin, docs.DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh, [docs.LineInput(a, u["عدد"], Decimal(7))]))
@@ -92,3 +108,27 @@ async def test_sheet_is_blind_and_pdf_renders(env, tmp_path):
     save_pdf(html_text, str(path))
     data = path.read_bytes()
     assert data.startswith(b"%PDF") and len(data) > 2000
+
+
+async def test_carton_barcode_counts_the_whole_carton(qtbot, env):
+    """Two scans of a 12-piece carton barcode must count 24, not 2 (#8)."""
+    sheet = await st.count_sheet(env["db"], env["counter"], env["sid"])
+    dlg = CountDialog(ctx_for(env, env["counter"]), sheet)
+    qtbot.addWidget(dlg)
+    for code in ("111-C", "111-C", "111"):
+        dlg.scan.setText(code)
+        await dlg.on_scan()
+    assert dlg.qty_edits[sheet.lines[0].id].value() == Decimal(25)
+    dlg.scan.setText("111-C")
+    await dlg.on_scan()
+    assert "کارتن" in dlg.status.text() and "۱۲" in dlg.status.text()
+
+
+async def test_approval_asks_first(qtbot, env, confirmations):
+    db, admin, counter, sid = env["db"], env["admin"], env["counter"], env["sid"]
+    await st.submit_counts(db, counter, sid, missing_as_zero=True)
+    dlg = ReportDialog(ctx_for(env, admin), await st.discrepancy_report(db, admin, sid))
+    qtbot.addWidget(dlg)
+    dlg.submit_button.click()
+    await settle(dlg)
+    assert confirmations and "اصلاحیه" in confirmations[0]

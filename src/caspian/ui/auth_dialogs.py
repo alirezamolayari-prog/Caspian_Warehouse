@@ -15,6 +15,8 @@ from caspian.ui.messages import show_error
 
 
 class LoginDialog(FormDialog):
+    confirm_discard = False  # nothing to lose on closing
+
     def __init__(self, db: Database, username: str = "", cancel_text: str = "خروج",
                  parent: QWidget | None = None) -> None:
         super().__init__(f"ورود به {APP_DISPLAY_NAME}", "نام کاربری و رمز عبور خود را وارد کنید.",
@@ -38,6 +40,8 @@ class LoginDialog(FormDialog):
 
 
 class ChangePasswordDialog(FormDialog):
+    confirm_discard = False  # nothing to lose on closing
+
     def __init__(self, db: Database, actor: Actor, forced: bool = False,
                  parent: QWidget | None = None) -> None:
         subtitle = (
@@ -58,6 +62,8 @@ class ChangePasswordDialog(FormDialog):
 
 
 class SetPinDialog(FormDialog):
+    confirm_discard = False  # nothing to lose on closing
+
     def __init__(self, db: Database, actor: Actor, forced: bool = False,
                  parent: QWidget | None = None) -> None:
         super().__init__(
@@ -83,6 +89,8 @@ class SetPinDialog(FormDialog):
 
 class ApprovalDialog(FormDialog):
     """Confirmation + admin PIN for a protected action."""
+
+    confirm_discard = False  # nothing to lose on closing
 
     def __init__(self, db: Database, actor: Actor, action: ProtectedAction, description: str,
                  approvers: list[tuple[str, str]], parent: QWidget | None = None) -> None:

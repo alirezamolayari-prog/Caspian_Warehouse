@@ -32,6 +32,7 @@ from caspian.services.protected import ProtectedAction
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import request_approval
 from caspian.ui.dialogs import FormDialog, password_field
+from caspian.ui.health_dialog import show_health
 from caspian.ui.messages import show_error, show_info
 from caspian.ui.widgets import Card, DataTable
 
@@ -52,7 +53,35 @@ class BackupPasswordDialog(FormDialog):
         backup.set_backup_password(self.password.text())
 
 
+class FirstBackupPasswordDialog(BackupPasswordDialog):
+    """Asked once after the first admin sign-in on a PC without a backup password (#33)."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("رمز نسخه‌های پشتیبان")
+        self.subtitle.setText(
+            "برای نسخه‌های پشتیبان یک رمز تعیین کنید تا اگر فایل پشتیبان به دست دیگران افتاد، اطلاعات "
+            "انبار خوانده نشود. رمز را جایی امن یادداشت کنید. اگر «بعداً، بدون رمز» را بزنید، نسخه‌های "
+            "پشتیبان بدون رمز ساخته می‌شوند (تا هر وقت از تنظیمات ← پشتیبان‌گیری رمز بگذارید).")
+        self.cancel_button.setText("بعداً، بدون رمز")
+
+    confirm_discard = False  # «بعداً» is a real choice, not an accident
+
+
+async def first_run_backup_prompt(ctx: AppContext, parent=None) -> bool:
+    """Ask for a backup password once per PC (admins only). True if the dialog was shown."""
+    if (ctx.settings.backup_password_prompted or not ctx.actor.can(Perm.BACKUP_CREATE)
+            or backup.backup_password()):
+        return False
+    await exec_dialog(FirstBackupPasswordDialog(parent))
+    ctx.settings.backup_password_prompted = True
+    ctx.settings.save()
+    return True
+
+
 class RestorePasswordDialog(FormDialog):
+    confirm_discard = False  # nothing to lose on closing
+
     def __init__(self, info: BackupInfo, parent=None) -> None:
         super().__init__("رمز نسخه پشتیبان",
                          f"رمز فایل «{info.name}» را وارد کنید (اگر با رمز فعلی این رایانه ساخته شده، "
@@ -64,7 +93,7 @@ class RestorePasswordDialog(FormDialog):
 
 
 class BackupTab(QWidget):
-    COLUMNS = ("تاریخ", "ساعت", "برچسب", "حجم", "نسخه برنامه", "فایل")
+    COLUMNS = ("تاریخ", "ساعت", "برچسب", "رمز", "حجم", "نسخه برنامه", "فایل")
 
     def __init__(self, ctx: AppContext, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -108,6 +137,12 @@ class BackupTab(QWidget):
         pw_row.addWidget(self.password_button)
         form.addRow("رمز پشتیبان:", pw_row)
         card.body.addLayout(form)
+        self.plain_warning = QLabel(
+            "هشدار: رمز پشتیبان تعیین نشده است؛ نسخه‌های پشتیبان بدون رمز ساخته می‌شوند و هر کس فایل را "
+            "داشته باشد اطلاعات انبار را می‌بیند. «تعیین رمز پشتیبان» را بزنید.", objectName="StatusText")
+        self.plain_warning.setProperty("error", True)
+        self.plain_warning.setWordWrap(True)
+        card.body.addWidget(self.plain_warning)
         save_row = QHBoxLayout()
         save_row.addStretch(1)
         self.save_button = QPushButton("ذخیره تنظیمات")
@@ -119,6 +154,9 @@ class BackupTab(QWidget):
         toolbar = QHBoxLayout()
         self.status = QLabel(objectName="Muted")
         toolbar.addWidget(self.status, 1)
+        self.health_button = QPushButton("بررسی سلامت داده")
+        self.health_button.clicked.connect(self.on_health)
+        toolbar.addWidget(self.health_button)
         self.open_button = QPushButton("باز کردن پوشه")
         self.verify_button = QPushButton("بررسی سلامت")
         self.restore_button = QPushButton("بازیابی…")
@@ -151,7 +189,8 @@ class BackupTab(QWidget):
         self.tools_status.setText(f"mariadb-dump: {dump}" if dump
                                   else "mariadb-dump پیدا نشد — مسیر را مشخص کنید.")
         has_pw = bool(backup.backup_password())
-        self.password_status.setText("تعیین شده" if has_pw else "تعیین نشده — پشتیبان‌گیری ممکن نیست")
+        self.password_status.setText("تعیین شده" if has_pw else "تعیین نشده — نسخه‌ها بدون رمز ساخته می‌شوند")
+        self.plain_warning.setVisible(not has_pw)
 
     def _update_buttons(self, *_args) -> None:
         selected = self.table.selected_id() is not None
@@ -168,7 +207,8 @@ class BackupTab(QWidget):
         self._rows = {str(b.path): b for b in rows}
         self.table.set_rows([(str(b.path), (
             jalali.format_date(b.created_at), to_persian_digits(b.created_at.strftime("%H:%M")),
-            b.label or "—", f"{to_persian_digits(f'{b.size / 1_048_576:.1f}')} MB", b.app_version,
+            b.label or "—", "دارد" if b.encrypted else "بدون رمز",
+            backup.format_size(b.size), b.app_version,
             b.name)) for b in rows])
         self.status.setText(f"{to_persian_digits(len(rows))} نسخه پشتیبان در پوشه")
         self._update_buttons()
@@ -204,6 +244,10 @@ class BackupTab(QWidget):
         if await exec_dialog(BackupPasswordDialog(self)):
             self._refresh_status()
 
+    @asyncSlot()
+    async def on_health(self) -> None:
+        await show_health(self._ctx, self)
+
     def on_open_folder(self) -> None:
         folder = Path(self.folder.text())
         folder.mkdir(parents=True, exist_ok=True)
@@ -211,10 +255,7 @@ class BackupTab(QWidget):
 
     @asyncSlot()
     async def on_backup(self) -> None:
-        password = backup.backup_password()
-        if not password:
-            show_error(self, "ابتدا رمز پشتیبان را تعیین کنید.")
-            return
+        password = backup.backup_password()  # none: an unencrypted backup, with a warning (#33)
         self.backup_button.setEnabled(False)
         self.status.setText("در حال تهیه نسخه پشتیبان…")
         try:
@@ -226,9 +267,13 @@ class BackupTab(QWidget):
         finally:
             self.backup_button.setEnabled(True)
         self.refresh()
-        show_info(self, f"نسخه پشتیبان ذخیره شد:\n{info.path}")
+        warning = "" if info.encrypted else ("\n\nاین نسخه بدون رمز است؛ برای امنیت، رمز پشتیبان را "
+                                             "تعیین کنید.")
+        show_info(self, f"نسخه پشتیبان ذخیره شد:\n{info.path}{warning}")
 
     async def _ask_password(self, info: BackupInfo) -> str | None:
+        if not info.encrypted:
+            return ""  # nothing to ask for an unencrypted backup
         dialog = RestorePasswordDialog(info, self)
         if not await exec_dialog(dialog):
             return None
@@ -246,7 +291,8 @@ class BackupTab(QWidget):
         except ServiceError as exc:
             show_error(self, exc.message)
             return
-        show_info(self, "نسخه پشتیبان سالم است و با این رمز قابل بازیابی است.")
+        show_info(self, "نسخه پشتیبان سالم است و با این رمز قابل بازیابی است." if info.encrypted
+                  else "نسخه پشتیبان سالم و قابل بازیابی است (این نسخه بدون رمز است).")
 
     @asyncSlot()
     async def on_restore(self) -> None:

@@ -65,20 +65,22 @@ async def test_numbering_per_type_and_year(env):
     await receive(env)
     issue = await docs.create_document(db, admin, doc(
         DocType.ISSUE, env["wh1"], (env["drill"], env["u"]["عدد"], Decimal(1))))
-    next_year = await docs.create_document(db, admin, doc(
+    # Numbers restart every fiscal year (future dates are refused, so use the previous year).
+    last_year = await docs.create_document(db, admin, doc(
         DocType.RECEIPT, env["wh1"], (env["drill"], env["u"]["عدد"], Decimal(1)),
-        date=dt.date(2027, 3, 22)))
+        date=dt.date(2026, 3, 20)))
     numbers = {r.id: (r.doc_type, r.fiscal_year, r.number)
                for r in await docs.list_documents(db, admin)}
     assert numbers[issue] == (DocType.ISSUE, 1405, 1)
-    assert numbers[next_year] == (DocType.RECEIPT, 1406, 1)
+    assert numbers[last_year] == (DocType.RECEIPT, 1404, 1)
 
 
 async def test_issue_cannot_exceed_stock(env):
     db, admin = env["db"], env["admin"]
     await receive(env, Decimal(10), "عدد")
     doc_id = await docs.create_document(db, admin, doc(
-        DocType.ISSUE, env["wh1"], (env["drill"], env["u"]["جعبه"], Decimal(1))))  # 24 > 10
+        DocType.ISSUE, env["wh1"], (env["drill"], env["u"]["جعبه"], Decimal(1)),  # 24 > 10
+        person_id=env["person"]))
     with pytest.raises(ValidationError, match="کافی نیست"):
         await docs.post_document(db, admin, doc_id)
     assert (await docs.get_document(db, admin, doc_id)).status is DocStatus.DRAFT
@@ -156,7 +158,7 @@ async def test_cancel_reverses_and_guards_negative(env):
     db, admin = env["db"], env["admin"]
     receipt = await receive(env, Decimal(10), "عدد")
     await docs.create_and_post(db, admin, doc(
-        DocType.ISSUE, env["wh1"], (env["drill"], env["u"]["عدد"], Decimal(8))))
+        DocType.ISSUE, env["wh1"], (env["drill"], env["u"]["عدد"], Decimal(8)), person_id=env["person"]))
     with pytest.raises(ValidationError, match="کافی نیست"):
         await docs.cancel_document(db, admin, receipt)  # would leave -8
     issue = next(r.id for r in await docs.list_documents(db, admin, DocType.ISSUE))
@@ -261,3 +263,158 @@ async def test_number_collision_retries(env, monkeypatch):
         DocType.RECEIPT, env["wh1"], (env["drill"], env["u"]["عدد"], Decimal(1))))
     assert len(calls) == 2
     assert (await docs.get_document(db, admin, doc_id)).number == 2
+
+
+# ----- printing (#4, #5) -----
+
+
+async def test_print_sheet_has_everything_for_the_form(env):
+    db, admin = env["db"], env["admin"]
+    await receive(env, Decimal(1))  # 24 pieces in stock
+    doc_id = await docs.create_and_post(db, admin, doc(
+        DocType.ISSUE, env["wh1"], (env["drill"], env["u"]["عدد"], Decimal(3), Decimal(1000), "یدکی"),
+        person_id=env["person"], description="برای کارگاه"))
+    sheet = await docs.print_sheet(db, admin, doc_id)
+    assert sheet.number_text == "ح-۱" and sheet.type_name == "حواله خروج"
+    assert sheet.person == "علی رضایی" and sheet.person_label == "تحویل‌گیرنده"
+    assert sheet.warehouse and sheet.description == "برای کارگاه"
+    assert [(ln.code, ln.name, ln.unit, ln.qty, ln.notes) for ln in sheet.lines] == [
+        ("1001", "دریل", "عدد", Decimal(3), "یدکی")]
+    assert sheet.lines[0].amount == Decimal(3000) and sheet.total_amount == Decimal(3000)
+    assert sheet.company == "بازار مبلمان کاسپین"
+    assert sheet.print_count == 0 and sheet.trackable
+
+
+async def test_record_print_counts_copies_and_audits(env):
+    db, admin = env["db"], env["admin"]
+    doc_id = await receive(env)
+    assert await docs.record_print(db, admin, doc_id, "printer") == 1
+    assert await docs.record_print(db, admin, doc_id, "pdf") == 2
+    sheet = await docs.print_sheet(db, admin, doc_id)
+    assert sheet.print_count == 2 and sheet.last_printed_by == admin.display_name  # full name (#16)
+    [row] = [r for r in await docs.list_documents(db, admin) if r.id == doc_id]
+    assert row.print_count == 2
+    from caspian.db.models import AuditLog
+
+    async with db.session() as s:
+        actions = (await s.scalars(select(AuditLog.details).where(
+            AuditLog.action == "document.printed"))).all()
+    assert [a["copy"] for a in actions] == [1, 2] and actions[1]["kind"] == "pdf"
+
+
+async def test_drafts_are_not_tracked(env):
+    db, admin = env["db"], env["admin"]
+    draft = await docs.create_document(db, admin, doc(DocType.RECEIPT, env["wh1"],
+                                                      (env["drill"], env["u"]["عدد"], Decimal(1))))
+    assert not (await docs.print_sheet(db, admin, draft)).trackable
+    with pytest.raises(ValidationError):
+        await docs.record_print(db, admin, draft, "printer")
+
+
+def test_number_text_prefixes():
+    assert docs.number_text(DocType.RECEIPT, 12) == "ر-۱۲"
+    assert len({docs.DOC_PREFIX[t] for t in DocType}) == len(DocType)  # all distinct
+
+
+# ----- stock waiting in drafts (#9) -----
+
+
+async def test_pending_incoming_explains_zero_stock(env):
+    db, admin = env["db"], env["admin"]
+    draft = await docs.create_document(db, admin, doc(DocType.RECEIPT, env["wh1"],
+                                                      (env["drill"], env["u"]["جعبه"], Decimal(1))))
+    await docs.create_document(db, admin, doc(DocType.RECEIPT, env["wh2"],  # other warehouse
+                                              (env["drill"], env["u"]["عدد"], Decimal(7))))
+    pending = await docs.pending_incoming(db, admin, env["drill"], env["wh1"])
+    assert [(p.number_text, p.base_qty) for p in pending] == [("ر-۱", Decimal(24))]
+    assert docs.pending_hint(pending, "عدد") == "۲۴ عدد در پیش‌نویس ر-۱ منتظر ثبت نهایی است."
+
+    issue = await docs.create_document(db, admin, doc(DocType.ISSUE, env["wh1"],
+                                                      (env["drill"], env["u"]["عدد"], Decimal(5)),
+                                                      person_id=env["person"]))
+    with pytest.raises(ValidationError, match="پیش‌نویس ر-۱ منتظر ثبت نهایی"):
+        await docs.post_document(db, admin, issue)
+    await docs.post_document(db, admin, draft)
+    assert await docs.pending_incoming(db, admin, env["drill"], env["wh1"]) == []
+    await docs.post_document(db, admin, issue)
+
+
+# ----- validation rules (#18, #21, #22) -----
+
+
+async def test_future_dates_are_rejected(env):
+    """A receipt dated 1406/05/01 was accepted and made the cardex show a negative balance (#18)."""
+    db, admin = env["db"], env["admin"]
+    tomorrow = dt.date.today() + dt.timedelta(days=1)
+    with pytest.raises(ValidationError, match="بعد از امروز"):
+        await docs.create_document(db, admin, doc(DocType.RECEIPT, env["wh1"],
+                                                  (env["drill"], env["u"]["عدد"], Decimal(1)), date=tomorrow))
+    await docs.create_document(db, admin, doc(DocType.RECEIPT, env["wh1"],
+                                              (env["drill"], env["u"]["عدد"], Decimal(1)),
+                                              date=dt.date.today()))
+
+
+async def test_issue_needs_a_recipient_to_be_posted(env):
+    """#22: a draft may still be incomplete (imports, AI), but posting an issue needs the person."""
+    db, admin = env["db"], env["admin"]
+    await receive(env)
+    draft = await docs.create_document(db, admin, doc(DocType.ISSUE, env["wh1"],
+                                                      (env["drill"], env["u"]["عدد"], Decimal(1))))
+    with pytest.raises(ValidationError, match="تحویل‌گیرنده"):
+        await docs.post_document(db, admin, draft)
+    detail = await docs.get_document(db, admin, draft)
+    data = detail.input
+    data.person_id = env["person"]
+    await docs.update_document(db, admin, draft, detail.version_id, data)
+    await docs.post_document(db, admin, draft)
+
+
+async def test_decimals_only_for_units_that_allow_them(env):
+    """«۲٫۵ عدد» must be refused; «۲٫۵ متر» is fine (#21)."""
+    db, admin, u = env["db"], env["admin"], env["u"]
+    units = {x.name: x for x in await master.list_units(db)}
+    assert not units["عدد"].allow_decimal and units["متر"].allow_decimal
+    with pytest.raises(ValidationError, match="صحیح"):
+        await docs.create_document(db, admin, doc(DocType.RECEIPT, env["wh1"],
+                                                  (env["drill"], u["عدد"], Decimal("2.5"))))
+    cable = await items.create_item(db, admin, ItemInput("3001", "کابل", u["متر"]))
+    await docs.create_document(db, admin, doc(DocType.RECEIPT, env["wh1"], (cable, u["متر"], Decimal("2.5"))))
+    await master.save_unit(db, admin, "عدد", u["عدد"], allow_decimal=True)  # the admin decides
+    await docs.create_document(db, admin, doc(DocType.RECEIPT, env["wh1"],
+                                              (env["drill"], u["عدد"], Decimal("2.5"))))
+
+
+# ----- numbering display and search (#26) -----
+
+
+async def test_prefixed_numbers_in_lists_and_search(env):
+    db, admin = env["db"], env["admin"]
+    receipt = await receive(env)
+    issue = await docs.create_document(db, admin, doc(DocType.ISSUE, env["wh1"],
+                                                      (env["drill"], env["u"]["عدد"], Decimal(1))))
+    rows = {r.id: r for r in await docs.list_documents(db, admin)}
+    assert rows[receipt].number_text == "ر-۱" and rows[issue].number_text == "ح-۱"
+    for query in ("ر-۱", "ر-1", "ر 1", "ر1"):
+        assert [r.id for r in await docs.list_documents(db, admin, query=query)] == [receipt], query
+    assert [r.id for r in await docs.list_documents(db, admin, query="ح-۱")] == [issue]
+    assert len(await docs.list_documents(db, admin, query="1")) == 2  # plain number: any type
+
+
+async def test_pending_summary_is_one_consistent_source(env):
+    """#25: the dashboard's number and its «n سند، m ورود اطلاعات» come from the same counts."""
+    db, admin = env["db"], env["admin"]
+    await docs.create_document(db, admin, doc(DocType.RECEIPT, env["wh1"],
+                                              (env["drill"], env["u"]["عدد"], Decimal(1))))
+    summary = await docs.pending_summary(db)
+    assert (summary.draft_documents, summary.open_imports, summary.total) == (1, 0, 1)
+    assert summary.hint == "۱ سند، ۰ ورود اطلاعات"
+
+
+async def test_validate_input_writes_nothing(env):
+    """#15: the editor validates before asking «ثبت نهایی شود؟»."""
+    db, admin = env["db"], env["admin"]
+    with pytest.raises(ValidationError, match="حداقل یک ردیف"):
+        await docs.validate_input(db, admin, doc(DocType.RECEIPT, env["wh1"]))
+    await docs.validate_input(db, admin, doc(DocType.RECEIPT, env["wh1"],
+                                             (env["drill"], env["u"]["عدد"], Decimal(1))))
+    assert await docs.list_documents(db, admin) == []

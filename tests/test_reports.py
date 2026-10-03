@@ -26,7 +26,11 @@ async def env(db, admin):
         "1001", "دریل", u["عدد"], units=[(u["جعبه"], D(4))], reorder_point=D(5)))
     table = await items.create_item(db, admin, ItemInput("2001", "میز", u["عدد"]))
 
+    recipient = await master.save_person(db, admin, "گیرنده", PersonKind.EMPLOYEE)
+
     async def post(doc_type, date, wh_id, *lines, **kw):
+        if doc_type == DocType.ISSUE:
+            kw.setdefault("person_id", recipient)  # issues need a recipient to be posted
         return await docs.create_and_post(db, admin, docs.DocumentInput(
             doc_type, date, wh_id, [docs.LineInput(*ln) for ln in lines], **kw))
 
@@ -131,3 +135,13 @@ async def test_excel_export_is_rtl_and_numeric(db, admin, env):
     ws = load_workbook(io.BytesIO(xlsx_bytes(cardex))).active
     dates = [r[0].value for r in ws.iter_rows() if r[0].value and str(r[0].value).startswith("1405/")]
     assert dates  # Jalali dates written as text
+
+
+async def test_needing_order_matches_the_dashboard(db, admin, env):
+    """Dashboard said 2 items below reorder point, the report showed another one (#11)."""
+    await items.set_reorder_points(db, admin, {env["table"]: D(3)})  # 1 on hand, never consumed
+    params = ReorderParams(lookback_days=30, lead_time_days=10, cover_days=30, safety_days=0)
+    needing = {r.code for r in await reports.burn_rates(db, admin, params, only_needing_order=True,
+                                                        today=TODAY)}
+    _total, low = await items.count_summary(db)
+    assert "2001" in needing and len(needing) == low

@@ -1,8 +1,10 @@
 """Settings: appearance (per PC) and AI providers (shared definitions, per-PC keys)."""
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QCompleter,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -16,7 +18,8 @@ from PySide6.QtWidgets import (
 from qasync import asyncSlot
 
 from caspian.core.permissions import Perm
-from caspian.core.text import to_persian_digits
+from caspian.core.text import ltr, to_persian_digits
+from caspian.db.models import ProviderKind
 from caspian.services.ai import config
 from caspian.services.ai.config import PRESETS, ProviderConfig
 from caspian.services.errors import ServiceError
@@ -80,7 +83,25 @@ class ProviderDialog(FormDialog):
         self.add_row("نوع سرویس:", self.kind)
         self.name = self.add_row("نام نمایشی:", QLineEdit(provider.name if provider else ""))
         self.base_url = self.add_row("آدرس API:", ltr_field(provider.base_url if provider else ""))
-        self.model = self.add_row("مدل:", ltr_field(provider.model if provider else ""))
+        # Typed freely, or picked from the provider's own list («دریافت لیست مدل‌ها»).
+        self.model = QComboBox()
+        self.model.setEditable(True)
+        self.model.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.model.lineEdit().setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        self.model.completer().setFilterMode(Qt.MatchFlag.MatchContains)
+        self.model.completer().setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self.model.setEditText(provider.model if provider else "")
+        model_row = QHBoxLayout()
+        model_row.addWidget(self.model, 1)
+        self.free_only = QCheckBox("فقط رایگان")
+        self.free_only.toggled.connect(self._fill_models)
+        model_row.addWidget(self.free_only)
+        self.fetch_models = QPushButton("دریافت لیست مدل‌ها")
+        self.fetch_models.clicked.connect(self.on_fetch_models)
+        model_row.addWidget(self.fetch_models)
+        self.form.addRow("مدل:", model_row)
+        self._inputs += [self.model, self.fetch_models, self.free_only]
+        self._models: list = []
         self.stt_model = self.add_row("مدل گفتار به متن:", ltr_field(provider.stt_model if provider else ""))
         self.stt_model.setPlaceholderText("خالی = بدون پشتیبانی صدا")
         self.timeout = QSpinBox()
@@ -98,6 +119,7 @@ class ProviderDialog(FormDialog):
         self.add_row("", self.enabled)
         if provider:
             self.kind.setCurrentIndex(self.kind.findData(provider.kind))
+            self.free_only.setVisible(provider.kind == ProviderKind.OPENROUTER)
         else:
             self._apply_preset()
         self.kind.currentIndexChanged.connect(lambda _: self._apply_preset())
@@ -105,17 +127,59 @@ class ProviderDialog(FormDialog):
     def _apply_preset(self) -> None:
         preset = PRESETS[self.kind.currentData()]
         self.base_url.setText(preset.base_url)
-        self.model.setText(preset.model)
+        self.model.clear()
+        self._models = []
+        self.model.setEditText(preset.model)
+        is_openrouter = self.kind.currentData() == ProviderKind.OPENROUTER
+        self.free_only.setVisible(is_openrouter)
+        self.free_only.setChecked(is_openrouter)
         self.stt_model.setText(preset.stt_model)
         if not self.name.text().strip() or self._provider is None:
             self.name.setText(preset.label)
+
+    @asyncSlot()
+    async def on_fetch_models(self) -> None:
+        key = self.key.text().strip() or (config.get_key(self._provider.id) if self._provider else None)
+        self.fetch_models.setEnabled(False)
+        self.show_status("در حال دریافت فهرست مدل‌ها…", is_error=False)
+        try:
+            self._models = await self._ctx.ai.list_models(self.kind.currentData(), self.base_url.text(), key)
+        except ServiceError as exc:
+            self.show_status(exc.message)
+            return
+        finally:
+            self.fetch_models.setEnabled(True)
+        wanted = self.model.currentText().strip()
+        self._fill_models()
+        free = sum(m.free for m in self._models)
+        text = f"{to_persian_digits(len(self._models))} مدل دریافت شد" + (
+            f" ({to_persian_digits(free)} رایگان)." if free else ".")
+        if wanted and wanted not in {m.id for m in self._models}:
+            # Keep the user's model; just say the provider doesn't list it (#7).
+            text += f" مدل فعلی «{ltr(wanted)}» در فهرست این سرویس نیست؛ آن را بررسی کنید."
+        self.show_status(text, is_error=bool(wanted) and wanted not in {m.id for m in self._models})
+
+    def _fill_models(self, *_args) -> None:
+        """Offer the fetched models without ever changing the selected one (#7)."""
+        current = self.model.currentText()
+        self.model.blockSignals(True)
+        self.model.clear()
+        only_free = not self.free_only.isHidden() and self.free_only.isChecked()
+        for m in self._models:
+            if m.free or not only_free:
+                self.model.addItem(f"{m.id}", m.id)
+        index = self.model.findText(current)
+        self.model.setCurrentIndex(index)
+        if index < 0:
+            self.model.setEditText(current)
+        self.model.blockSignals(False)
 
     async def submit(self) -> None:
         # "" removes the stored key; None leaves it unchanged.
         key = "" if self.remove_key.isChecked() else (self.key.text().strip() or None)
         await config.save_provider(
             self._ctx.db, self._ctx.actor, self.name.text(), self.kind.currentData(),
-            self.base_url.text(), self.model.text(), self.timeout.value(), self.stt_model.text(),
+            self.base_url.text(), self.model.currentText(), self.timeout.value(), self.stt_model.text(),
             self.enabled.isChecked(), key, self._provider.id if self._provider else None)
 
 
@@ -133,6 +197,11 @@ class AITab(QWidget):
             "برنامه کاملاً آفلاین کار می‌کند.", objectName="Muted")
         intro.setWordWrap(True)
         layout.addWidget(intro)
+        self.allow_post = QCheckBox("اجازه ثبت نهایی سند توسط دستیار (با همه کنترل‌های موجودی و تاریخ؛ "
+                                    "حذف و ابطال هرگز)")
+        self.allow_post.setToolTip("خاموش: دستیار فقط پیش‌نویس می‌سازد و ثبت نهایی با کاربر است.")
+        self.allow_post.toggled.connect(self.on_allow_post)
+        layout.addWidget(self.allow_post)
         toolbar = QHBoxLayout()
         self.status = QLabel(objectName="Muted")
         toolbar.addWidget(self.status, 1)
@@ -171,8 +240,18 @@ class AITab(QWidget):
         super().showEvent(event)
         self.refresh()
 
+    @asyncSlot(bool)
+    async def on_allow_post(self, allowed: bool) -> None:
+        try:
+            await config.set_ai_may_post(self._ctx.db, self._ctx.actor, allowed)
+        except ServiceError as exc:
+            show_error(self, exc.message)
+
     @asyncSlot()
     async def refresh(self) -> None:
+        self.allow_post.blockSignals(True)
+        self.allow_post.setChecked(await config.ai_may_post(self._ctx.db))
+        self.allow_post.blockSignals(False)
         rows = await config.list_providers(self._ctx.db)
         self._rows = {p.id: p for p in rows}
         theme = self._ctx.themes.current
@@ -186,8 +265,12 @@ class AITab(QWidget):
                        if p.needs_key and not p.has_key})
         online = await self._ctx.ai.is_online()
         usable = sum(p.usable for p in rows)
-        self.status.setText(f"اینترنت: {'متصل' if online else 'قطع'} — "
-                            f"{to_persian_digits(usable)} سرویس آماده روی این رایانه")
+        text = (f"اینترنت: {'متصل' if online else 'قطع'} — "
+                f"{to_persian_digits(usable)} سرویس آماده روی این رایانه")
+        if not rows:
+            text += (" — هنوز سرویسی اضافه نشده؛ «افزودن سرویس» را بزنید "
+                     "(Gemini و OpenRouter سطح رایگان دارند).")
+        self.status.setText(text)
         self._update_buttons()
 
     def selected(self) -> ProviderConfig | None:
@@ -231,7 +314,7 @@ class AITab(QWidget):
             return
         finally:
             self.test_button.setEnabled(True)
-        text = f"«{p.name}»: {message} ({to_persian_digits(f'{seconds:.1f}')} ثانیه)"
+        text = f"«{ltr(p.name)}»: {message} ({to_persian_digits(f'{seconds:.1f}')} ثانیه)"
         (show_info if ok else show_error)(self, text)
 
 

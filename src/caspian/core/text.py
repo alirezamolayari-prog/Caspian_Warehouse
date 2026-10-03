@@ -46,6 +46,12 @@ def normalize(text: str) -> str:
     return text.strip().lower()
 
 
+def ltr(text: str) -> str:
+    """Embed left-to-right text (English server messages, usernames, codes) in a Persian sentence
+    without breaking its punctuation: isolate it with LRI … PDI (#20)."""
+    return f"\u2066{text}\u2069" if text else text
+
+
 def to_ascii_digits(text: str) -> str:
     """Convert Persian/Arabic digits to ASCII without touching anything else."""
     return text.translate(_CHAR_MAP) if text else ""

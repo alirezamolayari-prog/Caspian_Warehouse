@@ -27,6 +27,7 @@ from caspian.core import jalali
 from caspian.core.numbers import format_qty
 from caspian.core.permissions import Perm
 from caspian.core.text import to_persian_digits
+from caspian.core.text import to_persian_digits as fa  # display-only digits (#19)
 from caspian.db.models import DocStatus, DocType
 from caspian.services import documents as docs
 from caspian.services import items, master
@@ -39,21 +40,49 @@ from caspian.services.documents import (
     LineInput,
     LoanRow,
 )
-from caspian.services.errors import ServiceError, ValidationError
+from caspian.services.errors import ServiceError, StocktakeFrozen, ValidationError
 from caspian.services.items import ItemRow
+from caspian.services.protected import ProtectedAction
 from caspian.ui.app_context import AppContext, exec_dialog
-from caspian.ui.dialogs import FormDialog
-from caspian.ui.messages import show_error
-from caspian.ui.widgets import Card, DataTable, JalaliDateEdit, QtyEdit, SearchBox
+from caspian.ui.auth_dialogs import request_approval
+from caspian.ui.dialogs import Cancelled, FormDialog
+from caspian.ui.document_print import document_print_menu
+from caspian.ui.master_page import person_picker
+from caspian.ui.messages import confirm, show_error, show_info
+from caspian.ui.widgets import (
+    Card,
+    DataTable,
+    JalaliDateEdit,
+    QtyEdit,
+    SearchableCombo,
+    SearchBox,
+    popup_inside,
+)
 
 LIST_COLUMNS = ("شماره", "نوع سند", "تاریخ", "انبار", "طرف حساب", "اقلام", "وضعیت", "ثبت‌کننده")
 LOAN_COLUMNS = ("شماره امانی", "تاریخ", "تحویل‌گیرنده", "کالا", "مانده", "روز")
+OUTGOING = {DocType.ISSUE, DocType.TRANSFER, DocType.LOAN_OUT}
 LINE_COLUMNS = ("کد", "نام کالا", "واحد", "مقدار", "فی", "توضیح", "")
+
+
+async def with_stocktake_override(ctx: AppContext, parent, action):
+    """Run `action(approval)`; if a stocktake freezes the items (#7), offer an admin PIN override
+    and retry. Re-raises the freeze error when no approval is given."""
+    try:
+        return await action(None)
+    except StocktakeFrozen as exc:
+        approval = await request_approval(
+            ctx.db, ctx.actor, ProtectedAction.STOCKTAKE_OVERRIDE,
+            f"{exc.message}\nبا وجود انبارگردانی باز ادامه داده شود؟ مغایرت آن انبارگردانی نادرست خواهد شد.",
+            parent)
+        if approval is None:
+            raise
+        return await action(approval)
 
 
 def doc_title(row_type: DocType, number: int | None) -> str:
     name = DOC_TYPE_NAMES[row_type]
-    return f"{name} شماره {to_persian_digits(number)}" if number else f"{name} جدید"
+    return f"{name} {docs.number_text(row_type, number)}" if number else f"{name} جدید"
 
 
 # ----- item chooser -----
@@ -61,6 +90,8 @@ def doc_title(row_type: DocType, number: int | None) -> str:
 
 class ItemChooserDialog(FormDialog):
     """Pick one of several items matching a typed name."""
+
+    confirm_discard = False  # nothing to lose on closing
 
     def __init__(self, ctx: AppContext, query: str, rows: list[ItemRow], parent=None) -> None:
         super().__init__("انتخاب کالا", f"چند کالا با «{query}» پیدا شد.", submit_text="انتخاب",
@@ -70,7 +101,7 @@ class ItemChooserDialog(FormDialog):
         self.chosen: ItemRow | None = None
         self.table = DataTable(("کد", "نام کالا", "واحد", "موجودی"))
         self.table.setMinimumHeight(280)
-        self.table.set_rows([(r.id, (r.code, r.name, r.base_unit, format_qty(r.on_hand) or "—"))
+        self.table.set_rows([(r.id, (fa(r.code), r.name, r.base_unit, format_qty(r.on_hand) or "—"))
                              for r in rows])
         self.table.selectRow(0)
         self.table.doubleClicked.connect(lambda _: self.submit_button.click())
@@ -133,12 +164,12 @@ class DocumentDialog(FormDialog):
 
         self.date = JalaliDateEdit(data.doc_date)
         right.addRow("تاریخ:", self.date)
-        self.warehouse = QComboBox()
+        self.warehouse = SearchableCombo()
         for w in warehouses:
             self.warehouse.addItem(w.name, w.id)
         self.warehouse.setCurrentIndex(max(self.warehouse.findData(data.warehouse_id), 0))
         right.addRow("از انبار:" if doc_type == DocType.TRANSFER else "انبار:", self.warehouse)
-        self.dest = QComboBox()
+        self.dest = SearchableCombo()
         if doc_type == DocType.TRANSFER:
             for w in warehouses:
                 self.dest.addItem(w.name, w.id)
@@ -146,11 +177,7 @@ class DocumentDialog(FormDialog):
             self.dest.setCurrentIndex(index if index >= 0 else min(1, self.dest.count() - 1))
             right.addRow("به انبار:", self.dest)
 
-        self.person = QComboBox()
-        self.person.addItem("—", None)
-        for p in persons:
-            self.person.addItem(f"{p.name} ({p.kind_name})", p.id)
-        self.person.setCurrentIndex(max(self.person.findData(data.person_id), 0))
+        self.person = person_picker(ctx, self, persons, data.person_id)
         person_label = {DocType.RECEIPT: "تأمین‌کننده:", DocType.ISSUE: "تحویل‌گیرنده:",
                         DocType.LOAN_OUT: "تحویل‌گیرنده:", DocType.LOAN_RETURN: "برگشت‌دهنده:"}
         if doc_type in person_label:
@@ -196,6 +223,11 @@ class DocumentDialog(FormDialog):
         self.draft_button = QPushButton("ذخیره پیش‌نویس")
         self.draft_button.clicked.connect(self.on_save_draft)
         self.buttons.insertWidget(self.buttons.count() - 1, self.draft_button)
+        # Prints the saved document (a draft is printed as «پیش‌نویس — فاقد اعتبار»).
+        self.print_button = QPushButton("چاپ / پیش‌نمایش")
+        self.print_button.setMenu(document_print_menu(self, ctx, lambda: self.saved_id))
+        self.print_button.setEnabled(self.saved_id is not None)
+        self.buttons.insertWidget(1, self.print_button)
         self._inputs += [self.date, self.warehouse, self.dest, self.person, self.loan,
                          self.description, self.item_input, self.draft_button]
         if self._read_only:
@@ -236,7 +268,7 @@ class DocumentDialog(FormDialog):
         for r in self._loans:
             if r.person_id == person_id and r.document_id not in seen:
                 seen.add(r.document_id)
-                self.loan.addItem(f"شماره {to_persian_digits(r.number)} — "
+                self.loan.addItem(f"{docs.number_text(DocType.LOAN_OUT, r.number)} — "
                                   f"{jalali.format_date(r.doc_date)}", r.document_id)
         index = self.loan.findData(selected)
         self.loan.setCurrentIndex(max(index, 0))
@@ -351,8 +383,13 @@ class DocumentDialog(FormDialog):
             else:
                 self._add_line(row.id, row.code, row.name, unit_id, Decimal(1))
             if row.on_hand is not None:
-                self.stock_hint.setText(f"موجودی «{row.name}»: {format_qty(row.on_hand)} "
-                                        f"{row.base_unit}")
+                hint = f"موجودی «{row.name}»: {format_qty(row.on_hand)} {row.base_unit}"
+                if self._type in OUTGOING and self.warehouse.currentData() is not None:
+                    pending = await docs.pending_incoming(self._ctx.db, self._ctx.actor, row.id,
+                                                          self.warehouse.currentData())
+                    if pending:
+                        hint += " — " + docs.pending_hint(pending, row.base_unit)
+                self.stock_hint.setText(hint)
         except ServiceError as exc:
             self.show_status(exc.message)
         finally:
@@ -401,12 +438,18 @@ class DocumentDialog(FormDialog):
             await docs.update_document(db, actor, self.saved_id, version, data)
         # Later saves in this dialog must compare against the new version.
         self._detail = await docs.get_document(db, actor, self.saved_id)
+        self.print_button.setEnabled(True)
         return self.saved_id
 
     async def submit(self) -> None:
+        # Problems first (e.g. no lines), then the question (#15).
+        await docs.validate_input(self._ctx.db, self._ctx.actor, self.collect())
+        if not await confirm(self, "سند ذخیره و ثبت نهایی شود؟ موجودی تغییر می‌کند و سند پس از آن فقط با "
+                             "ابطال قابل برگشت است.", "ثبت نهایی"):
+            raise Cancelled
         doc_id = await self._save()
-        await docs.post_document(self._ctx.db, self._ctx.actor, doc_id,
-                                 self._detail.version_id)
+        await with_stocktake_override(self._ctx, self, lambda approval: docs.post_document(
+            self._ctx.db, self._ctx.actor, doc_id, self._detail.version_id, approval))
         self.posted = True
 
     @asyncSlot()
@@ -423,6 +466,8 @@ class DocumentDialog(FormDialog):
 
 
 class CancelDialog(FormDialog):
+    confirm_discard = False  # nothing to lose on closing
+
     def __init__(self, ctx: AppContext, row: DocumentRow, parent=None) -> None:
         super().__init__(f"ابطال {doc_title(row.doc_type, row.number)}",
                          "اثر این سند روی موجودی برگردانده می‌شود و سند به حالت «ابطال شده» "
@@ -430,15 +475,24 @@ class CancelDialog(FormDialog):
         self.submit_button.setProperty("variant", "danger")
         self._ctx, self._row = ctx, row
         self.reason = self.add_row("علت ابطال:", QLineEdit())
+        self.reason.setPlaceholderText("مثلاً: مقدار اشتباه وارد شده بود")
+        # Typing must land in the reason field right away (the default button had focus, #34).
+        self.reason.setFocus()
 
     async def submit(self) -> None:
         if not self.reason.text().strip():
             raise ValidationError("علت ابطال را بنویسید.")
-        await docs.cancel_document(self._ctx.db, self._ctx.actor, self._row.id,
-                                   self.reason.text())
+        await with_stocktake_override(self._ctx, self, lambda approval: docs.cancel_document(
+            self._ctx.db, self._ctx.actor, self._row.id, self.reason.text(), approval))
 
 
 # ----- page -----
+
+
+def _status_text(row: DocumentRow) -> str:
+    if row.print_count:
+        return f"{row.status_name} — چاپ‌شده ({to_persian_digits(row.print_count)})"
+    return row.status_name
 
 
 class DocumentsList(QWidget):
@@ -452,7 +506,7 @@ class DocumentsList(QWidget):
         layout.setSpacing(10)
 
         toolbar = QHBoxLayout()
-        self.search = SearchBox("جستجو: شماره، طرف حساب یا توضیحات…")
+        self.search = SearchBox("جستجو: شماره (مثل ر-۱۲)، طرف حساب یا توضیحات…")
         self.search.search.connect(lambda _: self.refresh())
         toolbar.addWidget(self.search)
         self.type_filter = QComboBox()
@@ -474,7 +528,9 @@ class DocumentsList(QWidget):
         for t in (DocType.RECEIPT, DocType.ISSUE, DocType.TRANSFER, DocType.LOAN_OUT,
                   DocType.LOAN_RETURN, DocType.ADJUSTMENT, DocType.OPENING):
             menu.addAction(DOC_TYPE_NAMES[t], lambda t=t: self.open_new(t))
-        self.new_button.setMenu(menu)
+        self.new_menu = menu
+        # Opened by hand so it stays inside the window (it opened off its left edge, #21).
+        self.new_button.clicked.connect(lambda: popup_inside(self.new_menu, self.new_button))
         toolbar.addWidget(self.new_button)
         layout.addLayout(toolbar)
 
@@ -486,17 +542,21 @@ class DocumentsList(QWidget):
         self.post_button = QPushButton("ثبت نهایی")
         self.cancel_button = QPushButton("ابطال")
         self.delete_button = QPushButton("حذف پیش‌نویس")
+        self.print_button = QPushButton("چاپ / پیش‌نمایش")
+        self.print_button.setMenu(document_print_menu(self, ctx, self.table_selected_id, self.refresh))
         self.open_button.clicked.connect(self.on_open)
         self.post_button.clicked.connect(self.on_post)
         self.cancel_button.clicked.connect(self.on_cancel)
         self.delete_button.clicked.connect(self.on_delete)
-        for b in (self.open_button, self.post_button, self.cancel_button, self.delete_button):
+        for b in (self.print_button, self.open_button, self.post_button, self.cancel_button,
+                  self.delete_button):
             actions.addWidget(b)
         layout.addLayout(actions)
 
         card = Card()
         card.body.setContentsMargins(0, 0, 0, 0)
         self.table = DataTable(LIST_COLUMNS)
+        self.table.set_empty_text("سندی با این شرایط پیدا نشد. برای شروع «سند جدید» را بزنید.")
         self.table.itemSelectionChanged.connect(self._update_buttons)
         self.table.doubleClicked.connect(lambda _: self.on_open())
         card.body.addWidget(self.table)
@@ -508,6 +568,9 @@ class DocumentsList(QWidget):
         row_id = self.table.selected_id()
         return self._rows.get(row_id) if row_id is not None else None
 
+    def table_selected_id(self) -> int | None:
+        return self.table.selected_id()
+
     def _update_buttons(self, *_args) -> None:
         row, actor = self.selected(), self._ctx.actor
         self.new_button.setVisible(actor.can(Perm.DOCUMENTS_EDIT))
@@ -515,6 +578,8 @@ class DocumentsList(QWidget):
         self.post_button.setVisible(actor.can(Perm.DOCUMENTS_POST))
         self.cancel_button.setVisible(actor.can(Perm.DOCUMENTS_POST))
         self.open_button.setEnabled(row is not None)
+        self.open_button.setText("باز کردن" if row is None or row.status == DocStatus.DRAFT else "مشاهده")
+        self.print_button.setEnabled(row is not None)
         draft = row is not None and row.status == DocStatus.DRAFT
         self.post_button.setEnabled(draft)
         self.delete_button.setEnabled(draft)
@@ -537,9 +602,9 @@ class DocumentsList(QWidget):
         theme = self._ctx.themes.current
         status_color = {DocStatus.DRAFT: theme.warning, DocStatus.CANCELLED: theme.danger}
         self.table.set_rows(
-            [(r.id, (to_persian_digits(r.number), r.type_name, jalali.format_date(r.doc_date),
+            [(r.id, (r.number_text, r.type_name, jalali.format_date(r.doc_date),
                      r.warehouse + (f" ← {r.dest_warehouse}" if r.dest_warehouse else ""),
-                     r.person or "—", to_persian_digits(r.line_count), r.status_name,
+                     r.person or "—", to_persian_digits(r.line_count), _status_text(r),
                      r.created_by or "—")) for r in rows],
             muted=[r.status == DocStatus.CANCELLED for r in rows],
             highlight={(i, 6): status_color[r.status] for i, r in enumerate(rows)
@@ -573,6 +638,12 @@ class DocumentsList(QWidget):
     async def open_new(self, doc_type: DocType) -> None:
         await self.open_editor(doc_type, None)
 
+    async def open_document(self, doc_id: int) -> None:
+        await self.refresh()
+        self.table.select_id(doc_id)
+        detail = await docs.get_document(self._ctx.db, self._ctx.actor, doc_id)
+        await self.open_editor(detail.input.doc_type, detail)
+
     @asyncSlot()
     async def on_open(self) -> None:
         row = self.selected()
@@ -585,10 +656,17 @@ class DocumentsList(QWidget):
     async def on_post(self) -> None:
         if (row := self.selected()) is None:
             return
+        title = doc_title(row.doc_type, row.number)
+        if not await confirm(self, f"«{title}» ثبت نهایی شود؟\nموجودی تغییر می‌کند و سند پس از آن فقط با "
+                             "ابطال قابل برگشت است.", "ثبت نهایی"):
+            return
         try:
-            await docs.post_document(self._ctx.db, self._ctx.actor, row.id)
+            await with_stocktake_override(self._ctx, self, lambda approval: docs.post_document(
+                self._ctx.db, self._ctx.actor, row.id, approval=approval))
         except ServiceError as exc:
             show_error(self, exc.message)
+        else:
+            show_info(self, f"«{title}» ثبت نهایی شد و موجودی به‌روز شد.")
         await self.refresh()
 
     @asyncSlot()
@@ -601,6 +679,9 @@ class DocumentsList(QWidget):
     @asyncSlot()
     async def on_delete(self) -> None:
         if (row := self.selected()) is None:
+            return
+        if not await confirm(self, f"پیش‌نویس «{doc_title(row.doc_type, row.number)}» حذف شود؟",
+                             "حذف پیش‌نویس", danger=True):
             return
         try:
             await docs.delete_draft(self._ctx.db, self._ctx.actor, row.id)
@@ -629,6 +710,7 @@ class LoansList(QWidget):
         card = Card()
         card.body.setContentsMargins(0, 0, 0, 0)
         self.table = DataTable(LOAN_COLUMNS)
+        self.table.set_empty_text("امانی بازی وجود ندارد؛ همه اقلام امانی برگشته‌اند.")
         self.table.itemSelectionChanged.connect(
             lambda: self.return_button.setEnabled(self.table.selected_id() is not None))
         card.body.addWidget(self.table)
@@ -642,7 +724,7 @@ class LoansList(QWidget):
         warn = self._ctx.themes.current.warning
         self.table.set_rows(
             [((r.document_id, r.item_id),
-              (to_persian_digits(r.number), jalali.format_date(r.doc_date), r.person,
+              (docs.number_text(DocType.LOAN_OUT, r.number), jalali.format_date(r.doc_date), r.person,
                r.item_name, f"{format_qty(r.outstanding)} {r.base_unit}",
                to_persian_digits(r.days_out))) for r in rows],
             highlight={(i, 5): warn for i, r in enumerate(rows) if r.days_out > 30},

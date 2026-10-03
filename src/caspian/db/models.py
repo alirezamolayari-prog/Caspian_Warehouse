@@ -125,6 +125,8 @@ class Unit(IdMixin, Base):
 
     name: Mapped[str] = mapped_column(String(50), unique=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Counted things (عدد، کارتن…) can't be 2.5; measured ones (متر، کیلوگرم…) can.
+    allow_decimal: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
 
 
 class Item(IdMixin, TimestampMixin, CreatedByMixin, VersionMixin, Base):
@@ -236,6 +238,10 @@ class Document(IdMixin, TimestampMixin, CreatedByMixin, VersionMixin, Base):
     description: Mapped[str] = mapped_column(Text, default="")
     posted_at: Mapped[dt.datetime | None]
     posted_by_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("users.id"))
+    # Paper/PDF copies issued; from the second one the sheet is stamped as a duplicate.
+    print_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    last_printed_at: Mapped[dt.datetime | None]
+    last_printed_by_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("users.id"))
 
     lines: Mapped[list["DocumentLine"]] = relationship(
         back_populates="document",
@@ -305,6 +311,7 @@ class ImportSource(enum.StrEnum):
     WORD = "WORD"
     SCAN = "SCAN"
     TEXT = "TEXT"  # typed text parsed by the AI assistant
+    MANUAL = "MANUAL"  # rows typed into the manual-entry grid
 
 
 class BatchStatus(enum.StrEnum):
@@ -343,7 +350,9 @@ class ImportBatch(IdMixin, TimestampMixin, CreatedByMixin, Base):
     person_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("persons.id"))
     applied_at: Mapped[dt.datetime | None]
     applied_by_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("users.id"))
-    result_document_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("documents.id"))
+    # Deleting that draft re-opens the batch (see documents.delete_draft).
+    result_document_id: Mapped[int | None] = mapped_column(
+        BigIntPK, ForeignKey("documents.id", ondelete="SET NULL"))
 
     lines: Mapped[list["ImportLine"]] = relationship(
         back_populates="batch", cascade="all, delete-orphan", order_by="ImportLine.row_no",
@@ -440,6 +449,11 @@ class ProviderKind(enum.StrEnum):
     GROQ = "GROQ"
     HUGGINGFACE = "HUGGINGFACE"
     OLLAMA = "OLLAMA"  # local models (GGUF via Ollama / llama.cpp server)
+    GEMINI = "GEMINI"
+    OPENROUTER = "OPENROUTER"
+    CEREBRAS = "CEREBRAS"
+    MISTRAL = "MISTRAL"
+    CUSTOM = "CUSTOM"  # any other OpenAI-compatible server (key optional)
 
 
 class AIProvider(IdMixin, TimestampMixin, CreatedByMixin, Base):

@@ -81,6 +81,17 @@ def _validate_username(username: str) -> str:
     return username
 
 
+TAKEN = "این نام کاربری قبلاً ثبت شده است."
+
+
+async def username_taken(db: Database, username: str, except_user_id: int | None = None) -> bool:
+    stmt = select(User.id).where(User.username == normalize_username(username))
+    if except_user_id is not None:
+        stmt = stmt.where(User.id != except_user_id)
+    async with db.session() as s:
+        return await s.scalar(stmt) is not None
+
+
 async def create_user(
     db: Database, actor: Actor, username: str, full_name: str, password: str, role_code: str,
     approval: Approval | None = None,
@@ -89,15 +100,19 @@ async def create_user(
 
     Creating an admin is a role grant, so it needs a CHANGE_ROLE approval.
     """
+    actor.require_human("تعریف کاربر")
     actor.require(Perm.USERS_MANAGE)
     username = _validate_username(username)
+    # A taken name is reported first (before password rules), and never burns an approval.
+    if await username_taken(db, username):
+        raise ValidationError(TAKEN)
     if problem := security.password_problem(password, username):
         raise ValidationError(problem)
     approver_id = consume(approval, ProtectedAction.CHANGE_ROLE, actor) if role_code == "admin" \
         else None
     async with db.session(actor.user_id) as s:
         if await s.scalar(select(User.id).where(User.username == username)):
-            raise ValidationError("این نام کاربری قبلاً ثبت شده است.")
+            raise ValidationError(TAKEN)
         role = await _get_role(s, role_code)
         user = User(
             username=username, full_name=full_name.strip(),
@@ -120,7 +135,23 @@ async def update_user(db: Database, actor: Actor, user_id: int, full_name: str) 
         audit.record(s, actor, "user.updated", "user", user.id, {"full_name": user.full_name})
 
 
+async def rename_user(db: Database, actor: Actor, user_id: int, new_username: str) -> None:
+    """Change the login name (unique, audited). The password and everything else stay."""
+    actor.require_human("تغییر نام کاربری")
+    actor.require(Perm.USERS_MANAGE)
+    username = _validate_username(new_username)
+    async with db.session(actor.user_id) as s:
+        user = await _get_user(s, user_id)
+        if user.username == username:
+            return
+        if await s.scalar(select(User.id).where(User.username == username, User.id != user_id)):
+            raise ValidationError(TAKEN)
+        old, user.username = user.username, username
+        audit.record(s, actor, "user.renamed", "user", user.id, {"from": old, "to": username})
+
+
 async def set_active(db: Database, actor: Actor, user_id: int, active: bool) -> None:
+    actor.require_human("فعال/غیرفعال کردن کاربر")
     actor.require(Perm.USERS_MANAGE)
     if not active and user_id == actor.user_id:
         raise ValidationError("نمی‌توانید حساب خودتان را غیرفعال کنید.")
@@ -135,6 +166,7 @@ async def set_active(db: Database, actor: Actor, user_id: int, active: bool) -> 
 
 async def reset_password(db: Database, actor: Actor, user_id: int, new_password: str) -> None:
     """Admin sets a temporary password; the user must change it at next login."""
+    actor.require_human("بازنشانی رمز")
     actor.require(Perm.USERS_MANAGE)
     async with db.session(actor.user_id) as s:
         user = await _get_user(s, user_id)
@@ -150,6 +182,7 @@ async def reset_password(db: Database, actor: Actor, user_id: int, new_password:
 async def change_role(
     db: Database, actor: Actor, user_id: int, role_code: str, approval: Approval | None
 ) -> None:
+    actor.require_human("تغییر نقش")
     actor.require(Perm.USERS_MANAGE)
     approver_id = consume(approval, ProtectedAction.CHANGE_ROLE, actor)
     async with db.session(actor.user_id) as s:

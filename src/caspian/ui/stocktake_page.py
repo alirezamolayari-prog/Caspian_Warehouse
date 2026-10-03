@@ -6,7 +6,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
-    QComboBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -23,16 +22,17 @@ from caspian.core import jalali
 from caspian.core.numbers import format_qty
 from caspian.core.permissions import Perm
 from caspian.core.text import to_persian_digits
+from caspian.core.text import to_persian_digits as fa  # display-only digits (#19)
 from caspian.db.models import StocktakeStatus
 from caspian.services import master
 from caspian.services import stocktake as st
 from caspian.services.errors import ServiceError, ValidationError
 from caspian.services.stocktake import CountSheet, DiscrepancyReport, StocktakeRow
 from caspian.ui.app_context import AppContext, exec_dialog
-from caspian.ui.dialogs import FormDialog, ltr_field
-from caspian.ui.messages import show_error, show_info
+from caspian.ui.dialogs import Cancelled, FormDialog, ltr_field
+from caspian.ui.messages import confirm, show_error, show_info
 from caspian.ui.printing import output_menu, report_html
-from caspian.ui.widgets import Card, DataTable, QtyEdit
+from caspian.ui.widgets import Card, DataTable, QtyEdit, SearchableCombo
 
 LIST_COLUMNS = ("شماره", "انبار", "محدوده", "عنوان", "شروع", "وضعیت", "پیشرفت شمارش")
 
@@ -44,7 +44,7 @@ def sheet_html(sheet: CountSheet) -> str:
         f"برگه شمارش انبارگردانی شماره {to_persian_digits(row.number)}",
         [f"انبار: {row.warehouse} — محدوده: {row.category}", row.title],
         ("ردیف", "کد", "نام کالا", "واحد", "مقدار شمارش‌شده", "توضیح"),
-        [(to_persian_digits(ln.line_no), ln.code, ln.name, ln.unit, "", "") for ln in sheet.lines],
+        [(to_persian_digits(ln.line_no), fa(ln.code), ln.name, ln.unit, "", "") for ln in sheet.lines],
         widths=(6, 12, 40, 10, 16, 16), blank_columns=(4, 5),
         footer="نام و امضای شمارشگر: ........................................ &nbsp;&nbsp;&nbsp; "
                "نام و امضای ناظر: ........................................",
@@ -59,7 +59,7 @@ def report_to_html(report: DiscrepancyReport, only_differences: bool) -> str:
         [f"انبار: {row.warehouse} — محدوده: {row.category}",
          f"وضعیت: {row.status_name} — تعداد مغایرت: {to_persian_digits(len(report.differences))}"],
         ("کد", "نام کالا", "واحد", "موجودی سیستم", "شمارش", "مغایرت", "توضیح"),
-        [(ln.code, ln.name, ln.unit, format_qty(ln.system_qty), format_qty(ln.counted_qty),
+        [(fa(ln.code), ln.name, ln.unit, format_qty(ln.system_qty), format_qty(ln.counted_qty),
           format_qty(ln.difference), ln.note) for ln in lines],
         widths=(10, 34, 8, 12, 12, 12, 12),
     )
@@ -68,16 +68,16 @@ def report_to_html(report: DiscrepancyReport, only_differences: bool) -> str:
 class NewStocktakeDialog(FormDialog):
     def __init__(self, ctx: AppContext, warehouses, categories, parent=None) -> None:
         super().__init__("انبارگردانی جدید",
-                         "موجودی سیستم در همین لحظه ثبت (فریز) می‌شود. در طول شمارش، تا حد امکان "
-                         "ورود و خروج کالا از این انبار انجام نشود.",
+                         "موجودی سیستم در همین لحظه ثبت (فریز) می‌شود. تا تأیید یا لغو انبارگردانی، "
+                         "ثبت و ابطال اسناد کالاهای آن در این انبار قفل است (مگر با تأیید مدیر).",
                          submit_text="شروع انبارگردانی", parent=parent)
         self._ctx = ctx
         self.created_id: int | None = None
-        self.warehouse = QComboBox()
+        self.warehouse = SearchableCombo()
         for w in warehouses:
             self.warehouse.addItem(w.name, w.id)
         self.add_row("انبار:", self.warehouse)
-        self.category = QComboBox()
+        self.category = SearchableCombo()
         self.category.addItem("همه کالاها", None)
         for c in categories:
             self.category.addItem(c.name, c.id)
@@ -124,7 +124,7 @@ class CountDialog(FormDialog):
         self.table.setColumnWidth(5, 180)
         for r, ln in enumerate(sheet.lines):
             self._row_of[ln.id] = r
-            for c, value in enumerate((to_persian_digits(ln.line_no), ln.code, ln.name, ln.unit)):
+            for c, value in enumerate((to_persian_digits(ln.line_no), fa(ln.code), ln.name, ln.unit)):
                 self.table.setItem(r, c, QTableWidgetItem(value))
             qty = QtyEdit(ln.counted_qty)
             qty.textChanged.connect(lambda _t: self._update_progress())
@@ -146,7 +146,8 @@ class CountDialog(FormDialog):
         self.save_button.clicked.connect(self.on_save)
         self.print_button = QPushButton("برگه شمارش")
         self.print_button.setMenu(output_menu(self, self._sheet_html,
-                                              lambda: f"count-sheet-{sheet.row.number}.pdf"))
+                                              lambda: f"count-sheet-{sheet.row.number}.pdf",
+                                              ctx.settings))
         self.buttons.insertWidget(1, self.print_button)
         self.buttons.insertWidget(self.buttons.count() - 1, self.save_button)
         self._inputs += [self.scan, self.save_button]
@@ -168,13 +169,15 @@ class CountDialog(FormDialog):
     async def on_scan(self) -> None:
         text = self.scan.text()
         self.scan.clear()
-        line_id = await st.find_line(self._ctx.db, self._sheet.row.id, text)
-        if line_id is None:
+        hit = await st.scan(self._ctx.db, self._sheet.row.id, text)
+        if hit is None:
             self.show_status(f"«{text.strip()}» در فهرست این انبارگردانی نیست.")
             return
-        self.show_status("")
+        line_id = hit.line_id
         edit = self.qty_edits[line_id]
-        edit.set_value((edit.value() or Decimal(0)) + 1)
+        edit.set_value((edit.value() or Decimal(0)) + hit.factor)  # a carton counts all its pieces
+        self.show_status(f"{hit.unit_name}: +{format_qty(hit.factor)}" if hit.factor != 1 else "",
+                         is_error=False)
         self.table.selectRow(self._row_of[line_id])
         self.table.scrollToItem(self.table.item(self._row_of[line_id], 0))
         self.scan.setFocus()
@@ -209,6 +212,8 @@ class CountDialog(FormDialog):
 
 
 class ReportDialog(FormDialog):
+    confirm_discard = False  # nothing to lose on closing
+
     def __init__(self, ctx: AppContext, report: DiscrepancyReport, parent=None) -> None:
         row = report.row
         super().__init__(f"گزارش مغایرت انبارگردانی شماره {to_persian_digits(row.number)}",
@@ -235,7 +240,7 @@ class ReportDialog(FormDialog):
         self.body.addWidget(self.summary)
         self.pdf_button = QPushButton("چاپ / PDF")
         self.pdf_button.setMenu(output_menu(
-            self, self._html, lambda: f"stocktake-{report.row.number}.pdf"))
+            self, self._html, lambda: f"stocktake-{report.row.number}.pdf", ctx.settings))
         self.buttons.insertWidget(1, self.pdf_button)
         can_approve = (row.status == StocktakeStatus.COUNTED
                        and ctx.actor.can(Perm.STOCKTAKE_APPROVE) and ctx.actor.can(Perm.DOCUMENTS_POST))
@@ -246,7 +251,7 @@ class ReportDialog(FormDialog):
         lines = self._report.differences if self.only_diff.isChecked() else self._report.lines
         theme = self._ctx.themes.current
         self.table.set_rows(
-            [(ln.line_no, (ln.code, ln.name, ln.unit, format_qty(ln.system_qty),
+            [(ln.line_no, (fa(ln.code), ln.name, ln.unit, format_qty(ln.system_qty),
                            format_qty(ln.counted_qty), format_qty(ln.difference), ln.note))
              for ln in lines],
             highlight={(i, 5): theme.danger if ln.difference < 0 else theme.success
@@ -261,6 +266,11 @@ class ReportDialog(FormDialog):
         return report_to_html(self._report, self.only_diff.isChecked())
 
     async def submit(self) -> None:
+        n = len(self._report.differences)
+        text = (f"اصلاحیه موجودی برای {to_persian_digits(n)} مغایرت ثبت نهایی شود؟ موجودی سیستم با شمارش "
+                "یکسان می‌شود." if n else "مغایرتی نیست؛ انبارگردانی بدون سند اصلاحی بسته شود؟")
+        if not await confirm(self, text, "تأیید و ثبت اصلاحیه"):
+            raise Cancelled
         self.document_id = await st.approve(self._ctx.db, self._ctx.actor, self._report.row.id)
 
 
@@ -279,7 +289,8 @@ class StocktakePage(QWidget):
         toolbar.addWidget(intro, 1)
         self.count_button = QPushButton("شمارش")
         self.print_button = QPushButton("برگه شمارش")
-        self.print_button.setMenu(output_menu(self, self._selected_sheet_html, self._sheet_name))
+        self.print_button.setMenu(output_menu(self, self._selected_sheet_html, self._sheet_name,
+                                              ctx.settings))
         self.report_button = QPushButton("گزارش مغایرت")
         self.cancel_button = QPushButton("لغو")
         self.new_button = QPushButton("انبارگردانی جدید")
@@ -294,6 +305,7 @@ class StocktakePage(QWidget):
         card = Card()
         card.body.setContentsMargins(0, 0, 0, 0)
         self.table = DataTable(LIST_COLUMNS)
+        self.table.set_empty_text("هنوز انبارگردانی‌ای انجام نشده. «انبارگردانی جدید» را بزنید.")
         self.table.itemSelectionChanged.connect(self._update_buttons)
         self.table.doubleClicked.connect(lambda _: self.on_count())
         card.body.addWidget(self.table)
@@ -383,6 +395,10 @@ class StocktakePage(QWidget):
     @asyncSlot()
     async def on_cancel(self) -> None:
         if (row := self.selected()) is None:
+            return
+        if not await confirm(self, f"انبارگردانی شماره {to_persian_digits(row.number)} لغو شود؟ شمارش‌های "
+                             "ثبت‌شده کنار گذاشته می‌شوند و موجودی تغییری نمی‌کند.", "لغو انبارگردانی",
+                             danger=True):
             return
         try:
             await st.cancel(self._ctx.db, self._ctx.actor, row.id)

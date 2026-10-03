@@ -72,3 +72,18 @@ async def test_persons(db, admin):
                                  expected_version=version)
     await master.set_person_active(db, admin, pid, False)
     assert await master.search_persons(db, "آلفا") == []
+
+
+async def test_phone_is_validated_and_normalized(db, admin):
+    """«abc-12» was accepted (#14)."""
+    import pytest
+
+    from caspian.db.models import PersonKind
+    from caspian.services.errors import ValidationError
+
+    pid = await master.save_person(db, admin, "علی", PersonKind.EMPLOYEE, phone="۰۹۱۲-۳۴۵ ۶۷۸۹")
+    assert [p.phone for p in await master.search_persons(db) if p.id == pid] == ["0912-345 6789"]
+    await master.save_person(db, admin, "شرکت", PersonKind.SUPPLIER, phone="+98 (21) 8888-0000")
+    for bad in ("abc-12", "12", "0912+3333", "09-12a"):
+        with pytest.raises(ValidationError, match="تلفن"):
+            await master.save_person(db, admin, "بد", PersonKind.OTHER, phone=bad)

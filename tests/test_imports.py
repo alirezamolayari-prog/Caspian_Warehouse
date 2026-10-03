@@ -212,3 +212,71 @@ async def test_discard(db, admin, catalog):
     assert await imports.list_batches(db, admin) == []
     with pytest.raises(ValidationError):
         await imports.update_line(db, admin, (await _lines(db, admin, batch))[0].id, name="y")
+
+
+async def test_deleting_import_draft_reopens_batch(db, admin, catalog):
+    """Deleting the draft an import created failed with FK error 1451 (#3). Now the batch goes
+    back to OPEN and re-applying it reuses the items created the first time (no duplicates)."""
+    rows = [RawRow(code="1001", qty=Decimal(2)), RawRow(barcode="777000", name="اره عمود بر", qty=Decimal(3))]
+    batch = await imports.create_batch(
+        db, admin, ImportKind.STOCK, ImportSource.SCAN, rows, "اسکن", DocType.RECEIPT, catalog["wh"])
+    first = await imports.apply_batch(db, admin, batch)
+    assert first.created_items == 1
+
+    await docs.delete_draft(db, admin, first.document_id)
+
+    detail = await imports.get_batch(db, admin, batch)
+    assert detail.row.status is BatchStatus.OPEN and detail.result_document_id is None
+    assert [ln.status for ln in detail.lines] == [LineStatus.EXISTING_MATCH] * 2
+    second = await imports.apply_batch(db, admin, batch)
+    assert second.created_items == 0
+    redo = await docs.get_document(db, admin, second.document_id)
+    assert redo.status is DocStatus.DRAFT and len(redo.lines) == 2
+    assert len(await items.search_items(db, admin, "اره عمود بر")) == 1
+
+
+# ----- manual entry and similar-item suggestions (#13, #14) -----
+
+
+async def test_manual_rows_become_a_reviewable_batch(db, admin, catalog):
+    batch = await imports.create_batch(
+        db, admin, ImportKind.STOCK, ImportSource.MANUAL,
+        [RawRow(code="1001", qty=Decimal(2)), RawRow(name="قفسه فلزی", qty=Decimal(1))],
+        "ورود دستی", DocType.RECEIPT, catalog["wh"])
+    detail = await imports.get_batch(db, admin, batch)
+    assert detail.row.source is ImportSource.MANUAL
+    assert imports.SOURCE_NAMES[ImportSource.MANUAL] == "ورود دستی"
+    assert [ln.status for ln in detail.lines] == [LineStatus.EXISTING_MATCH, LineStatus.NEW]
+
+
+async def test_matched_rows_show_the_item_code_and_alternatives(db, admin, catalog):
+    batch = await imports.create_batch(
+        db, admin, ImportKind.STOCK, ImportSource.EXCEL,
+        [RawRow(name="پیچ ام دی اف ۴ در ۴۰ میلی", qty=Decimal(100)),
+         RawRow(barcode="626111", qty=Decimal(1))],
+        "فاکتور", DocType.RECEIPT, catalog["wh"])
+    approx, by_barcode = await _lines(db, admin, batch)
+    assert approx.status is LineStatus.EXISTING_MATCH and approx.code == ""
+    assert approx.match_code == "1002"  # the code column is no longer empty for matched rows
+    assert approx.candidates and approx.candidates[0][0] == catalog["screw"]  # alternatives kept
+    assert by_barcode.match_code == "1001"
+
+
+async def test_new_variant_of_a_similar_item(db, admin, catalog):
+    """«نسخه جدید از همین کالا»: a new item named after the similar one, name editable (#14)."""
+    batch = await imports.create_batch(
+        db, admin, ImportKind.STOCK, ImportSource.EXCEL,
+        [RawRow(name="دریل شارژی بوش مدل ۲", qty=Decimal(1))], "فاکتور", DocType.RECEIPT, catalog["wh"])
+    [line] = await _lines(db, admin, batch)
+    # Matched (approximately) or in conflict: either way the similar item is offered.
+    assert line.status in (LineStatus.EXISTING_MATCH, LineStatus.CONFLICT)
+    assert line.candidates[0][0] == catalog["drill"]
+    assert imports.variant_name("دریل شارژی بوش") == "دریل شارژی بوش - "
+    await imports.create_variant(db, admin, line.id, "دریل شارژی بوش - مدل ۲")
+    [line] = await _lines(db, admin, batch)
+    assert line.resolution is Resolution.CREATE and line.name == "دریل شارژی بوش - مدل ۲"
+    result = await imports.apply_batch(db, admin, batch)
+    assert result.created_items == 1
+    assert [r.name for r in await items.search_items(db, admin, "مدل ۲")] == ["دریل شارژی بوش - مدل ۲"]
+    with pytest.raises(ValidationError):
+        await imports.create_variant(db, admin, line.id, "   ")

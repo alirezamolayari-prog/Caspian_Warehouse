@@ -10,6 +10,10 @@ class ValidationError(ServiceError):
     pass
 
 
+class StocktakeFrozen(ValidationError):
+    """Stock of items under an open stocktake can't change (an admin may override with a PIN)."""
+
+
 class AuthenticationError(ServiceError):
     pass
 

@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from caspian.core.permissions import Perm
-from caspian.core.text import normalize, to_ascii_digits
+from caspian.core.text import normalize, to_ascii_digits, to_persian_digits
 from caspian.db.database import Database
 from caspian.db.models import (
     BatchStatus,
@@ -43,6 +43,7 @@ from caspian.services.protected import Approval, ProtectedAction, consume
 
 AUTO_MATCH = 90  # fuzzy score accepted without asking (stock lines only)
 SUGGEST = 70  # below this a name is treated as a new item
+AMBIGUOUS_GAP = 2  # top two candidates this close: ask, don't pick
 DEFAULT_UNIT = "عدد"
 
 STATUS_NAMES = {
@@ -62,6 +63,7 @@ KIND_NAMES = {ImportKind.ITEMS: "تعریف کالا", ImportKind.STOCK: "اقل
 SOURCE_NAMES = {
     ImportSource.EXCEL: "اکسل", ImportSource.CSV: "CSV", ImportSource.WORD: "Word",
     ImportSource.SCAN: "اسکن بارکد", ImportSource.TEXT: "متن (دستیار)",
+    ImportSource.MANUAL: "ورود دستی",
 }
 
 
@@ -162,12 +164,16 @@ def evaluate(index: ItemIndex, kind: ImportKind, line: ImportLine,
         if found:
             best_id, best = found[0]
             second = found[1][1] if len(found) > 1 else 0
-            if best >= 99 and kind == ImportKind.STOCK:
-                return Evaluation(LineStatus.EXISTING_MATCH, "", best_id, best)
+            alternatives = [[i, sc] for i, sc in found]
+            # Two items scoring (almost) the same — e.g. two active «جارو» — must be chosen by a person,
+            # never guessed (QA round 1, #3).
+            ambiguous = second >= best - AMBIGUOUS_GAP
+            if best >= 99 and kind == ImportKind.STOCK and not ambiguous:
+                return Evaluation(LineStatus.EXISTING_MATCH, "", best_id, best, alternatives)
             if kind == ImportKind.STOCK and best >= AUTO_MATCH and best - second >= 6:
                 return Evaluation(LineStatus.EXISTING_MATCH,
                                   f"تطبیق تقریبی با «{index.display[best_id]}» — بررسی کنید.",
-                                  best_id, best)
+                                  best_id, best, alternatives)
             what = "احتمالاً همان" if kind == ImportKind.ITEMS else "شبیه"
             return Evaluation(LineStatus.CONFLICT,
                               f"{what} «{index.display[best_id]}» است؟ کالای موجود را انتخاب "
@@ -252,6 +258,7 @@ class LineRow:
     candidates: list[tuple[int, str, int]]  # (item_id, name, score)
     resolution: Resolution | None
     allowed: list[Resolution]
+    match_code: str = ""  # code of the matched item (the file often has none)
 
 
 @dataclass(frozen=True)
@@ -308,8 +315,10 @@ async def get_batch(db: Database, actor: Actor, batch_id: int) -> BatchDetail:
         ids = {ln.match_item_id for ln in batch.lines if ln.match_item_id}
         for ln in batch.lines:
             ids.update(c[0] for c in ln.candidates or [])
-        names = dict((await s.execute(select(Item.id, Item.name).where(Item.id.in_(ids)))).all()) \
-            if ids else {}
+        found = (await s.execute(select(Item.id, Item.name, Item.code).where(Item.id.in_(ids)))).all() \
+            if ids else []
+        names = {i: n for i, n, _c in found}
+        codes = {i: c for i, _n, c in found}
         lines = [
             LineRow(
                 ln.id, ln.row_no, ln.status, ln.code, ln.name, ln.barcode, ln.qty, ln.unit_name,
@@ -317,6 +326,7 @@ async def get_batch(db: Database, actor: Actor, batch_id: int) -> BatchDetail:
                 names.get(ln.match_item_id, "") if ln.match_item_id else "",
                 [(c[0], names.get(c[0], "?"), c[1]) for c in ln.candidates or []],
                 ln.resolution, allowed_resolutions(batch.kind, ln),
+                codes.get(ln.match_item_id, "") if ln.match_item_id else "",
             )
             for ln in batch.lines
         ]
@@ -410,13 +420,56 @@ async def set_resolution(db: Database, actor: Actor, line_id: int, resolution: R
         line.resolution = resolution
 
 
+def variant_name(similar_name: str) -> str:
+    """Starting text for «نسخه جدید از همین کالا»: the similar item's name, ready for the brand
+    or size to be appended (e.g. «مایع ظرفشویی ۱ لیتری - ۲ لیتری برند X»)."""
+    return f"{similar_name} - "
+
+
+async def create_variant(db: Database, actor: Actor, line_id: int, name: str) -> None:
+    """Resolve a row as a NEW item (a variant of a similar one) under the name the user edited."""
+    actor.require(Perm.IMPORT_RUN)
+    name = " ".join(name.split())[:255]
+    if not name:
+        raise ValidationError("نام کالای جدید را بنویسید.")
+    async with db.session(actor.user_id) as s:
+        line = await s.get(ImportLine, line_id)
+        if line is None:
+            raise NotFound("ردیف پیدا نشد.")
+        batch = await _load(s, line.batch_id)
+        _require_open(batch)
+        line.name = name
+        await _evaluate_batch(s, batch)
+        if Resolution.CREATE not in allowed_resolutions(batch.kind, line):
+            raise ValidationError(line.message or "برای این ردیف نمی‌توان کالای جدید ساخت.")
+        line.resolution = Resolution.CREATE
+
+
 async def discard_batch(db: Database, actor: Actor, batch_id: int) -> None:
+    actor.require_human("حذف پیش‌نویس ورود اطلاعات")
     actor.require(Perm.IMPORT_RUN)
     async with db.session(actor.user_id) as s:
         batch = await _load(s, batch_id)
         _require_open(batch)
         batch.status = BatchStatus.DISCARDED
         audit.record(s, actor, "import.batch_discarded", "import_batch", batch.id)
+
+
+async def reopen_for_deleted_document(s: AsyncSession, actor: Actor, document_id: int) -> None:
+    """The draft a batch produced is being deleted: put the batch back in review.
+
+    Lines are re-matched, so items created by the first apply are now EXISTING_MATCH and a
+    second apply does not create them again.
+    """
+    batches = (await s.scalars(select(ImportBatch)
+                               .where(ImportBatch.result_document_id == document_id))).all()
+    for batch in batches:
+        batch.result_document_id = None
+        batch.status = BatchStatus.OPEN
+        batch.applied_at = batch.applied_by_id = None
+        await _evaluate_batch(s, batch)
+        audit.record(s, actor, "import.batch_reopened", "import_batch", batch.id,
+                     {"deleted_document_id": document_id})
 
 
 def needs_overwrite_approval(detail: BatchDetail) -> bool:
@@ -521,7 +574,7 @@ async def apply_batch(db: Database, actor: Actor, batch_id: int,
                 allowed = {item.base_unit_id, *(u.unit_id for u in item.units)}
                 doc_lines.append(documents.LineInput(
                     item.id, unit_id if unit_id in allowed else item.base_unit_id, ln.qty,
-                    ln.unit_price, f"ورود اطلاعات — ردیف {ln.row_no}"))
+                    ln.unit_price, f"ورود اطلاعات — ردیف {to_persian_digits(ln.row_no)}"))
             if not doc_lines:
                 raise ValidationError("همه ردیف‌ها نادیده گرفته شده‌اند؛ سندی ساخته نمی‌شود.")
             doc = await documents.create_document_in(s, actor, documents.DocumentInput(

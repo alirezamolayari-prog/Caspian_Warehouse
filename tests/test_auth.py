@@ -257,3 +257,55 @@ async def test_created_by_is_stamped_automatically(db):
     async with db.session() as s:
         item = await s.scalar(select(Item).where(Item.code == "C1"))
         assert item.created_by_id == admin.user_id
+
+
+# ----- user administration (#15) -----
+
+
+async def test_rename_username(db):
+    admin = await _admin(db)
+    row = await users.create_user(db, admin, "reza", "رضا", "Reza#2026", "storekeeper")
+    await users.create_user(db, admin, "ali", "", "Ali#2026x", "viewer")
+    await users.rename_user(db, admin, row.id, " Reza.K ")
+    assert (await auth.login(db, "reza.k", "Reza#2026")).actor.user_id == row.id
+    with pytest.raises(AuthenticationError):
+        await auth.login(db, "reza", "Reza#2026")
+    with pytest.raises(ValidationError, match="قبلاً ثبت"):
+        await users.rename_user(db, admin, row.id, "ALI")
+    with pytest.raises(ValidationError):
+        await users.rename_user(db, admin, row.id, "x")
+    async with db.session() as s:
+        entry = await s.scalar(select(AuditLog).where(AuditLog.action == "user.renamed"))
+    assert entry.details == {"from": "reza", "to": "reza.k"}
+    viewer = (await auth.login(db, "ali", "Ali#2026x")).actor
+    with pytest.raises(PermissionDenied):
+        await users.rename_user(db, viewer, row.id, "rk")
+
+
+async def test_duplicate_username_is_reported_before_password_rules(db):
+    admin = await _admin(db)
+    await users.create_user(db, admin, "reza", "", "Reza#2026", "viewer")
+    with pytest.raises(ValidationError, match="قبلاً ثبت"):
+        await users.create_user(db, admin, "Reza", "", "123", "viewer")  # weak password too
+    assert await users.username_taken(db, " REZA ") and not await users.username_taken(db, "sara")
+    # A duplicate must not burn the admin's approval for creating an administrator.
+    approval = await protected.approve(db, admin, ProtectedAction.CHANGE_ROLE, "admin", PIN)
+    with pytest.raises(ValidationError, match="قبلاً ثبت"):
+        await users.create_user(db, admin, "reza", "", "Boss#2026", "admin", approval)
+    boss = await users.create_user(db, admin, "boss", "", "Boss#2026", "admin", approval)
+    assert boss.role_code == "admin"
+
+
+async def test_last_active_admin_is_protected(db):
+    from caspian.core.permissions import Perm
+
+    admin = await _admin(db)
+    # An account with user-management rights that is not itself an admin (e.g. a custom role).
+    helper = Actor(None, "helper", "helper", "custom", frozenset({Perm.USERS_MANAGE.value}))
+    with pytest.raises(ValidationError, match="حداقل یک مدیر"):
+        await users.set_active(db, helper, admin.user_id, False)
+    approval = await protected.approve(db, admin, ProtectedAction.CHANGE_ROLE, "admin", PIN)
+    boss = await users.create_user(db, admin, "boss", "", "Boss#2026", "admin", approval)
+    await users.set_active(db, helper, admin.user_id, False)  # another admin is still active
+    with pytest.raises(ValidationError, match="حداقل یک مدیر"):
+        await users.set_active(db, helper, boss.id, False)

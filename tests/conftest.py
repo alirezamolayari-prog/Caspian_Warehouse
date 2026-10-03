@@ -102,3 +102,23 @@ def _delete_widgets(request):
 def _isolated_settings(tmp_path, monkeypatch):
     """Tests must never overwrite the developer's real settings file."""
     monkeypatch.setattr("caspian.core.settings.settings_path", lambda: tmp_path / "settings.json")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_logs(tmp_path, monkeypatch):
+    """Tests must not write into the user's real log folder (e.g. the MCP audit log)."""
+    from caspian import mcp_server
+
+    logs = tmp_path / "Logs"
+    monkeypatch.setattr("caspian.core.settings.log_dir", lambda: logs)
+    monkeypatch.setattr(mcp_server, "log_dir", lambda: logs)
+    if mcp_server._audit_log is not None:
+        for handler in list(mcp_server._audit_log.handlers):
+            mcp_server._audit_log.removeHandler(handler)
+            handler.close()
+    monkeypatch.setattr(mcp_server, "_audit_log", None)
+    yield logs
+    if mcp_server._audit_log is not None:
+        for handler in list(mcp_server._audit_log.handlers):
+            mcp_server._audit_log.removeHandler(handler)
+            handler.close()

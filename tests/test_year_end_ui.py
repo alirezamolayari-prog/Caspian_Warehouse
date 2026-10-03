@@ -60,8 +60,7 @@ async def test_reports_can_read_closed_year_archive(qtbot, themes, db, admin, tm
     assert page.year.count() == 2
     page.year.setCurrentIndex(1)
     assert not page.archive_note.isHidden()
-    page.cardex_search.setText("A")
-    await page.on_cardex_search()
+    await page.on_cardex_lookup("A")
     await wait_until(lambda: page.cardex.report is not None)
     # In the archive the item's history is the original 1404 receipt, not the opening document.
     assert any(row[1] == "رسید ورود" for row in page.cardex.report.rows)

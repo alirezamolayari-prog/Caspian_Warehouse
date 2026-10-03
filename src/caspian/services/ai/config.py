@@ -23,8 +23,19 @@ class Preset:
     stt_model: str = ""
 
 
+# Base URLs and default models checked against each provider's documentation on 2026-09-30.
+# GitHub Models was requested too, but GitHub retired it on 2026-07-30 (no API left to call).
 PRESETS: dict[ProviderKind, Preset] = {
-    ProviderKind.OPENAI: Preset("سازگار با OpenAI", "https://api.openai.com/v1", "gpt-4o-mini", True,
+    ProviderKind.GEMINI: Preset("Google Gemini (سطح رایگان)",
+                                "https://generativelanguage.googleapis.com/v1beta/openai",
+                                "gemini-3.8-flash", True),
+    ProviderKind.OPENROUTER: Preset("OpenRouter (مدل‌های رایگان :free)", "https://openrouter.ai/api/v1",
+                                    "openrouter/free", True),
+    ProviderKind.CEREBRAS: Preset("Cerebras (سطح رایگان)", "https://api.cerebras.ai/v1", "gpt-oss-120b",
+                                  True),
+    ProviderKind.MISTRAL: Preset("Mistral (سطح رایگان محدود)", "https://api.mistral.ai/v1",
+                                 "mistral-small-latest", True),
+    ProviderKind.OPENAI: Preset("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini", True,
                                 "whisper-1"),
     ProviderKind.GROQ: Preset("Groq", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile",
                               True, "whisper-large-v3"),
@@ -32,6 +43,7 @@ PRESETS: dict[ProviderKind, Preset] = {
                                      "meta-llama/Llama-3.1-8B-Instruct", True),
     ProviderKind.OLLAMA: Preset("مدل محلی (Ollama / GGUF)", "http://localhost:11434/v1",
                                 "qwen2.5:7b", False),
+    ProviderKind.CUSTOM: Preset("سفارشی (سازگار با OpenAI)", "", "", False),
 }
 
 
@@ -169,3 +181,35 @@ async def move_provider(db: Database, actor: Actor, provider_id: int, direction:
             rows[index], rows[target] = rows[target], rows[index]
         for i, p in enumerate(rows):
             p.priority = (i + 1) * 10
+
+
+# ----- what the assistant may do (shared, app_settings) -----
+
+AI_ALLOW_POST_KEY = "ai_allow_post"
+
+
+async def ai_may_post_in(s) -> bool:
+    """«اجازه ثبت نهایی سند توسط دستیار» (default on). Read inside the caller's transaction."""
+    from caspian.db.models import AppSetting
+
+    row = await s.get(AppSetting, AI_ALLOW_POST_KEY)
+    return True if row is None or row.value is None else bool(row.value)
+
+
+async def ai_may_post(db: Database) -> bool:
+    async with db.session() as s:
+        return await ai_may_post_in(s)
+
+
+async def set_ai_may_post(db: Database, actor: Actor, allowed: bool) -> None:
+    from caspian.db.models import AppSetting
+
+    actor.require(Perm.AI_CONFIGURE)
+    actor.require_human("تغییر اختیارات دستیار")
+    async with db.session(actor.user_id) as s:
+        row = await s.get(AppSetting, AI_ALLOW_POST_KEY)
+        if row is None:
+            s.add(AppSetting(key=AI_ALLOW_POST_KEY, value=allowed))
+        else:
+            row.value = allowed
+        audit.record(s, actor, "ai.allow_post_changed", details={"allowed": allowed})

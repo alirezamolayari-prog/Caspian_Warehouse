@@ -21,6 +21,7 @@ from qasync import asyncSlot
 from caspian.core.numbers import format_qty
 from caspian.core.permissions import Perm
 from caspian.core.text import to_persian_digits
+from caspian.core.text import to_persian_digits as fa  # display-only digits (#19)
 from caspian.services import items, master
 from caspian.services.errors import ServiceError, ValidationError
 from caspian.services.items import ItemDetail, ItemInput, ItemRow
@@ -28,9 +29,9 @@ from caspian.services.master import CategoryRow, UnitRow
 from caspian.services.protected import ProtectedAction
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import request_approval
-from caspian.ui.dialogs import FormDialog, ltr_field
-from caspian.ui.messages import show_error
-from caspian.ui.widgets import Card, DataTable, EmptyState, QtyEdit, SearchBox
+from caspian.ui.dialogs import Cancelled, FormDialog, ltr_field
+from caspian.ui.messages import confirm, show_error, show_info
+from caspian.ui.widgets import Card, DataTable, EmptyState, QtyEdit, SearchableCombo, SearchBox, Toast
 
 COLUMNS = ("کد", "نام کالا", "گروه", "واحد", "موجودی", "نقطه سفارش", "وضعیت")
 
@@ -91,19 +92,20 @@ def _unit_combo(units: list[UnitRow], selected: int | None = None,
 class ItemDialog(FormDialog):
     def __init__(self, ctx: AppContext, units: list[UnitRow], categories: list[CategoryRow],
                  detail: ItemDetail | None = None, suggested_code: str = "",
-                 parent: QWidget | None = None) -> None:
+                 parent: QWidget | None = None, warehouses=()) -> None:
         editing = detail is not None
         super().__init__("ویرایش کالا" if editing else "کالای جدید", submit_text="ذخیره",
                          parent=parent)
         self.setMinimumWidth(620)
         self._ctx, self._detail, self._units = ctx, detail, units
         self.saved_id: int | None = None
+        self.result_message = ""
         data = detail.input if editing else ItemInput(code=suggested_code, name="",
                                                       base_unit_id=units[0].id)
 
         self.code = self.add_row("کد کالا:", ltr_field(data.code))
         self.name = self.add_row("نام کالا:", QLineEdit(data.name))
-        self.category = QComboBox()
+        self.category = SearchableCombo()
         self.category.addItem("بدون گروه", None)
         for cat in categories:
             self.category.addItem(cat.name, cat.id)
@@ -113,6 +115,9 @@ class ItemDialog(FormDialog):
         if editing and detail.has_movements:
             self.base_unit.setToolTip("واحد اصلی کالایی که گردش دارد قابل تغییر نیست.")
         self._base_locked = editing and detail.has_movements
+        if self._base_locked:  # documents and printed forms refer to the code (#23)
+            self.code.setReadOnly(True)
+            self.code.setToolTip("کد کالایی که در سندی استفاده شده قابل تغییر نیست.")
 
         reorder = QHBoxLayout()
         self.reorder_point = QtyEdit(data.reorder_point)
@@ -145,6 +150,24 @@ class ItemDialog(FormDialog):
         self.body.addWidget(self.barcodes)
         for barcode, unit_id in data.barcodes:
             self.barcodes.add_row(barcode, unit_id)
+
+        # Opening stock is recorded as an OPENING document, never written directly (#12).
+        self.opening_qty = QtyEdit()
+        self.opening_wh = SearchableCombo()
+        self.opening_price = QtyEdit()
+        if not editing and warehouses and ctx.actor.can(Perm.DOCUMENTS_EDIT):
+            self.body.addWidget(QLabel("موجودی اولیه (اختیاری) — با سند «موجودی اول دوره» ثبت می‌شود",
+                                       objectName="CardTitle"))
+            opening = QHBoxLayout()
+            self.opening_qty.setPlaceholderText("مقدار به واحد اصلی")
+            self.opening_wh.set_items((w.name, w.id) for w in warehouses)
+            self.opening_price.setPlaceholderText("فی (اختیاری)")
+            for label, widget in (("مقدار:", self.opening_qty), ("انبار:", self.opening_wh),
+                                  ("فی:", self.opening_price)):
+                opening.addWidget(QLabel(label))
+                opening.addWidget(widget, 1)
+            self.body.addLayout(opening)
+            self._inputs += [self.opening_qty, self.opening_wh, self.opening_price]
         self.name.setFocus()
         self.set_busy(False)
 
@@ -200,10 +223,31 @@ class ItemDialog(FormDialog):
             description=self.description.toPlainText(), units=units, barcodes=barcodes,
         )
 
+    def collect_opening(self) -> items.OpeningStock | None:
+        if not self.opening_qty.text().strip():
+            return None
+        if self.opening_qty.value() is None:
+            raise ValidationError("مقدار موجودی اولیه عدد معتبر نیست.")
+        if self.opening_price.text().strip() and self.opening_price.value() is None:
+            raise ValidationError("فی موجودی اولیه عدد معتبر نیست.")
+        return items.OpeningStock(self.opening_wh.currentData(), self.opening_qty.value(),
+                                  self.opening_price.value())
+
     async def submit(self) -> None:
         data = self.collect()
+        same = await items.same_name_items(self._ctx.db, data.name,
+                                           self._detail.id if self._detail else None)
+        if same and not await confirm(
+                self, f"کالای فعال دیگری با همین نام وجود دارد (کد {'، '.join(c for c, _n in same)}). "
+                      "باز هم ذخیره شود؟", "ذخیره"):
+            raise Cancelled
         if self._detail is None:
-            self.saved_id = await items.create_item(self._ctx.db, self._ctx.actor, data)
+            created = await items.create_item_with_opening(self._ctx.db, self._ctx.actor, data,
+                                                           self.collect_opening())
+            self.saved_id = created.item_id
+            if created.document_id and not created.posted:
+                self.result_message = ("کالا ساخته شد. سند «موجودی اول دوره» به‌صورت پیش‌نویس ثبت شد؛ "
+                                       "کاربر دارای مجوز ثبت نهایی باید آن را در «اسناد انبار» ثبت کند.")
         else:
             await items.update_item(self._ctx.db, self._ctx.actor, self._detail.id,
                                     self._detail.version_id, data)
@@ -226,8 +270,8 @@ class ItemsPage(QWidget):
         self.search = SearchBox("جستجو: نام، کد یا بارکد…")
         self.search.search.connect(lambda _: self.refresh())
         toolbar.addWidget(self.search)
-        self.category = QComboBox()
-        self.category.setMinimumWidth(160)
+        self.category = SearchableCombo("گروه…")
+        self.category.setMinimumWidth(180)
         self.category.currentIndexChanged.connect(lambda _: self.refresh())
         toolbar.addWidget(self.category)
         self.low_only = QCheckBox("فقط زیر نقطه سفارش")
@@ -281,6 +325,11 @@ class ItemsPage(QWidget):
             b.setVisible(can_edit)
         self._update_buttons()
 
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        # Set from the dashboard's «زیر نقطه سفارش» card; it must not stick after leaving (#30).
+        self.low_only.setChecked(False)
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self.reload_all()
@@ -318,7 +367,7 @@ class ItemsPage(QWidget):
         theme = self._ctx.themes.current
         highlight = {(i, 4): theme.warning for i, r in enumerate(rows) if r.below_reorder}
         self.table.set_rows(
-            [(r.id, (r.code, r.name, r.category or "—", r.base_unit, format_qty(r.on_hand) or "—",
+            [(r.id, (fa(r.code), r.name, r.category or "—", r.base_unit, format_qty(r.on_hand) or "—",
                      format_qty(r.reorder_point) or "—", "فعال" if r.is_active else "غیرفعال"))
              for r in rows],
             muted=[not r.is_active for r in rows],
@@ -343,10 +392,15 @@ class ItemsPage(QWidget):
     async def _open_editor(self, detail: ItemDetail | None) -> None:
         units = await master.list_units(self._ctx.db)
         code = "" if detail else await items.next_code(self._ctx.db)
-        dialog = ItemDialog(self._ctx, units, self._categories, detail, code, self)
+        warehouses = [] if detail else await master.list_warehouses(self._ctx.db)
+        dialog = ItemDialog(self._ctx, units, self._categories, detail, code, self, warehouses)
         if await exec_dialog(dialog):
             await self.refresh()
             self.table.select_id(dialog.saved_id)
+            if dialog.result_message:
+                show_info(self, dialog.result_message)
+            else:
+                self.toast = Toast(self, f"کالای «{dialog.name.text().strip()}» ذخیره شد.")
 
     @asyncSlot()
     async def on_new(self) -> None:

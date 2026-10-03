@@ -6,14 +6,23 @@ from collections.abc import Sequence
 
 from PySide6.QtCore import QMarginsF, QSizeF, Qt
 from PySide6.QtGui import QFont, QPageLayout, QPageSize, QPdfWriter, QTextDocument, QTextOption
-from PySide6.QtWidgets import QFileDialog, QMenu, QWidget
-from qasync import asyncSlot
+from PySide6.QtWidgets import QMenu, QWidget
 
 from caspian import APP_DISPLAY_NAME
 from caspian.core import jalali
+from caspian.core.settings import Settings
 from caspian.core.text import to_persian_digits
+from caspian.ui.file_dialogs import ask_print, ask_save_path
 from caspian.ui.fonts import FONT_FAMILY
 from caspian.ui.messages import show_info
+from caspian.ui.tasks import callback
+
+
+def rtl_cells(cells: Sequence[str]) -> str:
+    """Join table cells for printing. QTextDocument lays table columns out left-to-right even
+    in an RTL document, so the first (logical) column must be emitted last to end up on the
+    right. test_printing_ui.test_qt_tables_are_still_left_to_right tells when Qt changes this."""
+    return "".join(reversed(cells))
 
 
 def report_html(title: str, meta: Sequence[str], headers: Sequence[str],
@@ -21,16 +30,16 @@ def report_html(title: str, meta: Sequence[str], headers: Sequence[str],
                 footer: str = "", blank_columns: Sequence[int] = ()) -> str:
     """A simple bordered table report. `blank_columns` are left empty for handwriting."""
     esc = html.escape
-    head = "".join(
+    head = rtl_cells([
         f'<th width="{widths[i]}%">{esc(h)}</th>' if widths else f"<th>{esc(h)}</th>"
-        for i, h in enumerate(headers))
+        for i, h in enumerate(headers)])
     body = []
     for row in rows:
         cells = []
         for i, value in enumerate(row):
             text = "&nbsp;" if i in blank_columns else esc(value)
             cells.append(f"<td>{text}</td>")
-        body.append(f"<tr>{''.join(cells)}</tr>")
+        body.append(f"<tr>{rtl_cells(cells)}</tr>")
     printed = to_persian_digits(jalali.format_date(dt.date.today()))
     meta_html = "<br>".join(esc(m) for m in meta)
     return f"""
@@ -44,10 +53,10 @@ td {{ border: 1px solid #555; padding: 7px 5px; }}
 .footer {{ margin-top: 18px; }}
 </style></head><body>
 <table width="100%" style="border:none"><tr>
-<td width="72%" style="border:none"><h1>{esc(title)}</h1><div class="meta">{meta_html}</div></td>
 <td width="28%" style="border:none" align="left">{esc(APP_DISPLAY_NAME)}<br>تاریخ چاپ: {printed}</td>
+<td width="72%" style="border:none"><h1>{esc(title)}</h1><div class="meta">{meta_html}</div></td>
 </tr></table><br>
-<table cellspacing="0" cellpadding="4"><thead><tr>{head}</tr></thead>
+<table width="100%" cellspacing="0" cellpadding="4"><thead><tr>{head}</tr></thead>
 <tbody>{''.join(body)}</tbody></table>
 <div class="footer">{footer}</div>
 </body></html>"""
@@ -65,9 +74,10 @@ def build_document(html_text: str) -> QTextDocument:
     return doc
 
 
-def save_pdf(html_text: str, path: str) -> None:
+def save_pdf(html_text: str, path: str,
+             page: QPageSize.PageSizeId = QPageSize.PageSizeId.A4) -> None:
     writer = QPdfWriter(path)
-    writer.setPageLayout(QPageLayout(QPageSize(QPageSize.PageSizeId.A4),
+    writer.setPageLayout(QPageLayout(QPageSize(page),
                                      QPageLayout.Orientation.Portrait, QMarginsF(12, 12, 12, 12),
                                      QPageLayout.Unit.Millimeter))
     writer.setResolution(300)
@@ -77,38 +87,38 @@ def save_pdf(html_text: str, path: str) -> None:
     doc.print_(writer)
 
 
-def print_html(html_text: str, parent: QWidget | None = None) -> bool:
+async def print_html(html_text: str, parent: QWidget | None = None) -> bool:
     """Show the system print dialog. Returns False if cancelled."""
-    from PySide6.QtPrintSupport import QPrintDialog, QPrinter
+    from PySide6.QtPrintSupport import QPrinter
 
     printer = QPrinter(QPrinter.PrinterMode.HighResolution)
     printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
-    dialog = QPrintDialog(printer, parent)
-    if dialog.exec() != QPrintDialog.DialogCode.Accepted:
+    if not await ask_print(printer, parent):
         return False
     build_document(html_text).print_(printer)
     return True
 
 
-async def export_pdf(parent: QWidget, html_text: str, default_name: str) -> None:
-    path, _ = QFileDialog.getSaveFileName(parent, "ذخیره PDF", default_name, "PDF (*.pdf)")
+async def export_pdf(parent: QWidget, html_text: str, default_name: str,
+                     settings: Settings) -> str | None:
+    path = await ask_save_path(parent, "ذخیره PDF", settings, default_name, "PDF (*.pdf)")
     if path:
         save_pdf(html_text, path)
         show_info(parent, "فایل PDF ذخیره شد.")
+    return path
 
 
-def output_menu(parent: QWidget, make_html, default_name) -> QMenu:
+def output_menu(parent: QWidget, make_html, default_name, settings: Settings) -> QMenu:
     """Print / Save-PDF menu. make_html is an async callable returning the HTML."""
     menu = QMenu(parent)
 
-    @asyncSlot()
     async def do_print() -> None:
-        print_html(await make_html(), parent)
+        await print_html(await make_html(), parent)
 
-    @asyncSlot()
     async def do_pdf() -> None:
-        await export_pdf(parent, await make_html(), default_name())
+        await export_pdf(parent, await make_html(), default_name(), settings)
 
-    menu.addAction("چاپ…", do_print)
-    menu.addAction("ذخیره PDF…", do_pdf)
+    # Closures can't be @asyncSlot (see caspian.ui.tasks).
+    menu.addAction("چاپ…", callback(do_print))
+    menu.addAction("ذخیره PDF…", callback(do_pdf))
     return menu

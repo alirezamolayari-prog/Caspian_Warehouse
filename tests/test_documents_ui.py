@@ -15,6 +15,21 @@ from caspian.ui.documents_page import CancelDialog, DocumentDialog, DocumentsPag
 from helpers import settle, wait_until
 
 
+@pytest.fixture(autouse=True)
+def confirmations(monkeypatch):
+    """Answer «بله» to every confirmation (#19) and record the questions asked."""
+    from caspian.ui import documents_page
+
+    asked = []
+
+    async def yes(parent, text, yes_text="بله", danger=False, title="تأیید"):
+        asked.append(text)
+        return True
+
+    monkeypatch.setattr(documents_page, "confirm", yes)
+    return asked
+
+
 @pytest.fixture
 async def env(themes, db, admin):
     u = {x.name: x.id for x in await master.list_units(db)}
@@ -79,6 +94,7 @@ async def test_insufficient_stock_keeps_draft(qtbot, env):
     qtbot.addWidget(dlg)
     dlg.open()
     await scan(dlg, "111")
+    dlg.person.select_value(env["person"])  # issues need a recipient (#22)
     dlg.submit_button.click()
     await settle(dlg)
     assert dlg.isVisible() and "کافی نیست" in dlg.status.text()
@@ -140,3 +156,155 @@ async def test_documents_page_and_cancel(qtbot, env):
     dlg.submit_button.click()
     await settle(dlg)
     assert (await docs.get_document(db, actor, doc_id)).status is DocStatus.CANCELLED
+
+
+async def test_post_during_stocktake_asks_for_admin_pin(qtbot, env, monkeypatch):
+    """A freeze error offers an admin override; with the PIN the document is posted (#7)."""
+    from caspian.services import protected
+    from caspian.services import stocktake as st
+    from caspian.services.protected import ProtectedAction
+    from caspian.ui import documents_page
+    from conftest import ADMIN_PIN
+
+    ctx = env["ctx"]
+    wh = (await master.list_warehouses(ctx.db))[0].id
+    draft = await docs.create_document(ctx.db, ctx.actor, DocumentInput(
+        DocType.RECEIPT, dt.date.today(), wh, [LineInput(env["drill"], env["u"]["عدد"], Decimal(1))]))
+    await st.create_stocktake(ctx.db, ctx.actor, wh)
+    asked = []
+
+    async def fake_request(db, actor, action, description, parent=None):
+        asked.append(description)
+        return await protected.approve(db, actor, ProtectedAction.STOCKTAKE_OVERRIDE, "admin", ADMIN_PIN)
+
+    monkeypatch.setattr(documents_page, "request_approval", fake_request)
+    page = DocumentsPage(ctx)
+    qtbot.addWidget(page)
+    await page.documents.refresh()
+    page.documents.table.select_id(draft)
+    await page.documents.on_post()
+    assert asked and "انبارگردانی" in asked[0]
+    assert (await docs.get_document(ctx.db, ctx.actor, draft)).status is DocStatus.POSTED
+
+
+async def test_issue_form_mentions_stock_waiting_in_a_draft(qtbot, env):
+    """«موجودی: ۰» alone made users think the import failed (#9)."""
+    ctx = env["ctx"]
+    wh = (await master.list_warehouses(ctx.db))[0].id
+    await docs.create_document(ctx.db, ctx.actor, DocumentInput(
+        DocType.RECEIPT, dt.date.today(), wh, [LineInput(env["drill"], env["u"]["عدد"], Decimal(5))]))
+    dlg = await make_dialog(env, DocType.ISSUE)
+    qtbot.addWidget(dlg)
+    await scan(dlg, "111")
+    assert "۵ عدد در پیش‌نویس ر-۱ منتظر ثبت نهایی است" in dlg.stock_hint.text()
+
+
+async def test_add_new_person_from_the_picker(qtbot, env):
+    """«+ افزودن شخص جدید» creates the person and selects it (#10)."""
+    import asyncio
+
+    from PySide6.QtWidgets import QApplication
+
+    from caspian.ui.master_page import PersonDialog
+
+    dlg = await make_dialog(env, DocType.ISSUE)
+    qtbot.addWidget(dlg)
+    dlg.person.lineEdit().setText("كامران")  # typed with Arabic letters
+    task = asyncio.ensure_future(dlg.person.run_add("كامران"))
+
+    def person_dialog():
+        return next((w for w in QApplication.topLevelWidgets()
+                     if isinstance(w, PersonDialog) and w.isVisible()), None)
+
+    assert await wait_until(lambda: person_dialog() is not None)
+    form = person_dialog()
+    assert form.name.text() == "كامران"
+    form.submit_button.click()
+    new_id = await task
+    assert new_id is not None and dlg.person.currentData() == new_id
+    assert dlg.person.currentText().startswith("كامران")  # stored as typed; search is normalized
+
+
+async def test_list_asks_before_posting_or_deleting_and_reports_success(qtbot, env, monkeypatch):
+    """#19 confirmations, #24 success message, #27 «مشاهده» for final documents."""
+    from caspian.ui import documents_page
+
+    ctx = env["ctx"]
+    wh = (await master.list_warehouses(ctx.db))[0].id
+    make = DocumentInput(DocType.RECEIPT, dt.date.today(), wh,
+                         [LineInput(env["drill"], env["u"]["عدد"], Decimal(1))])
+    draft = await docs.create_document(ctx.db, ctx.actor, make)
+    infos = []
+    monkeypatch.setattr(documents_page, "show_info", lambda parent, text: infos.append(text))
+    answer = {"value": False}
+
+    async def fake_confirm(parent, text, yes_text="بله", danger=False, title="تأیید"):
+        return answer["value"]
+
+    monkeypatch.setattr(documents_page, "confirm", fake_confirm)
+    page = DocumentsPage(ctx)
+    qtbot.addWidget(page)
+    lst = page.documents
+    await lst.refresh()
+    lst.table.select_id(draft)
+    assert lst.open_button.text() == "باز کردن"
+    await lst.on_post()  # declined
+    await lst.on_delete()  # declined
+    assert (await docs.get_document(ctx.db, ctx.actor, draft)).status is DocStatus.DRAFT
+    answer["value"] = True
+    lst.table.select_id(draft)
+    await lst.on_post()
+    assert await wait_until(lambda: infos and "ثبت نهایی شد" in infos[-1])
+    lst.table.select_id(draft)
+    assert lst.open_button.text() == "مشاهده"
+
+    other = await docs.create_document(ctx.db, ctx.actor, make)
+    await lst.refresh()
+    lst.table.select_id(other)
+    await lst.on_delete()
+    assert other not in {r.id for r in await docs.list_documents(ctx.db, ctx.actor)}
+
+
+async def test_cancel_reason_has_focus(qtbot, env):
+    """Typing went nowhere the first time: the reason field must have the focus (#34)."""
+    ctx = env["ctx"]
+    wh = (await master.list_warehouses(ctx.db))[0].id
+    posted = await docs.create_and_post(ctx.db, ctx.actor, DocumentInput(
+        DocType.RECEIPT, dt.date.today(), wh, [LineInput(env["drill"], env["u"]["عدد"], Decimal(1))]))
+    [row] = [r for r in await docs.list_documents(ctx.db, ctx.actor) if r.id == posted]
+    dlg = CancelDialog(ctx, row)
+    qtbot.addWidget(dlg)
+    dlg.show()
+    dlg.activateWindow()
+    assert await wait_until(lambda: dlg.focusWidget() is dlg.reason)
+
+
+async def test_dialog_asks_before_discarding_changes(qtbot, env, monkeypatch):
+    """#20: Esc / «انصراف» on a changed form asks; an untouched form closes at once."""
+    from PySide6.QtCore import Qt
+
+    from caspian.ui import dialogs
+
+    answers = []
+
+    async def fake_confirm(parent, text, yes_text="بله", danger=False, title="تأیید"):
+        answers.append(text)
+        return len(answers) > 1  # first: «انصراف» (stay), then: close
+
+    monkeypatch.setattr(dialogs, "confirm", fake_confirm)
+    clean = await make_dialog(env, DocType.RECEIPT)
+    qtbot.addWidget(clean)
+    clean.show()
+    qtbot.keyClick(clean, Qt.Key.Key_Escape)
+    assert await wait_until(lambda: not clean.isVisible()) and answers == []
+
+    dlg = await make_dialog(env, DocType.RECEIPT)
+    qtbot.addWidget(dlg)
+    dlg.show()
+    qtbot.keyClicks(dlg.description, "note")  # a real edit (QTest crashes on non-Latin keys)
+    assert dlg.dirty
+    qtbot.keyClick(dlg, Qt.Key.Key_Escape)
+    assert await wait_until(lambda: len(answers) == 1)
+    assert dlg.isVisible() and "ذخیره نشده" in answers[0]
+    dlg.cancel_button.click()
+    assert await wait_until(lambda: not dlg.isVisible())

@@ -1,5 +1,6 @@
 """Reference data: categories, units, warehouses, persons."""
 
+import re
 from dataclasses import dataclass
 
 from sqlalchemy import func, or_, select
@@ -93,6 +94,7 @@ async def save_category(db: Database, actor: Actor, name: str, category_id: int 
 
 
 async def delete_category(db: Database, actor: Actor, category_id: int) -> None:
+    actor.require_human("حذف گروه")
     actor.require(Perm.ITEMS_EDIT)
     async with db.session(actor.user_id) as s:
         cat = await _get(s, Category, category_id, "گروه")
@@ -112,6 +114,7 @@ class UnitRow:
     id: int
     name: str
     is_active: bool
+    allow_decimal: bool = True
 
 
 async def list_units(db: Database, include_inactive: bool = False) -> list[UnitRow]:
@@ -119,10 +122,12 @@ async def list_units(db: Database, include_inactive: bool = False) -> list[UnitR
         stmt = select(Unit).order_by(Unit.id)
         if not include_inactive:
             stmt = stmt.where(Unit.is_active)
-        return [UnitRow(u.id, u.name, u.is_active) for u in (await s.scalars(stmt)).all()]
+        return [UnitRow(u.id, u.name, u.is_active, u.allow_decimal) for u in (await s.scalars(stmt)).all()]
 
 
-async def save_unit(db: Database, actor: Actor, name: str, unit_id: int | None = None) -> int:
+async def save_unit(db: Database, actor: Actor, name: str, unit_id: int | None = None,
+                    allow_decimal: bool | None = None) -> int:
+    """`allow_decimal`: None keeps the current setting (new units allow decimals)."""
     actor.require(Perm.ITEMS_EDIT)
     name = _clean(name)
     if not name:
@@ -131,18 +136,25 @@ async def save_unit(db: Database, actor: Actor, name: str, unit_id: int | None =
         if await s.scalar(select(Unit.id).where(Unit.name == name, Unit.id != (unit_id or -1))):
             raise ValidationError("واحدی با این نام وجود دارد.")
         if unit_id is None:
-            unit = Unit(name=name)
+            unit = Unit(name=name, allow_decimal=True if allow_decimal is None else allow_decimal)
             s.add(unit)
             await s.flush()
-            audit.record(s, actor, "unit.created", "unit", unit.id, {"name": name})
+            audit.record(s, actor, "unit.created", "unit", unit.id,
+                         {"name": name, "allow_decimal": unit.allow_decimal})
         else:
             unit = await _get(s, Unit, unit_id, "واحد")
-            audit.record(s, actor, "unit.updated", "unit", unit.id, {"name": [unit.name, name]})
+            audit.record(s, actor, "unit.updated", "unit", unit.id, {
+                "name": [unit.name, name],
+                "allow_decimal": [unit.allow_decimal,
+                                  unit.allow_decimal if allow_decimal is None else allow_decimal]})
             unit.name = name
+            if allow_decimal is not None:
+                unit.allow_decimal = allow_decimal
         return unit.id
 
 
 async def set_unit_active(db: Database, actor: Actor, unit_id: int, active: bool) -> None:
+    actor.require_human("غیرفعال کردن واحد")
     actor.require(Perm.ITEMS_EDIT)
     async with db.session(actor.user_id) as s:
         unit = await _get(s, Unit, unit_id, "واحد")
@@ -204,6 +216,7 @@ async def save_warehouse(db: Database, actor: Actor, code: str, name: str, notes
 
 
 async def set_warehouse_active(db: Database, actor: Actor, warehouse_id: int, active: bool) -> None:
+    actor.require_human("غیرفعال کردن انبار")
     actor.require(Perm.WAREHOUSES_EDIT)
     async with db.session(actor.user_id) as s:
         wh = await _get(s, Warehouse, warehouse_id, "انبار")
@@ -270,6 +283,21 @@ async def _next_person_code(s: AsyncSession) -> str:
     return str(max((int(c) for c in codes if c.isdigit()), default=100) + 1)
 
 
+_PHONE = re.compile(r"^\+?[\d\s()-]+$")
+
+
+def clean_phone(phone: str) -> str:
+    """Digits (Persian or Latin), an optional leading +, spaces, dashes, parentheses (#14)."""
+    phone = " ".join(to_ascii_digits(phone or "").split())
+    if not phone:
+        return ""
+    digits = sum(c.isdigit() for c in phone)
+    if not _PHONE.match(phone) or not 4 <= digits <= 20:
+        raise ValidationError("شماره تلفن نامعتبر است؛ فقط رقم، + در ابتدا، فاصله، خط تیره و پرانتز "
+                              "مجاز است.")
+    return phone
+
+
 async def save_person(
     db: Database, actor: Actor, name: str, kind: PersonKind, phone: str = "", address: str = "",
     code: str = "", person_id: int | None = None, expected_version: int | None = None,
@@ -279,7 +307,7 @@ async def save_person(
     if not name:
         raise ValidationError("نام شخص الزامی است.")
     code = to_ascii_digits(code.strip())
-    phone = to_ascii_digits(phone.strip())
+    phone = clean_phone(phone)
     async with db.session(actor.user_id) as s:
         if code and await s.scalar(select(Person.id).where(Person.code == code,
                                                            Person.id != (person_id or -1))):
@@ -304,6 +332,7 @@ async def save_person(
 
 
 async def set_person_active(db: Database, actor: Actor, person_id: int, active: bool) -> None:
+    actor.require_human("غیرفعال کردن شخص")
     actor.require(Perm.PERSONS_EDIT)
     async with db.session(actor.user_id) as s:
         person = await _get(s, Person, person_id, "شخص")

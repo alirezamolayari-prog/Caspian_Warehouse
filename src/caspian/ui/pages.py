@@ -7,6 +7,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QGridLayout,
     QLabel,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -15,7 +16,8 @@ from qasync import asyncSlot
 from caspian.core import jalali
 from caspian.core.permissions import Perm
 from caspian.core.text import to_persian_digits
-from caspian.services import documents, imports, items
+from caspian.services import documents, health, items
+from caspian.ui.health_dialog import show_health
 from caspian.ui.widgets import Card, DataTable, EmptyState, StatCard
 
 
@@ -55,6 +57,12 @@ class DashboardPage(QWidget):
 
         greeting = QLabel(f"امروز {jalali.format_long(dt.date.today())}", objectName="Muted")
         layout.addWidget(greeting)
+        # Old data that today's validation would refuse (QA round 1 #10); hidden when clean.
+        self.health_warning = QPushButton(objectName="HealthWarning")
+        self.health_warning.setProperty("variant", "danger")
+        self.health_warning.hide()
+        self.health_warning.clicked.connect(self.on_health)
+        layout.addWidget(self.health_warning)
 
         grid = QGridLayout()
         grid.setSpacing(16)
@@ -67,9 +75,12 @@ class DashboardPage(QWidget):
         for i, card in enumerate(self.cards.values()):
             grid.addWidget(card, 0, i)
         targets = {"items": ("items", ""), "low_stock": ("items", "low_stock"),
-                   "loans": ("documents", "loans"), "drafts": ("imports", "")}
+                   "loans": ("documents", "loans")}
         for key, (page, option) in targets.items():
             self.cards[key].clicked.connect(lambda p=page, o=option: self.open_page.emit(p, o))
+        self.cards["drafts"].clicked.connect(self._open_pending)
+        self._seq = 0
+        self.pending = None
         layout.addLayout(grid)
 
         activity = Card()
@@ -82,6 +93,18 @@ class DashboardPage(QWidget):
         activity.body.addWidget(self.empty)
         layout.addWidget(activity, 1)
 
+    @asyncSlot()
+    async def on_health(self) -> None:
+        await show_health(self._ctx, self)
+        await self.refresh()
+
+    def _open_pending(self) -> None:
+        """Draft documents first (they hold stock back); otherwise the open imports."""
+        if self.pending is None or self.pending.draft_documents or not self.pending.open_imports:
+            self.open_page.emit("documents", "drafts")
+        else:
+            self.open_page.emit("imports", "")
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self.refresh()
@@ -91,15 +114,23 @@ class DashboardPage(QWidget):
         total, low = await items.count_summary(self._ctx.db)
         self.cards["items"].set_value(to_persian_digits(total))
         self.cards["low_stock"].set_value(to_persian_digits(low))
-        drafts, loans = await documents.pending_counts(self._ctx.db)
-        batches = await imports.open_batch_count(self._ctx.db)
-        hint = f"{to_persian_digits(drafts)} سند، {to_persian_digits(batches)} ورود اطلاعات"
-        self.cards["drafts"].set_value(to_persian_digits(drafts + batches), hint)
+        self._seq += 1
+        seq = self._seq
+        pending = await documents.pending_summary(self._ctx.db)
+        _drafts, loans = await documents.pending_counts(self._ctx.db)
+        if seq != self._seq:  # a newer refresh is running: don't mix numbers from two moments (#25)
+            return
+        self.pending = pending
+        self.cards["drafts"].set_value(to_persian_digits(pending.total), pending.hint)
         self.cards["loans"].set_value(to_persian_digits(loans))
         if not self._ctx.actor.can(Perm.DOCUMENTS_VIEW):
             return
+        findings = await health.check(self._ctx.db, self._ctx.actor)
+        self.health_warning.setText(f"⚠ {to_persian_digits(len(findings))} مورد داده نیازمند بررسی "
+                                    "(تاریخ نامعتبر یا موجودی اعشاری) — برای دیدن بزنید")
+        self.health_warning.setVisible(bool(findings))
         rows = await documents.list_documents(self._ctx.db, self._ctx.actor, limit=10)
-        self.recent.set_rows([(r.id, (to_persian_digits(r.number), r.type_name,
+        self.recent.set_rows([(r.id, (r.number_text, r.type_name,
                                       jalali.format_date(r.doc_date), r.person or "—",
                                       r.status_name)) for r in rows])
         self.recent.setVisible(bool(rows))

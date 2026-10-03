@@ -7,11 +7,12 @@ never supplies the factor.
 
 import datetime as dt
 import logging
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -20,7 +21,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from caspian.core import jalali
 from caspian.core.numbers import format_qty
 from caspian.core.permissions import Perm
-from caspian.core.text import normalize, to_ascii_digits
+from caspian.core.text import normalize, to_ascii_digits, to_persian_digits
 from caspian.db.database import Database
 from caspian.db.models import (
     AppSetting,
@@ -32,14 +33,24 @@ from caspian.db.models import (
     Person,
     StockBalance,
     StockLedger,
+    Stocktake,
+    StocktakeLine,
+    StocktakeStatus,
     Unit,
     User,
     Warehouse,
 )
 from caspian.services import audit
 from caspian.services.actor import Actor
-from caspian.services.errors import ConcurrencyError, NotFound, ValidationError
+from caspian.services.errors import (
+    ConcurrencyError,
+    NotFound,
+    PermissionDenied,
+    StocktakeFrozen,
+    ValidationError,
+)
 from caspian.services.fiscal_state import ensure_open_year
+from caspian.services.protected import Approval, ProtectedAction, consume
 
 NUMBER_RETRIES = 3
 log = logging.getLogger(__name__)
@@ -64,6 +75,22 @@ _SOURCE_SIGN = {
     DocType.ADJUSTMENT: 1, DocType.LOAN_OUT: -1, DocType.LOAN_RETURN: 1,
 }
 NEEDS_PERSON = {DocType.LOAN_OUT, DocType.LOAN_RETURN}
+# Shown before the number so two «سند ۱» of different types can't be confused (ر-۱، ح-۱ …).
+DOC_PREFIX = {
+    DocType.RECEIPT: "ر", DocType.ISSUE: "ح", DocType.TRANSFER: "ت", DocType.ADJUSTMENT: "ص",
+    DocType.OPENING: "م", DocType.LOAN_OUT: "ا", DocType.LOAN_RETURN: "ب",
+}
+PERSON_LABELS = {
+    DocType.RECEIPT: "تأمین‌کننده", DocType.ISSUE: "تحویل‌گیرنده", DocType.LOAN_OUT: "تحویل‌گیرنده",
+    DocType.LOAN_RETURN: "برگشت‌دهنده",
+}
+
+
+_PREFIXED = re.compile(r"^([رحتصمآاب])\s*-?\s*(\d+)$")
+
+
+def number_text(doc_type: DocType, number: int) -> str:
+    return f"{DOC_PREFIX[doc_type]}-{to_persian_digits(number)}"
 
 
 @dataclass
@@ -101,6 +128,11 @@ class DocumentRow:
     line_count: int
     created_by: str
     description: str
+    print_count: int = 0
+
+    @property
+    def number_text(self) -> str:
+        return number_text(self.doc_type, self.number)
 
     @property
     def type_name(self) -> str:
@@ -181,6 +213,8 @@ def _item_factors(item: Item) -> dict[int, Decimal]:
 
 async def _validate(s: AsyncSession, data: DocumentInput) -> list[DocumentLine]:
     """Validate header + lines; returns ready DocumentLine objects (unattached)."""
+    if data.doc_date > dt.date.today():
+        raise ValidationError("تاریخ سند نمی‌تواند بعد از امروز باشد. تاریخ را بررسی کنید.")
     await ensure_open_year(s, jalali.fiscal_year_of(data.doc_date))
     wh = await s.get(Warehouse, data.warehouse_id)
     if wh is None or not wh.is_active:
@@ -226,6 +260,9 @@ async def _validate(s: AsyncSession, data: DocumentInput) -> list[DocumentLine]:
         qty = line.qty
         if qty is None or qty == 0 or (qty < 0 and data.doc_type != DocType.ADJUSTMENT):
             raise ValidationError(f"ردیف {no}: مقدار «{item.name}» باید بزرگ‌تر از صفر باشد.")
+        unit = await s.get(Unit, line.unit_id)
+        if unit is not None and not unit.allow_decimal and qty != qty.to_integral_value():
+            raise ValidationError(f"ردیف {no}: مقدار «{item.name}» به «{unit.name}» باید عدد صحیح باشد.")
         if line.unit_price is not None and line.unit_price < 0:
             raise ValidationError(f"ردیف {no}: فی نمی‌تواند منفی باشد.")
         factor = factors[line.unit_id]
@@ -268,9 +305,12 @@ async def _apply_effects(s: AsyncSession, doc: Document, reverse: bool) -> None:
         if new_qty < 0 and change < 0 and not allow_negative:
             item = await s.get(Item, item_id)
             wh = await s.get(Warehouse, wh_id)
+            hint = pending_hint(await _pending_incoming_in(s, item_id, wh_id, doc.id),
+                                item.base_unit.name)
             raise ValidationError(
                 f"موجودی «{item.name}» در «{wh.name}» کافی نیست "
                 f"(موجود: {format_qty(balance.qty)}، نیاز: {format_qty(-change)})."
+                + (f" {hint}" if hint else "")
             )
         balance.qty = new_qty
 
@@ -308,6 +348,34 @@ async def _check_loan_return_limits(s: AsyncSession, doc: Document) -> None:
             raise ValidationError(f"مقدار برگشتی «{item.name}» بیشتر از مانده امانی است.")
 
 
+async def _stocktake_override(s: AsyncSession, actor: Actor, doc: Document, approval: Approval | None,
+                              exempt_stocktake_id: int | None = None) -> dict:
+    """Stock of items being counted must not move until the stocktake is approved or cancelled,
+    otherwise the adjustment is computed against a stale snapshot (#7). An admin may override
+    with a PIN. Returns audit details for an override (empty if none was needed)."""
+    warehouses = [doc.warehouse_id] + ([doc.dest_warehouse_id] if doc.dest_warehouse_id else [])
+    stmt = (select(Stocktake.number, Warehouse.name, Item.name)
+            .join(StocktakeLine, StocktakeLine.stocktake_id == Stocktake.id)
+            .join(Warehouse, Warehouse.id == Stocktake.warehouse_id)
+            .join(Item, Item.id == StocktakeLine.item_id)
+            .where(Stocktake.status.in_([StocktakeStatus.OPEN, StocktakeStatus.COUNTED]),
+                   Stocktake.warehouse_id.in_(warehouses),
+                   StocktakeLine.item_id.in_({ln.item_id for ln in doc.lines}))
+            .order_by(Stocktake.number).limit(1))
+    if exempt_stocktake_id is not None:
+        stmt = stmt.where(Stocktake.id != exempt_stocktake_id)
+    hit = (await s.execute(stmt)).first()
+    if hit is None:
+        return {}
+    number, warehouse, item = hit
+    if approval is None:
+        raise StocktakeFrozen(
+            f"انبارگردانی شماره {to_persian_digits(number)} در «{warehouse}» در جریان است و موجودی "
+            f"«{item}» تا تأیید یا لغو آن قفل است. تغییر آن فقط با تأیید مدیر (PIN) ممکن است.")
+    return {"stocktake_override": number,
+            "approved_by_id": consume(approval, ProtectedAction.STOCKTAKE_OVERRIDE, actor)}
+
+
 # ----- queries -----
 
 
@@ -340,7 +408,10 @@ async def list_documents(
     if date_to is not None:
         stmt = stmt.where(Document.doc_date <= date_to)
     raw = to_ascii_digits(query.strip())
-    if raw:
+    if prefixed := _PREFIXED.match(raw):
+        doc_type = next((t for t, p in DOC_PREFIX.items() if p == prefixed[1]), None)
+        stmt = stmt.where(Document.doc_type == doc_type, Document.number == int(prefixed[2]))
+    elif raw:
         conds = [Person.name_normalized.contains(normalize(query), autoescape=True),
                  Document.description.contains(query.strip(), autoescape=True)]
         if raw.isdigit():
@@ -350,7 +421,7 @@ async def list_documents(
         rows = (await s.execute(stmt)).all()
     return [
         DocumentRow(d.id, d.doc_type, d.number, d.fiscal_year, d.doc_date, d.status, wh,
-                    dwh or "", person or "", n, creator or "", d.description)
+                    dwh or "", person or "", n, creator or "", d.description, d.print_count)
         for d, wh, dwh, person, n, creator in rows
     ]
 
@@ -373,6 +444,139 @@ async def get_document(db: Database, actor: Actor, doc_id: int) -> DocumentDetai
         )
         return DocumentDetail(doc.id, doc.version_id, doc.number, doc.fiscal_year, doc.status,
                               data, views)
+
+
+@dataclass(frozen=True)
+class PrintLine:
+    code: str
+    name: str
+    unit: str
+    qty: Decimal
+    unit_price: Decimal | None
+    notes: str
+
+    @property
+    def amount(self) -> Decimal | None:
+        return None if self.unit_price is None else self.qty * self.unit_price
+
+
+@dataclass(frozen=True)
+class PrintSheet:
+    """Everything the printed receipt/issue form shows."""
+
+    id: int
+    doc_type: DocType
+    number_text: str
+    type_name: str
+    status: DocStatus
+    doc_date: dt.date
+    warehouse: str
+    dest_warehouse: str
+    person: str
+    person_label: str
+    description: str
+    lines: list[PrintLine]
+    company: str
+    created_by: str
+    posted_by: str
+    print_count: int  # copies issued so far
+    last_printed_by: str
+
+    @property
+    def total_amount(self) -> Decimal | None:
+        amounts = [ln.amount for ln in self.lines if ln.amount is not None]
+        return sum(amounts, Decimal(0)) if amounts else None
+
+    @property
+    def trackable(self) -> bool:
+        """Drafts can be printed for checking, but only final documents count as issued copies."""
+        return self.status != DocStatus.DRAFT
+
+
+async def print_sheet(db: Database, actor: Actor, doc_id: int) -> PrintSheet:
+    actor.require(Perm.DOCUMENTS_VIEW)
+    async with db.session() as s:
+        doc = await _load(s, doc_id)
+
+        async def name_of(model, pk, attr="name") -> str:
+            row = await s.get(model, pk) if pk else None
+            return getattr(row, attr) if row else ""
+
+        async def person_name(user_id) -> str:
+            """Full name on paper (QA round 1 #16), the login name only as a fallback."""
+            user = await s.get(User, user_id) if user_id else None
+            return (user.full_name or user.username) if user else ""
+
+        lines = []
+        for ln in doc.lines:
+            item = await s.get(Item, ln.item_id)
+            lines.append(PrintLine(item.code, item.name, await name_of(Unit, ln.unit_id), ln.qty,
+                                   ln.unit_price, ln.notes))
+        company = await s.get(AppSetting, "company_name")
+        return PrintSheet(
+            doc.id, doc.doc_type, number_text(doc.doc_type, doc.number), DOC_TYPE_NAMES[doc.doc_type],
+            doc.status, doc.doc_date, await name_of(Warehouse, doc.warehouse_id),
+            await name_of(Warehouse, doc.dest_warehouse_id), await name_of(Person, doc.person_id),
+            PERSON_LABELS.get(doc.doc_type, "طرف حساب"), doc.description, lines,
+            str(company.value) if company and company.value else "",
+            await person_name(doc.created_by_id), await person_name(doc.posted_by_id),
+            doc.print_count, await person_name(doc.last_printed_by_id))
+
+
+async def record_print(db: Database, actor: Actor, doc_id: int, kind: str) -> int:
+    """Count one issued copy (kind: "printer" or "pdf"); returns its copy number."""
+    actor.require(Perm.DOCUMENTS_VIEW)
+    async with db.session(actor.user_id) as s:
+        doc = await _load(s, doc_id)
+        if doc.status == DocStatus.DRAFT:
+            raise ValidationError("چاپ پیش‌نویس ثبت نمی‌شود؛ ابتدا سند را ثبت نهایی کنید.")
+        doc.print_count += 1
+        doc.last_printed_at = dt.datetime.now()
+        doc.last_printed_by_id = actor.user_id
+        audit.record(s, actor, "document.printed", "document", doc.id,
+                     {"type": doc.doc_type.value, "number": doc.number, "copy": doc.print_count,
+                      "kind": kind})
+        return doc.print_count
+
+
+@dataclass(frozen=True)
+class PendingIn:
+    """Stock that will arrive in a warehouse once a draft is posted."""
+
+    document_id: int
+    number_text: str
+    base_qty: Decimal
+
+
+async def _pending_incoming_in(s: AsyncSession, item_id: int, warehouse_id: int,
+                               exclude_doc: int | None = None) -> list[PendingIn]:
+    into = or_(
+        and_(Document.doc_type.in_([DocType.RECEIPT, DocType.OPENING, DocType.LOAN_RETURN,
+                                    DocType.ADJUSTMENT]), Document.warehouse_id == warehouse_id),
+        and_(Document.doc_type == DocType.TRANSFER, Document.dest_warehouse_id == warehouse_id))
+    stmt = (select(Document.id, Document.doc_type, Document.number, func.sum(DocumentLine.base_qty))
+            .join(DocumentLine, DocumentLine.document_id == Document.id)
+            .where(Document.status == DocStatus.DRAFT, DocumentLine.item_id == item_id, into)
+            .group_by(Document.id, Document.doc_type, Document.number).order_by(Document.id))
+    if exclude_doc is not None:
+        stmt = stmt.where(Document.id != exclude_doc)
+    return [PendingIn(doc_id, number_text(t, n), qty)
+            for doc_id, t, n, qty in (await s.execute(stmt)).all() if qty > 0]
+
+
+async def pending_incoming(db: Database, actor: Actor, item_id: int, warehouse_id: int) -> list[PendingIn]:
+    """Drafts that would add this item to this warehouse (e.g. an import not posted yet, #9)."""
+    actor.require(Perm.DOCUMENTS_VIEW)
+    async with db.session() as s:
+        return await _pending_incoming_in(s, item_id, warehouse_id)
+
+
+def pending_hint(pending: list[PendingIn], unit_name: str) -> str:
+    if not pending:
+        return ""
+    total = sum((p.base_qty for p in pending), Decimal(0))
+    numbers = "، ".join(p.number_text for p in pending)
+    return f"{format_qty(total)} {unit_name} در پیش‌نویس {numbers} منتظر ثبت نهایی است."
 
 
 async def stock_by_warehouse(db: Database, item_id: int) -> list[tuple[str, Decimal]]:
@@ -426,6 +630,34 @@ async def outstanding_loans(db: Database, actor: Actor, person_id: int | None = 
         return [r for r in await _loan_rows(s, person_id, loan_id) if r.outstanding > 0]
 
 
+@dataclass(frozen=True)
+class PendingSummary:
+    """What the dashboard's «پیش‌نویس‌های در انتظار» card shows: value and hint from one query."""
+
+    draft_documents: int
+    open_imports: int
+
+    @property
+    def total(self) -> int:
+        return self.draft_documents + self.open_imports
+
+    @property
+    def hint(self) -> str:
+        return (f"{to_persian_digits(self.draft_documents)} سند، "
+                f"{to_persian_digits(self.open_imports)} ورود اطلاعات")
+
+
+async def pending_summary(db: Database) -> PendingSummary:
+    from caspian.db.models import BatchStatus, ImportBatch
+
+    async with db.session() as s:
+        drafts = await s.scalar(select(func.count()).select_from(Document)
+                                .where(Document.status == DocStatus.DRAFT))
+        batches = await s.scalar(select(func.count()).select_from(ImportBatch)
+                                 .where(ImportBatch.status == BatchStatus.OPEN))
+    return PendingSummary(drafts or 0, batches or 0)
+
+
 async def pending_counts(db: Database) -> tuple[int, int]:
     """(draft documents awaiting posting, open loan lines)."""
     async with db.session() as s:
@@ -436,6 +668,15 @@ async def pending_counts(db: Database) -> tuple[int, int]:
 
 
 # ----- commands -----
+
+
+async def validate_input(db: Database, actor: Actor, data: DocumentInput) -> None:
+    """All checks of saving a document, without writing anything (lets the UI validate before
+    asking for confirmation, #15)."""
+    actor.require(Perm.DOCUMENTS_EDIT)
+    async with db.session() as s:
+        await _validate(s, data)
+        await s.rollback()
 
 
 async def create_document_in(s: AsyncSession, actor: Actor, data: DocumentInput) -> Document:
@@ -494,42 +735,61 @@ async def update_document(db: Database, actor: Actor, doc_id: int, expected_vers
 
 
 async def delete_draft(db: Database, actor: Actor, doc_id: int) -> None:
+    actor.require_human("حذف سند")
     actor.require(Perm.DOCUMENTS_EDIT)
     async with db.session(actor.user_id) as s:
         doc = await _load(s, doc_id)
         if doc.status != DocStatus.DRAFT:
             raise ValidationError("فقط سند پیش‌نویس قابل حذف است. سند ثبت‌شده را ابطال کنید.")
         await ensure_open_year(s, doc.fiscal_year)
+        from caspian.services import imports  # imports depends on this module
+
+        await imports.reopen_for_deleted_document(s, actor, doc.id)
         audit.record(s, actor, "document.draft_deleted", "document", doc.id,
                      {"type": doc.doc_type.value, "number": doc.number})
         await s.delete(doc)
 
 
 async def post_document(db: Database, actor: Actor, doc_id: int,
-                        expected_version: int | None = None) -> None:
-    """Finalize a draft: write the ledger and update balances atomically."""
+                        expected_version: int | None = None, approval: Approval | None = None) -> None:
+    """Finalize a draft: write the ledger and update balances atomically.
+
+    `approval` (STOCKTAKE_OVERRIDE) is only needed while a stocktake freezes the items."""
     async with db.session(actor.user_id) as s:
         doc = await _load(s, doc_id)
         if expected_version is not None and doc.version_id != expected_version:
             raise ConcurrencyError()
-        await post_document_in(s, actor, doc)
+        await post_document_in(s, actor, doc, approval=approval)
 
 
-async def post_document_in(s: AsyncSession, actor: Actor, doc: Document) -> None:
-    """Post inside the caller's transaction (used by stocktake approval)."""
+async def post_document_in(s: AsyncSession, actor: Actor, doc: Document, *,
+                           approval: Approval | None = None, stocktake_id: int | None = None) -> None:
+    """Post inside the caller's transaction. `stocktake_id`: the stocktake whose own adjustment
+    this is (exempt from its freeze)."""
     actor.require(Perm.DOCUMENTS_POST)
+    if actor.is_ai:
+        from caspian.services.ai.config import ai_may_post_in
+
+        if not await ai_may_post_in(s):
+            raise PermissionDenied("ثبت نهایی سند توسط دستیار در تنظیمات غیرفعال است؛ پیش‌نویس ساخته شد "
+                                   "و باید خودتان آن را ثبت نهایی کنید.")
     if doc.status != DocStatus.DRAFT:
         raise ValidationError("این سند قبلاً ثبت یا ابطال شده است.")
     # Re-validate: items/warehouses may have been deactivated since the draft was saved.
     await _validate(s, _input_of(doc))
     if doc.doc_type == DocType.LOAN_RETURN:
         await _check_loan_return_limits(s, doc)
+    if doc.doc_type == DocType.ISSUE and doc.person_id is None:
+        raise ValidationError("برای ثبت نهایی حواله خروج، تحویل‌گیرنده را انتخاب کنید.")
+    override = await _stocktake_override(s, actor, doc, approval, stocktake_id)
+    approver_id = override.pop("approved_by_id", None)
     await _apply_effects(s, doc, reverse=False)
     doc.status = DocStatus.POSTED
     doc.posted_at = dt.datetime.now()
     doc.posted_by_id = actor.user_id
     audit.record(s, actor, "document.posted", "document", doc.id,
-                 {"type": doc.doc_type.value, "number": doc.number})
+                 {"type": doc.doc_type.value, "number": doc.number, **override},
+                 approved_by_id=approver_id)
 
 
 def _input_of(doc: Document) -> DocumentInput:
@@ -542,8 +802,10 @@ def _input_of(doc: Document) -> DocumentInput:
     )
 
 
-async def cancel_document(db: Database, actor: Actor, doc_id: int, reason: str = "") -> None:
+async def cancel_document(db: Database, actor: Actor, doc_id: int, reason: str = "",
+                          approval: Approval | None = None) -> None:
     """Void a posted document with reversal ledger rows (history is never deleted)."""
+    actor.require_human("ابطال سند")
     actor.require(Perm.DOCUMENTS_POST)
     async with db.session(actor.user_id) as s:
         doc = await _load(s, doc_id)
@@ -557,15 +819,19 @@ async def cancel_document(db: Database, actor: Actor, doc_id: int, reason: str =
                 raise ValidationError(
                     "برای این امانی، برگشت ثبت شده است. ابتدا برگشت‌ها را ابطال کنید."
                 )
+        override = await _stocktake_override(s, actor, doc, approval)
+        approver_id = override.pop("approved_by_id", None)
         await _apply_effects(s, doc, reverse=True)
         doc.status = DocStatus.CANCELLED
         audit.record(s, actor, "document.cancelled", "document", doc.id,
-                     {"type": doc.doc_type.value, "number": doc.number, "reason": reason})
+                     {"type": doc.doc_type.value, "number": doc.number, "reason": reason, **override},
+                     approved_by_id=approver_id)
 
 
-async def create_and_post(db: Database, actor: Actor, data: DocumentInput) -> int:
+async def create_and_post(db: Database, actor: Actor, data: DocumentInput,
+                          approval: Approval | None = None) -> int:
     actor.require(Perm.DOCUMENTS_POST)
     """Save then post. If posting fails the document stays as a draft (not lost)."""
     doc_id = await create_document(db, actor, data)
-    await post_document(db, actor, doc_id)
+    await post_document(db, actor, doc_id, approval=approval)
     return doc_id

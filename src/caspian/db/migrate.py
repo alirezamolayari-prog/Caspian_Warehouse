@@ -18,15 +18,67 @@ def alembic_config() -> Config:
     return cfg
 
 
-async def upgrade(db: Database, revision: str = "head") -> None:
+async def _run(db: Database, action, revision: str) -> None:
     cfg = alembic_config()
 
-    def _run(sync_conn) -> None:
+    def _go(sync_conn) -> None:
         cfg.attributes["connection"] = sync_conn
-        command.upgrade(cfg, revision)
+        action(cfg, revision)
 
-    async with db.engine.begin() as conn:
-        await conn.run_sync(_run)
+    if not db.is_sqlite:
+        async with db.engine.begin() as conn:
+            await conn.run_sync(_go)
+        return
+    # SQLite applies ALTERs by rebuilding the table (copy, DROP, rename). With foreign keys on,
+    # that DROP would fire ON DELETE CASCADE on child tables and silently delete their rows.
+    # The pragma can't change inside a transaction, so switch it around the migration.
+    async with db.engine.connect() as conn:
+        await conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        await conn.commit()
+        try:
+            async with conn.begin():
+                await conn.run_sync(_go)
+                problems = (await conn.exec_driver_sql("PRAGMA foreign_key_check")).fetchall()
+                if problems:
+                    raise RuntimeError(f"Migration left broken foreign keys: {problems[:5]}")
+        finally:
+            await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+            await conn.commit()
+
+
+class SchemaTooNew(Exception):
+    """The database was migrated by a newer version of the app; this one must not touch it."""
+
+    message = ("پایگاه داده با نسخه جدیدتری از برنامه به‌روز شده است؛ لطفاً برنامه را به‌روزرسانی کنید. "
+               "(این نسخه هیچ تغییری در پایگاه داده نداد.)")
+
+    def __init__(self, revision: str) -> None:
+        super().__init__(self.message)
+        self.revision = revision
+
+
+def known_revisions() -> set[str]:
+    return {rev.revision for rev in ScriptDirectory.from_config(alembic_config()).walk_revisions()}
+
+
+async def check_not_newer(db: Database) -> None:
+    """Raise SchemaTooNew (without writing anything) if the DB is at a revision this app doesn't know."""
+    try:
+        current = await current_revision(db)
+    except Exception:  # no alembic_version yet: a new database
+        return
+    if current is not None and current not in known_revisions():
+        raise SchemaTooNew(current)
+
+
+async def upgrade(db: Database, revision: str = "head") -> None:
+    await check_not_newer(db)
+    await _run(db, command.upgrade, revision)
+
+
+async def downgrade(db: Database, revision: str) -> None:
+    """Only for tests and support: schema back to `revision` (data is kept where possible)."""
+    await _run(db, command.downgrade, revision)
 
 
 async def current_revision(db: Database) -> str | None:

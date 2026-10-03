@@ -37,7 +37,7 @@ def test_qty_edit_accepts_persian_digits(qtbot):
     edit.insert("abc")
     assert edit.text() == "12"  # letters rejected by the validator
     edit.set_value(Decimal("24.0000"))
-    assert edit.text() == "24"
+    assert edit.text() == "۲۴" and edit.value() == Decimal(24)  # shown like the tables (#28)
 
 
 async def test_item_dialog_creates_item(qtbot, db, admin, make_ctx):
@@ -151,3 +151,64 @@ async def test_master_page_tabs(qtbot, db, admin, make_ctx):
     await settle(dlg)
     await page.warehouses.refresh()
     assert page.warehouses.table.rowCount() == 2
+
+
+async def test_new_item_with_opening_stock_posts_an_opening_document(qtbot, db, admin, make_ctx):
+    """«موجودی اولیه» on the item form becomes a posted OPENING document (#12)."""
+    from caspian.db.models import DocType
+    from caspian.services import documents as docs
+
+    ctx = make_ctx(admin)
+    warehouses = await master.list_warehouses(db)
+    dlg = ItemDialog(ctx, await master.list_units(db), [], suggested_code="5001", warehouses=warehouses)
+    qtbot.addWidget(dlg)
+    dlg.name.setText("میز جلسه")
+    dlg.opening_qty.setText("۴")
+    dlg.opening_price.setText("2500000")
+    dlg.submit_button.click()
+    await settle(dlg)
+    assert dlg.result() == dlg.DialogCode.Accepted and dlg.result_message == ""
+    [(_wh, qty)] = await docs.stock_by_warehouse(db, dlg.saved_id)
+    assert qty == Decimal(4)
+    [opening] = await docs.list_documents(db, admin, DocType.OPENING)
+    assert opening.status.value == "POSTED"
+
+
+async def test_edit_form_has_no_opening_stock(qtbot, db, admin, make_ctx):
+    ctx = make_ctx(admin)
+    item_id = await items.create_item(db, admin, ItemInput("5002", "صندلی", (await _units(db))["عدد"]))
+    dlg = ItemDialog(ctx, await master.list_units(db), [], await items.get_item(db, admin, item_id),
+                     warehouses=await master.list_warehouses(db))
+    qtbot.addWidget(dlg)
+    assert dlg.opening_qty not in dlg._inputs and dlg.collect_opening() is None
+
+
+async def test_code_field_locked_after_first_document(qtbot, db, admin, make_ctx):
+    import datetime as dt
+
+    from caspian.db.models import DocType
+    from caspian.services import documents as docs
+
+    ctx = make_ctx(admin)
+    u = await _units(db)
+    item_id = await items.create_item(db, admin, ItemInput("6001", "کمد", u["عدد"]))
+    wh = (await master.list_warehouses(db))[0].id
+    await docs.create_document(db, admin, docs.DocumentInput(
+        DocType.RECEIPT, dt.date.today(), wh, [docs.LineInput(item_id, u["عدد"], Decimal(1))]))
+    dlg = ItemDialog(ctx, await master.list_units(db), [], await items.get_item(db, admin, item_id))
+    qtbot.addWidget(dlg)
+    assert dlg.code.isReadOnly() and "قابل تغییر نیست" in dlg.code.toolTip()
+
+
+async def test_unit_dialog_sets_decimal_rule(qtbot, db, admin, make_ctx):
+    from caspian.ui.master_page import UnitDialog
+
+    ctx = make_ctx(admin)
+    dlg = UnitDialog(ctx)
+    qtbot.addWidget(dlg)
+    dlg.name.setText("شاخه")
+    dlg.allow_decimal.setChecked(False)
+    dlg.submit_button.click()
+    await settle(dlg)
+    [unit] = [x for x in await master.list_units(db) if x.name == "شاخه"]
+    assert unit.allow_decimal is False

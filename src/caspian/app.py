@@ -15,15 +15,19 @@ from caspian.core.secrets import get_secret, set_secret
 from caspian.core.settings import Settings
 from caspian.db.bootstrap import open_mariadb
 from caspian.db.database import Database, DbConfig, describe_error
+from caspian.db.migrate import SchemaTooNew
 from caspian.db.models import TaskKind
 from caspian.services.backup import make_scheduled_handler
 from caspian.services.scheduler import HANDLERS, SchedulerRunner
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import run_login
+from caspian.ui.backup_settings import first_run_backup_prompt
 from caspian.ui.db_setup_dialog import DbSetupDialog
 from caspian.ui.fonts import apply_app_font
 from caspian.ui.icons import icon
 from caspian.ui.main_window import MainWindow
+from caspian.ui.messages import show_unexpected_error
+from caspian.ui.tasks import spawn
 from caspian.ui.theme import LIGHT, ThemeManager
 
 log = logging.getLogger(__name__)
@@ -46,10 +50,7 @@ def install_exception_hook() -> None:
     def hook(exc_type, exc, tb) -> None:
         log.critical("Unhandled error", exc_info=(exc_type, exc, tb))
         if QApplication.instance() is not None:
-            box = QMessageBox(QMessageBox.Icon.Critical, "خطای غیرمنتظره",
-                              "خطای غیرمنتظره‌ای رخ داد و جزئیات آن در فایل گزارش ثبت شد.\n"
-                              f"{exc_type.__name__}: {exc}"[:500], QMessageBox.StandardButton.Ok)
-            box.open()
+            show_unexpected_error(exc_type, exc, tb)
 
     sys.excepthook = hook
 
@@ -85,6 +86,14 @@ async def connect_database(settings: Settings) -> tuple[Database, DbConfig, str]
         password = get_secret("db", config.secret_name) or ""
         try:
             return await open_mariadb(config, password), config, password
+        except SchemaTooNew as exc:
+            # Not a connection problem: never offer to reconfigure, just explain and stop (#9).
+            log.error("Database revision %s is newer than this app", exc.revision)
+            box = QMessageBox(QMessageBox.Icon.Critical, "نسخه برنامه قدیمی است", exc.message,
+                              QMessageBox.StandardButton.Ok)
+            box.button(QMessageBox.StandardButton.Ok).setText("خروج")
+            await exec_dialog(box)
+            return None
         except Exception as exc:
             log.warning("Stored DB connection failed: %s", exc)
             error = describe_error(exc)
@@ -117,6 +126,7 @@ async def _main(settings: Settings, themes: ThemeManager) -> None:
         closed = asyncio.Event()
         window.closed.connect(closed.set)
         window.show()
+        spawn(first_run_backup_prompt(ctx, window))  # asked once per PC (#33)
         await closed.wait()
         await runner.stop()
     finally:

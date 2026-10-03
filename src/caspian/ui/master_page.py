@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 from qasync import asyncSlot
 
 from caspian.core.permissions import Perm
+from caspian.core.text import to_persian_digits as fa  # display-only digits (#19)
 from caspian.db.models import PersonKind
 from caspian.services import master
 from caspian.services.errors import ServiceError
@@ -20,7 +21,7 @@ from caspian.services.master import PERSON_KIND_NAMES, PersonRow
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.dialogs import FormDialog, ltr_field
 from caspian.ui.messages import show_error
-from caspian.ui.widgets import Card, DataTable, SearchBox
+from caspian.ui.widgets import Card, DataTable, SearchableCombo, SearchBox
 
 
 class _Tab(QWidget):
@@ -29,6 +30,7 @@ class _Tab(QWidget):
     perm: Perm = Perm.ITEMS_EDIT
     columns: tuple[str, ...] = ()
     new_text = "جدید"
+    empty_text = "موردی تعریف نشده است."
     toggles_active = True  # False: the second button deletes instead
 
     def __init__(self, ctx: AppContext, parent: QWidget | None = None) -> None:
@@ -55,6 +57,7 @@ class _Tab(QWidget):
         card = Card()
         card.body.setContentsMargins(0, 0, 0, 0)
         self.table = DataTable(self.columns)
+        self.table.set_empty_text(self.empty_text)
         self.table.itemSelectionChanged.connect(self.update_buttons)
         self.table.doubleClicked.connect(lambda _: self.on_edit())
         card.body.addWidget(self.table)
@@ -153,7 +156,7 @@ class WarehousesTab(_Tab):
         rows = await master.list_warehouses(self.ctx.db, include_inactive=True)
         self.rows = {r.id: r for r in rows}
         self.table.set_rows(
-            [(r.id, (r.code, r.name, r.notes, "فعال" if r.is_active else "غیرفعال"))
+            [(r.id, (fa(r.code), r.name, r.notes, "فعال" if r.is_active else "غیرفعال"))
              for r in rows], muted=[not r.is_active for r in rows])
 
     async def open_editor(self, row) -> None:
@@ -183,6 +186,7 @@ class PersonDialog(FormDialog):
                          "کد خالی = تخصیص خودکار." if not row else "",
                          submit_text="ذخیره", parent=parent)
         self._ctx, self._row = ctx, row
+        self.saved_id: int | None = None
         self.name = self.add_row("نام:", QLineEdit(row.name if row else ""))
         self.kind = self.add_row("نوع:", _kind_combo(row.kind if row else PersonKind.SUPPLIER))
         self.code = self.add_row("کد:", ltr_field(row.code if row else ""))
@@ -190,11 +194,32 @@ class PersonDialog(FormDialog):
         self.address = self.add_row("نشانی:", QLineEdit(row.address if row else ""))
 
     async def submit(self) -> None:
-        await master.save_person(
+        self.saved_id = await master.save_person(
             self._ctx.db, self._ctx.actor, self.name.text(), self.kind.currentData(),
             self.phone.text(), self.address.text(), self.code.text(),
             self._row.id if self._row else None, self._row.version_id if self._row else None,
         )
+
+
+async def add_person(ctx: AppContext, parent, typed: str = "") -> tuple[str, int] | None:
+    """«+ افزودن شخص جدید» in person pickers: (display text, id) of the new person, or None."""
+    if not ctx.actor.can(Perm.PERSONS_EDIT):
+        show_error(parent, "شما مجوز تعریف شخص جدید را ندارید.")
+        return None
+    dialog = PersonDialog(ctx, parent=parent)
+    dialog.name.setText(typed.strip())
+    if not await exec_dialog(dialog) or dialog.saved_id is None:
+        return None
+    return (f"{' '.join(dialog.name.text().split())} ({PERSON_KIND_NAMES[dialog.kind.currentData()]})",
+            dialog.saved_id)
+
+
+def person_picker(ctx: AppContext, parent, persons, current: int | None = None) -> SearchableCombo:
+    combo = SearchableCombo("نام شخص را بنویسید…")
+    combo.enable_add("+ افزودن شخص جدید", lambda typed: add_person(ctx, parent, typed))
+    combo.set_items(((f"{p.name} ({p.kind_name})", p.id) for p in persons), none_text="—",
+                    current=current)
+    return combo
 
 
 class PersonsTab(_Tab):
@@ -224,7 +249,7 @@ class PersonsTab(_Tab):
             return
         self.rows = {r.id: r for r in rows}
         self.table.set_rows(
-            [(r.id, (r.code, r.name, r.kind_name, r.phone, r.address,
+            [(r.id, (fa(r.code), r.name, r.kind_name, fa(r.phone), r.address,
                      "فعال" if r.is_active else "غیرفعال")) for r in rows],
             muted=[not r.is_active for r in rows])
 
@@ -244,7 +269,7 @@ class CategoryDialog(FormDialog):
                          parent=parent)
         self._ctx, self._row = ctx, row
         self.name = self.add_row("نام گروه:", QLineEdit(row.name if row else ""))
-        self.parent_combo = QComboBox()
+        self.parent_combo = SearchableCombo()
         self.parent_combo.addItem("— (گروه اصلی)", None)
         for cat in categories:
             if row is None or cat.id != row.id:
@@ -262,6 +287,7 @@ class CategoryDialog(FormDialog):
 class CategoriesTab(_Tab):
     columns = ("نام گروه", "زیرمجموعه", "تعداد کالا")
     new_text = "گروه جدید"
+    empty_text = "هنوز گروهی تعریف نشده. با «گروه جدید» کالاها را دسته‌بندی کنید."
     toggles_active = False
 
     async def refresh(self) -> None:
@@ -295,20 +321,24 @@ class UnitDialog(FormDialog):
                          parent=parent)
         self._ctx, self._row = ctx, row
         self.name = self.add_row("نام واحد:", QLineEdit(row.name if row else ""))
+        self.allow_decimal = QCheckBox("مقدار اعشاری مجاز است (مثل متر، کیلوگرم؛ برای «عدد» و «کارتن» خاموش)")
+        self.allow_decimal.setChecked(row.allow_decimal if row else True)
+        self.add_row("", self.allow_decimal)
 
     async def submit(self) -> None:
         await master.save_unit(self._ctx.db, self._ctx.actor, self.name.text(),
-                               self._row.id if self._row else None)
+                               self._row.id if self._row else None, self.allow_decimal.isChecked())
 
 
 class UnitsTab(_Tab):
-    columns = ("نام واحد", "وضعیت")
+    columns = ("نام واحد", "اعشار", "وضعیت")
     new_text = "واحد جدید"
 
     async def refresh(self) -> None:
         rows = await master.list_units(self.ctx.db, include_inactive=True)
         self.rows = {r.id: r for r in rows}
-        self.table.set_rows([(r.id, (r.name, "فعال" if r.is_active else "غیرفعال"))
+        self.table.set_rows([(r.id, (r.name, "مجاز" if r.allow_decimal else "فقط عدد صحیح",
+                                     "فعال" if r.is_active else "غیرفعال"))
                              for r in rows], muted=[not r.is_active for r in rows])
 
     async def open_editor(self, row) -> None:

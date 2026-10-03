@@ -7,6 +7,8 @@ from caspian.core.permissions import ADDED_PERMISSIONS, DEFAULT_ROLES
 from caspian.db.models import AppSetting, Role, RolePermission, Unit, Warehouse
 
 DEFAULT_UNITS = ("عدد", "جعبه", "کارتن", "بسته", "متر", "متر مربع", "کیلوگرم", "لیتر", "دست", "رول")
+# Units that count whole things: quantities must be whole numbers (the admin can change this).
+COUNT_UNITS = ("عدد", "جعبه", "کارتن", "بسته", "دست", "رول")
 
 
 async def seed_reference_data(session: AsyncSession) -> None:
@@ -57,7 +59,7 @@ async def _grant_added_permissions(session: AsyncSession) -> None:
 
 async def _seed_units(session: AsyncSession) -> None:
     have = set((await session.scalars(select(Unit.name))).all())
-    session.add_all(Unit(name=n) for n in DEFAULT_UNITS if n not in have)
+    session.add_all(Unit(name=n, allow_decimal=n not in COUNT_UNITS) for n in DEFAULT_UNITS if n not in have)
 
 
 async def _seed_warehouse(session: AsyncSession) -> None:

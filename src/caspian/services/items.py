@@ -1,5 +1,6 @@
 """Items: search, create/edit, units & barcodes, activation (protected) and deletion."""
 
+import datetime as dt
 from dataclasses import dataclass, field
 from decimal import Decimal
 
@@ -12,6 +13,7 @@ from caspian.core.text import normalize, to_ascii_digits
 from caspian.db.database import Database
 from caspian.db.models import (
     Category,
+    DocType,
     DocumentLine,
     Item,
     ItemBarcode,
@@ -19,7 +21,7 @@ from caspian.db.models import (
     StockBalance,
     Unit,
 )
-from caspian.services import audit
+from caspian.services import audit, documents
 from caspian.services.actor import Actor
 from caspian.services.errors import ConcurrencyError, NotFound, ValidationError
 from caspian.services.protected import Approval, ProtectedAction, consume
@@ -116,7 +118,8 @@ async def search_items(
         stmt = stmt.where(Item.reorder_point.is_not(None), qty <= Item.reorder_point)
     raw = to_ascii_digits(query.strip())
     # Exact code matches first, then by name.
-    stmt = stmt.order_by((Item.code == raw).desc(), Item.name).limit(limit)
+    # Exact code match first, then by code (#29: items are listed by code by default).
+    stmt = stmt.order_by((Item.code == raw).desc(), Item.code).limit(limit)
     if only_below_reorder:
         actor.require(Perm.STOCK_VIEW)
     show_stock = actor.can(Perm.STOCK_VIEW)
@@ -300,9 +303,57 @@ async def create_item_in(s: AsyncSession, actor: Actor, data: ItemInput) -> Item
     return item
 
 
+async def same_name_items(db: Database, name: str, exclude_id: int | None = None) -> list[tuple[str, str]]:
+    """(code, name) of active items whose normalized name equals `name` (#13: warn, don't block)."""
+    key = normalize(" ".join(name.split()))
+    if not key:
+        return []
+    stmt = select(Item.code, Item.name).where(Item.is_active, Item.name_normalized == key)
+    if exclude_id is not None:
+        stmt = stmt.where(Item.id != exclude_id)
+    async with db.session() as s:
+        return [(c, n) for c, n in (await s.execute(stmt)).all()]
+
+
 async def create_item(db: Database, actor: Actor, data: ItemInput) -> int:
     async with db.session(actor.user_id) as s:
         return (await create_item_in(s, actor, data)).id
+
+
+@dataclass(frozen=True)
+class OpeningStock:
+    """Quantity (in the base unit) already on the shelf when the item is defined."""
+
+    warehouse_id: int
+    qty: Decimal
+    unit_price: Decimal | None = None
+
+
+@dataclass(frozen=True)
+class CreatedItem:
+    item_id: int
+    document_id: int | None  # the OPENING document, if any
+    posted: bool
+
+
+async def create_item_with_opening(db: Database, actor: Actor, data: ItemInput,
+                                   opening: OpeningStock | None) -> CreatedItem:
+    """New item plus its opening stock (#12). Stock only ever changes through documents: this
+    creates an OPENING document and posts it when the user may post (else it stays a draft).
+    Item and document are saved together or not at all."""
+    async with db.session(actor.user_id) as s:
+        item = await create_item_in(s, actor, data)
+        if opening is None:
+            return CreatedItem(item.id, None, False)
+        doc = await documents.create_document_in(s, actor, documents.DocumentInput(
+            DocType.OPENING, dt.date.today(), opening.warehouse_id,
+            [documents.LineInput(item.id, item.base_unit_id, opening.qty, opening.unit_price,
+                                 "موجودی اولیه هنگام تعریف کالا")],
+            description=f"موجودی اولیه «{item.name}»"))
+        posted = actor.can(Perm.DOCUMENTS_POST)
+        if posted:
+            await documents.post_document_in(s, actor, doc)
+        return CreatedItem(item.id, doc.id, posted)
 
 
 async def update_item(
@@ -316,6 +367,8 @@ async def update_item(
         data = await _validate(s, data, item_id)
         if data.base_unit_id != item.base_unit_id and await _has_movements(s, item_id):
             raise ValidationError("واحد اصلی کالایی که گردش دارد قابل تغییر نیست.")
+        if data.code != item.code and await _has_movements(s, item_id):  # #23
+            raise ValidationError("کد کالایی که در سندی استفاده شده قابل تغییر نیست.")
         before = _snapshot(item)
         _apply(item, data)
         # Unit/barcode-only edits touch child rows; force a version bump on the item itself.
@@ -348,6 +401,7 @@ async def set_item_active(
     db: Database, actor: Actor, item_id: int, active: bool, approval: Approval | None = None
 ) -> None:
     """Reactivating needs items.edit; deactivating is a protected action."""
+    actor.require_human("فعال/غیرفعال کردن کالا")
     actor.require(Perm.ITEMS_EDIT)
     approver_id = None if active else consume(approval, ProtectedAction.DEACTIVATE_ITEM, actor)
     async with db.session(actor.user_id) as s:
@@ -359,6 +413,7 @@ async def set_item_active(
 
 async def delete_item(db: Database, actor: Actor, item_id: int, approval: Approval | None) -> None:
     """Only items that never appeared in a document can be deleted; others are deactivated."""
+    actor.require_human("حذف کالا")
     actor.require(Perm.ITEMS_EDIT)
     async with db.session(actor.user_id) as s:
         item = await _load(s, item_id)

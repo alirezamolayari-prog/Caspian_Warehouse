@@ -169,9 +169,13 @@ async def test_mariadb_full_schema():
         await docs.create_and_post(db, admin, docs.DocumentInput(
             DocType.RECEIPT, dt.date(2026, 9, 27), wh_id,
             [docs.LineInput(item.id, box_id, Decimal(2))]))
+        from caspian.db.models import PersonKind
+        from caspian.services import master
+
+        person = await master.save_person(db, admin, "گیرنده", PersonKind.EMPLOYEE)
         issue = await docs.create_document(db, admin, docs.DocumentInput(
             DocType.ISSUE, dt.date(2026, 9, 27), wh_id,
-            [docs.LineInput(item.id, item.base_unit_id, Decimal(50))]))
+            [docs.LineInput(item.id, item.base_unit_id, Decimal(50))], person_id=person))
         with pytest.raises(ValidationError):
             await docs.post_document(db, admin, issue)  # 50 > 48
         assert (await docs.stock_by_warehouse(db, item.id))[0][1] == Decimal(48)
