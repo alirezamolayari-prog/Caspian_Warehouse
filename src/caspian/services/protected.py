@@ -39,6 +39,7 @@ class ProtectedAction(enum.StrEnum):
     CHANGE_ROLE = "change_role"
     CLOSE_FISCAL_YEAR = "close_fiscal_year"
     STOCKTAKE_OVERRIDE = "stocktake_override"
+    CREATE_SIMILAR_ITEM = "create_similar_item"
 
 
 # action -> (Persian title, permission the approving admin must hold)
@@ -50,6 +51,7 @@ ACTION_INFO: dict[ProtectedAction, tuple[str, Perm]] = {
     ProtectedAction.RESTORE_BACKUP: ("بازیابی نسخه پشتیبان", Perm.BACKUP_RESTORE),
     ProtectedAction.CHANGE_ROLE: ("تغییر نقش کاربر", Perm.ROLES_CHANGE),
     ProtectedAction.CLOSE_FISCAL_YEAR: ("بستن سال مالی", Perm.YEAR_CLOSE),
+    ProtectedAction.CREATE_SIMILAR_ITEM: ("ایجاد کالای مشابه", Perm.ITEMS_EDIT),
     ProtectedAction.STOCKTAKE_OVERRIDE: ("تغییر موجودی کالای در حال انبارگردانی", Perm.STOCKTAKE_APPROVE),
 }
 

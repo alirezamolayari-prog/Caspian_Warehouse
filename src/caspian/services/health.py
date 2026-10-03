@@ -13,8 +13,9 @@ from sqlalchemy import select
 from caspian.core import jalali
 from caspian.core.numbers import format_qty
 from caspian.core.permissions import Perm
+from caspian.core.text import to_persian_digits
 from caspian.db.database import Database
-from caspian.db.models import DocStatus, Document, Item, StockBalance, Unit, Warehouse
+from caspian.db.models import DocStatus, DocType, Document, Item, StockBalance, Unit, Warehouse
 from caspian.services.actor import Actor
 from caspian.services.documents import DOC_TYPE_NAMES, number_text
 from caspian.services.fiscal_state import read_state
@@ -30,6 +31,8 @@ class Finding:
 
 FIX_DOCUMENT = "سند را ابطال کنید و با تاریخ درست دوباره ثبت کنید (پیش‌نویس را ویرایش کنید)."
 FIX_BALANCE = "با یک سند «اصلاح موجودی» مقدار را به عدد صحیح برسانید."
+FIX_DUPLICATE = ("در «کالاها» فیلتر «فقط کالاهای تکراری/مشابه» را بزنید و با «ادغام…» (با PIN مدیر) آن‌ها را "
+                 "یکی کنید؛ گردش و موجودی به یک کد منتقل می‌شود.")
 
 
 async def check(db: Database, actor: Actor, today: dt.date | None = None) -> list[Finding]:
@@ -39,10 +42,15 @@ async def check(db: Database, actor: Actor, today: dt.date | None = None) -> lis
     findings: list[Finding] = []
     async with db.session() as s:
         closed = (await read_state(s)).closed_through
+        closed_year = closed if closed is not None else -1
+        # Open loans (and their returns) are deliberately carried over by the year-end close with
+        # their original dates: they are not «outside the open year» (QA round 2 #2).
+        carried = Document.doc_type.in_([DocType.LOAN_OUT, DocType.LOAN_RETURN]) & (
+            Document.fiscal_year <= closed_year)
         docs = (await s.scalars(select(Document).where(
             Document.status != DocStatus.CANCELLED,
             (Document.doc_date > today) | (Document.fiscal_year > current_year)
-            | (Document.fiscal_year <= (closed if closed is not None else -1)))
+            | ((Document.fiscal_year <= closed_year) & ~carried))
             .order_by(Document.doc_date))).all()
         for d in docs:
             label = f"{DOC_TYPE_NAMES[d.doc_type]} {number_text(d.doc_type, d.number)}"
@@ -51,8 +59,9 @@ async def check(db: Database, actor: Actor, today: dt.date | None = None) -> lis
                 findings.append(Finding("future_date", label, f"تاریخ {date} بعد از امروز است.",
                                         FIX_DOCUMENT))
             else:
+                year = to_persian_digits(current_year)
                 findings.append(Finding("outside_year", label,
-                                        f"تاریخ {date} در سال مالی باز ({current_year}) نیست.", FIX_DOCUMENT))
+                                        f"تاریخ {date} در سال مالی باز ({year}) نیست.", FIX_DOCUMENT))
         balances = (await s.execute(
             select(Item.code, Item.name, Unit.name, Warehouse.name, StockBalance.qty)
             .join(Item, Item.id == StockBalance.item_id)
@@ -65,4 +74,10 @@ async def check(db: Database, actor: Actor, today: dt.date | None = None) -> lis
                     "fractional_balance", f"کالای {code} — {name}",
                     f"موجودی {format_qty(qty)} {unit} در «{warehouse}»؛ «{unit}» فقط عدد صحیح می‌پذیرد.",
                     FIX_BALANCE))
+    from caspian.services.items import duplicate_groups  # items imports documents imports health
+
+    for group in await duplicate_groups(db, actor):
+        findings.append(Finding(
+            "duplicate_items", "کالاهای تکراری/مشابه: " + "، ".join(to_persian_digits(g.code) for g in group),
+            "؛ ".join(g.name for g in group), FIX_DUPLICATE))
     return findings

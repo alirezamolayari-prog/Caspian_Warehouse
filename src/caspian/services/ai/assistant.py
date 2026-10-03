@@ -2,6 +2,8 @@
 
 import asyncio
 import datetime as dt
+import logging
+import uuid
 from dataclasses import dataclass, field
 
 from caspian.core import jalali
@@ -11,11 +13,13 @@ from caspian.db.database import Database
 from caspian.db.models import DocType, ImportKind, ImportSource
 from caspian.services import imports, master
 from caspian.services.actor import Actor
+from caspian.services.ai import history as chat_history
 from caspian.services.ai.config import ai_may_post
 from caspian.services.ai.gateway import AIUnavailable, Gateway
 from caspian.services.ai.text_parser import parse_text
 from caspian.services.ai.tools import ToolContext, available_tools, run_tool
 
+log = logging.getLogger(__name__)
 MAX_TOOL_ROUNDS = 6
 HISTORY_LIMIT = 30
 AI_TOTAL_TIMEOUT = 60  # seconds for one whole request, all tool rounds included (#8)
@@ -63,10 +67,33 @@ class Assistant:
         self._messenger = messenger
         self.actor = actor.as_ai()  # the AI never acts with full human authority
         self._display_name = actor.display_name
+        self._user_id = actor.user_id
         self.history: list[dict] = []
+        self.conversation = uuid.uuid4().hex
+        self.record_history = True
+        self._pending: set[asyncio.Task] = set()
 
     def reset(self) -> None:
         self.history = []
+        self.conversation = uuid.uuid4().hex
+
+    def _remember(self, text: str, reply: "AssistantReply") -> None:
+        """Save the exchange in the chat history *after* replying, in the background (round 2, B)."""
+        if not self.record_history:
+            return
+
+        async def save() -> None:
+            try:
+                await chat_history.record(self._db, self._user_id, self.conversation, "user", text)
+                await chat_history.record(
+                    self._db, self._user_id, self.conversation, "assistant", reply.text, reply.provider,
+                    [d["document_id"] for d in reply.created_documents], reply.created_batches)
+            except Exception:
+                log.exception("Saving assistant history failed")
+
+        task = asyncio.ensure_future(save())
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
 
     def _system(self, allow_post: bool) -> dict:
         return {"role": "system", "content": SYSTEM_PROMPT.format(
@@ -79,7 +106,9 @@ class Assistant:
         allow_post = self.actor.can(Perm.DOCUMENTS_POST) and await ai_may_post(self._db)
         ctx = ToolContext(self._db, self.actor, [], self._messenger, allow_post=allow_post)
         try:
-            return await asyncio.wait_for(self._run(ctx, allow_post), timeout or AI_TOTAL_TIMEOUT)
+            reply = await asyncio.wait_for(self._run(ctx, allow_post), timeout or AI_TOTAL_TIMEOUT)
+            self._remember(text, reply)
+            return reply
         except (AIUnavailable, TimeoutError) as exc:
             reason = exc.message if isinstance(exc, AIUnavailable) else \
                 "پاسخ دستیار بیش از حد طول کشید و متوقف شد."
@@ -90,7 +119,9 @@ class Assistant:
             # Something was already created: say so instead of only showing an error (#4).
             text = f"{reason}\n\nپیش از این خطا این موارد انجام شد:\n" + _created_summary(ctx)
             self.history.append({"role": "assistant", "content": text})
-            return AssistantReply(text, "", ctx.created_batches, created_documents=ctx.created_documents)
+            reply = AssistantReply(text, "", ctx.created_batches, created_documents=ctx.created_documents)
+            self._remember(self.history[-2]["content"] if len(self.history) > 1 else "", reply)
+            return reply
 
     async def _run(self, ctx: ToolContext, allow_post: bool) -> AssistantReply:
         tools = [t.schema() for t in available_tools(self.actor, allow_post)]
@@ -133,6 +164,7 @@ async def text_to_draft(db: Database, gateway: Gateway | None, actor: Actor, tex
     title = title or f"متن تایپ‌شده {jalali.format_date(dt.date.today())}"
     if gateway is not None and await gateway.available():
         assistant = Assistant(db, gateway, actor)
+        assistant.record_history = False  # a typed list for «ورود اطلاعات», not a conversation
         try:
             kind = "رسید ورود" if doc_type == DocType.RECEIPT else "حواله خروج"
             reply = await assistant.send(

@@ -6,9 +6,18 @@ from decimal import Decimal
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
-from caspian.db.models import AuditLog, DocStatus, DocType, ImportKind, ImportSource, LineStatus, PersonKind
+from caspian.db.models import (
+    AuditLog,
+    DocStatus,
+    DocType,
+    ImportKind,
+    ImportSource,
+    Item,
+    LineStatus,
+    PersonKind,
+)
 from caspian.services import backup, documents, imports, items, master, stocktake, users
 from caspian.services.ai import config
 from caspian.services.ai.assistant import Assistant
@@ -26,7 +35,10 @@ async def shop(db, admin, monkeypatch):
     u = {x.name: x.id for x in await master.list_units(db)}
     wh = (await master.list_warehouses(db))[0].id
     jaro1 = await items.create_item(db, admin, ItemInput("1006", "جارو", u["عدد"]))
-    jaro2 = await items.create_item(db, admin, ItemInput("1017", "جارو", u["عدد"]))
+    # Two active «جارو» exist in older data (new duplicates are refused since round 2, feature A).
+    jaro2 = await items.create_item(db, admin, ItemInput("1017", "سطل موقت", u["عدد"]))
+    async with db.session() as s:
+        await s.execute(update(Item).where(Item.id == jaro2).values(name="جارو", name_normalized="جارو"))
     drill = await items.create_item(db, admin, ItemInput("1001", "دریل بوش", u["عدد"]))
     await documents.create_and_post(db, admin, documents.DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh,
@@ -205,8 +217,28 @@ async def test_chat_failure_names_each_provider_and_reason(db, admin, shop):
     with pytest.raises(AIUnavailable) as caught:
         await Assistant(db, gw, admin).send("سلام")
     text = caught.value.message
-    assert "Local" in text and "404" in text and "not found" in text
+    assert "Local" in text and "404" in text and "پیدا نشد" in text
+    assert "not found" not in text  # raw server text only in the log (round 2 #3)
     assert "Groq" in text and "429" in text
+
+
+async def test_gemini_503_shows_a_short_persian_reason(db, admin, shop, caplog):
+    """Chat showed «[{'error': {'code': 503, 'message': 'This model is currently experiencing high
+    demand…'}}]» (round 2 #3)."""
+    body = [{"error": {"code": 503, "message": "This model is currently experiencing high demand. "
+                                               "Spikes in demand are usually temporary.",
+                       "status": "UNAVAILABLE"}}]
+    gw = Gateway(db, httpx.MockTransport(lambda r: httpx.Response(503, json=body)),
+                 online_check=lambda: True)
+    with caplog.at_level("WARNING"), pytest.raises(AIUnavailable) as caught:
+        await Assistant(db, gw, admin).send("سلام")
+    text = caught.value.message
+    assert "سرور سرویس شلوغ است (503)" in text
+    assert "{" not in text and "error" not in text and "high demand" not in text
+    assert "high demand" in caplog.text  # kept for support
+    provider = (await config.list_providers(db))[0]
+    ok, message, _ = await gw.test_provider(provider)  # settings test: short server message, isolated
+    assert not ok and "(503)" in message and "⁦This model is currently" in message
 
 
 async def test_whole_request_times_out(db, admin, shop):

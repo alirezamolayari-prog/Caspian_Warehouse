@@ -36,7 +36,7 @@ from caspian.db.models import (
 )
 from caspian.services import audit, documents, items
 from caspian.services.actor import Actor
-from caspian.services.errors import NotFound, PermissionDenied, ValidationError
+from caspian.services.errors import NotFound, PermissionDenied, SimilarItems, ValidationError
 from caspian.services.import_files import RawRow
 from caspian.services.items import ItemInput
 from caspian.services.protected import Approval, ProtectedAction, consume
@@ -500,7 +500,8 @@ class ApplyResult:
 
 
 async def apply_batch(db: Database, actor: Actor, batch_id: int,
-                      approval: Approval | None = None) -> ApplyResult:
+                      approval: Approval | None = None,
+                      similar_approval: Approval | None = None) -> ApplyResult:
     """Write the reviewed batch: new/updated items and (for stock) a DRAFT document."""
     if actor.is_ai:
         raise PermissionDenied("دستیار هوشمند فقط پیش‌نویس می‌سازد؛ اعمال آن با کاربر است.")
@@ -522,6 +523,7 @@ async def apply_batch(db: Database, actor: Actor, batch_id: int,
             if overwrites else None
 
         units = {normalize(u.name): u.id for u in (await s.scalars(select(Unit))).all()}
+        similar_approver: int | None = None
         categories: dict[str, int] = {}
         created = updated = 0
         item_for_line: dict[int, int] = {}
@@ -531,13 +533,24 @@ async def apply_batch(db: Database, actor: Actor, batch_id: int,
             if ln.resolution == Resolution.CREATE:
                 unit_id = units.get(normalize(ln.unit_name or DEFAULT_UNIT)) \
                     or units[normalize(DEFAULT_UNIT)]
-                item = await items.create_item_in(s, actor, ItemInput(
+                data = ItemInput(
                     code=ln.code or await items.next_code_in(s), name=ln.name,
                     base_unit_id=unit_id,
                     category_id=await _category_id(s, ln.category_name, categories),
                     reorder_point=ln.reorder_point,
                     barcodes=[(ln.barcode, None)] if ln.barcode else [],
-                ))
+                )
+                # One item per real product: exact duplicates are refused, similar ones need the
+                # admin's approval (QA round 2, feature A). Name the row so it can be fixed.
+                try:
+                    if similar_approval is not None and similar_approver is None:
+                        similar_approver = items.similar_ok(similar_approval, actor)
+                    item = await items.create_item_in(s, actor, data,
+                                                      allow_similar=similar_approver is not None)
+                except SimilarItems as exc:
+                    raise SimilarItems(f"ردیف {ln.row_no}: {exc.message}", exc.candidates) from exc
+                except ValidationError as exc:
+                    raise ValidationError(f"ردیف {ln.row_no}: {exc.message}") from exc
                 item_for_line[ln.id] = item.id
                 created += 1
             elif ln.resolution == Resolution.OVERWRITE:

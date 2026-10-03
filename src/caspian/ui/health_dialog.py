@@ -8,7 +8,8 @@ from caspian.ui.dialogs import FormDialog
 from caspian.ui.widgets import DataTable
 
 KIND_NAMES = {"future_date": "تاریخ آینده", "outside_year": "خارج از سال مالی باز",
-              "fractional_balance": "موجودی اعشاری در واحد عددی"}
+              "fractional_balance": "موجودی اعشاری در واحد عددی",
+              "duplicate_items": "کالاهای تکراری/مشابه"}
 
 
 class HealthDialog(FormDialog):

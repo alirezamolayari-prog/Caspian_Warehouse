@@ -5,15 +5,17 @@ item's base unit (`base_qty`) using the item's own conversion factors; the clien
 never supplies the factor.
 """
 
+import asyncio
 import datetime as dt
 import logging
+import random
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
 
 from sqlalchemy import and_, func, or_, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm.attributes import flag_modified
@@ -52,7 +54,9 @@ from caspian.services.errors import (
 from caspian.services.fiscal_state import ensure_open_year
 from caspian.services.protected import Approval, ProtectedAction, consume
 
-NUMBER_RETRIES = 3
+NUMBER_RETRIES = 10
+CONFLICT_MESSAGE = ("چند سند هم‌زمان ثبت می‌شد و این یکی ثبت نشد؛ لطفاً دوباره تلاش کنید. "
+                    "(هیچ تغییری در موجودی داده نشد.)")
 log = logging.getLogger(__name__)
 
 DOC_TYPE_NAMES = {
@@ -700,14 +704,37 @@ async def create_document_in(s: AsyncSession, actor: Actor, data: DocumentInput)
 async def create_document(db: Database, actor: Actor, data: DocumentInput) -> int:
     # Two PCs saving the same document type at the same moment can pick the same number;
     # the unique constraint rejects the second one, which simply retries with the next number.
-    for attempt in range(NUMBER_RETRIES):
+    async def attempt() -> int:
+        async with db.session(actor.user_id) as s:
+            return (await create_document_in(s, actor, data)).id
+
+    return await _with_retries(attempt, numbering=True)
+
+
+def _is_conflict(exc: Exception, numbering: bool) -> bool:
+    """A collision with another PC/task that is solved by simply trying again (QA round 2 #1)."""
+    if numbering and isinstance(exc, IntegrityError):
+        return True
+    if isinstance(exc, OperationalError):
+        orig = getattr(exc, "orig", None)
+        code = orig.args[0] if orig is not None and getattr(orig, "args", None) else None
+        # MariaDB: deadlock, lock wait timeout, "record has changed since last read"; SQLite: locked.
+        return code in (1213, 1205, 1020) or "database is locked" in str(exc)
+    return False
+
+
+async def _with_retries(attempt, numbering: bool = False):
+    for n in range(NUMBER_RETRIES):
         try:
-            async with db.session(actor.user_id) as s:
-                return (await create_document_in(s, actor, data)).id
-        except IntegrityError:
-            if attempt == NUMBER_RETRIES - 1:
+            return await attempt()
+        except (IntegrityError, OperationalError) as exc:
+            if not _is_conflict(exc, numbering):
                 raise
-            log.info("Document number collision; retrying")
+            if n == NUMBER_RETRIES - 1:
+                log.warning("Giving up after %d conflicts: %s", NUMBER_RETRIES, exc)
+                raise ValidationError(CONFLICT_MESSAGE) from exc
+            log.info("Concurrent save; retrying (%d)", n + 1)
+            await asyncio.sleep(random.uniform(0.01, 0.05) * (n + 1))
     raise AssertionError("unreachable")
 
 
@@ -755,11 +782,21 @@ async def post_document(db: Database, actor: Actor, doc_id: int,
     """Finalize a draft: write the ledger and update balances atomically.
 
     `approval` (STOCKTAKE_OVERRIDE) is only needed while a stocktake freezes the items."""
-    async with db.session(actor.user_id) as s:
-        doc = await _load(s, doc_id)
-        if expected_version is not None and doc.version_id != expected_version:
-            raise ConcurrencyError()
-        await post_document_in(s, actor, doc, approval=approval)
+    async def attempt() -> None:
+        async with db.session(actor.user_id) as s:
+            doc = await _load(s, doc_id)
+            if expected_version is not None and doc.version_id != expected_version:
+                raise ConcurrencyError()
+            await post_document_in(s, actor, doc, approval=approval)
+
+    if approval is not None:  # an approval is single-use: no silent second attempt
+        try:
+            return await attempt()
+        except OperationalError as exc:
+            if _is_conflict(exc, numbering=False):
+                raise ValidationError(CONFLICT_MESSAGE) from exc
+            raise
+    await _with_retries(attempt)
 
 
 async def post_document_in(s: AsyncSession, actor: Actor, doc: Document, *,

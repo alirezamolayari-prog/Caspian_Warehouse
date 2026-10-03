@@ -93,8 +93,10 @@ class ApprovalDialog(FormDialog):
     confirm_discard = False  # nothing to lose on closing
 
     def __init__(self, db: Database, actor: Actor, action: ProtectedAction, description: str,
-                 approvers: list[tuple[str, str]], parent: QWidget | None = None) -> None:
+                 approvers: list[tuple[str, str]], parent: QWidget | None = None,
+                 details: dict | None = None) -> None:
         title, _perm = ACTION_INFO[action]
+        self._details = details
         super().__init__(f"تأیید عملیات حساس: {title}", submit_text="تأیید و انجام",
                          parent=parent)
         self.submit_button.setProperty("variant", "danger")
@@ -126,8 +128,8 @@ class ApprovalDialog(FormDialog):
 
     async def submit(self) -> None:
         self.approval = await protected.approve(
-            self._db, self._actor, self._action, self.approver.currentData(), self.pin.text()
-        )
+            self._db, self._actor, self._action, self.approver.currentData(), self.pin.text(),
+            self._details)
 
     def show_status(self, text: str, is_error: bool = True) -> None:
         super().show_status(text, is_error)
@@ -135,14 +137,15 @@ class ApprovalDialog(FormDialog):
 
 
 async def request_approval(db: Database, actor: Actor, action: ProtectedAction,
-                           description: str, parent: QWidget | None = None) -> Approval | None:
+                           description: str, parent: QWidget | None = None,
+                           details: dict | None = None) -> Approval | None:
     """Ask for confirmation + admin PIN. None if cancelled or impossible."""
     approvers = await protected.list_approvers(db)
     if not approvers:
         show_error(parent, "هیچ مدیری PIN تنظیم نکرده است. "
                            "ابتدا از منوی کاربر، PIN مدیر را تنظیم کنید.")
         return None
-    dialog = ApprovalDialog(db, actor, action, description, approvers, parent)
+    dialog = ApprovalDialog(db, actor, action, description, approvers, parent, details)
     await exec_dialog(dialog)
     return dialog.approval
 

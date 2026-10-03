@@ -7,9 +7,15 @@ license — see LICENSE). Current release: **v1.0.0** (installer on GitHub Relea
 
 ## Features (all implemented)
 - Users/roles/permissions, login lockout, **admin PIN** for protected actions (delete/deactivate
-  item, import overwrite, merge, restore backup, change role, close fiscal year), full audit log.
+  item, import overwrite, merge, create similar item, restore backup, change role, close fiscal
+  year), full audit log.
 - Items (units + conversions, barcodes per unit, reorder points, returnable/loan items),
   warehouses, persons, categories; normalized Persian search.
+- **One item per real product** (`services/items.py`): exact normalized duplicate names refused;
+  similar names (rapidfuzz ≥ `SIMILAR_SCORE` 85, numbers must match) raise `SimilarItems` unless a
+  `CREATE_SIMILAR_ITEM` PIN approval (with reason) is given — enforced for dialog, opening stock, imports,
+  renames, never for the AI. Existing duplicates: health finding + Items filter + PIN-protected
+  `merge_items` (moves lines/ledger/balances/barcodes/units, deactivates sources). Never auto-modified.
 - Documents: receipt, issue, transfer, adjustment, opening, loan out/return; draft → post
   (stock ledger + balances, row locks) → cancel (reversal rows; history never deleted).
 - **Draft-first imports** (Excel/CSV/Word, barcode scan, typed text) with row statuses
@@ -22,12 +28,19 @@ license — see LICENSE). Current release: **v1.0.0** (installer on GitHub Relea
   setting `ai_allow_post` is on (default), posts them through the normal services. It **never** does
   destructive/protected actions: `Actor.require_human()` in services refuses cancel/delete, deactivation,
   user management, stocktake approve/cancel, import discard, restore for `actor.is_ai`.
+  Gateway errors show a short Persian reason per HTTP status; raw server text only in the log.
+- Assistant chat history (`services/ai/history.py`, table `assistant_messages`): saved in the background
+  after each reply (≤ 2,000 chars, no audio); own rows only, admins all; the AI never reads it; retention
+  `ai_history_days` (default 30) purged in batches by `SchedulerRunner` (startup + daily).
 - Read-only data health check (`services/health.py`, dashboard warning); startup refuses a DB migrated
   by a newer app (`migrate.SchemaTooNew`) without touching it.
 - Read-only MCP server (`caspian-mcp`), Telegram/SMTP messaging to admin-configured recipients,
   scheduled tasks from `.md` instructions (proposed → admin approves → runs on that PC only).
 - Encrypted backups (`.bak`: mariadb-dump + gzip + AES-256-GCM/scrypt), PIN-protected restore.
 - Fiscal year-end wizard: backup → archive DB `<name>_<year>` (SELECT-only) → opening balances.
+  Loans carried over by the close are not health-check findings.
+- Document numbering/posting retries on unique/deadlock conflicts (`documents._with_retries`), then a
+  Persian error; `tests/test_concurrency.py` covers SQLite and MariaDB.
 
 ## Stack & structure
 Python 3.12+ (dev on 3.14), uv, PySide6-Essentials + qasync, SQLAlchemy 2 async + Alembic,
@@ -56,7 +69,8 @@ docs/               USER_GUIDE.md (Persian), LAN_SETUP.md, ROADMAP.md, screensho
 ```powershell
 uv sync
 uv run caspian                 # the app (uv run caspian --smoke-test: builds every page headless)
-$env:QT_QPA_PLATFORM="offscreen"; uv run pytest   # ~380 tests (SQLite)
+$env:QT_QPA_PLATFORM="offscreen"; uv run pytest   # ~420 tests (SQLite)
+$env:CASPIAN_SLOW_TESTS="1"; uv run pytest tests/sim   # 6-month simulation (~1 min)
 uv run ruff check
 # Optional MariaDB integration tests (the test DB is wiped):
 $env:CASPIAN_TEST_MARIADB_URL="mariadb+aiomysql://caspian:<pw>@localhost:3306/caspian_test?charset=utf8mb4"
@@ -97,7 +111,9 @@ Model change → `uv run alembic revision --autogenerate -m "..."` (replace gene
 - **Keep user data safe:** never write user data into the install folder; upgrades/uninstall must
   not touch settings, backups, credentials or the database. Never change the installer `AppId`.
 - Tests and scripts must never overwrite the real settings file (conftest isolates it; the smoke
-  test uses a non-saving Settings). Don't write to real keyring entries in tests (monkeypatch).
+  test uses a non-saving Settings). conftest installs an in-memory keyring backend for every test
+  (`MemoryKeyring`, guarded by `tests/test_keyring_guard.py`) — never remove it; an earlier suite deleted
+  a real API key from Credential Manager.
 - Enforce permissions, PIN approvals and AI restrictions in `services/`, not only in the UI.
   AI tools may create/post documents only via the normal services; any new destructive service must call
   `actor.require_human(...)`. Posted documents are cancelled, never deleted.

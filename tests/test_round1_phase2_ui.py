@@ -67,23 +67,19 @@ async def test_cancelling_a_stocktake_asks(qtbot, ctx, monkeypatch, answer):
     assert asked and row.status is (StocktakeStatus.CANCELLED if answer else StocktakeStatus.OPEN)
 
 
-async def test_duplicate_item_name_warns_before_saving(qtbot, ctx, monkeypatch):
+async def test_duplicate_item_name_is_refused(qtbot, ctx):
+    """Round 1 #13 warned and allowed; round 2 (one item per real product) refuses an exact duplicate."""
     from caspian.ui import items_page
 
     units = await master.list_units(ctx.db)
     await items.create_item(ctx.db, ctx.actor, ItemInput("1006", "جارو", units[0].id))
-    asked = _answer(monkeypatch, items_page, False)
     dlg = items_page.ItemDialog(ctx, units, [], suggested_code="1017")
     qtbot.addWidget(dlg)
     dlg.name.setText("جارو")
     dlg.submit_button.click()
     await settle(dlg)
-    assert asked and "1006" in asked[0] and dlg.saved_id is None
+    assert "همین نام" in dlg.status.text() and "1006" in dlg.status.text() and dlg.saved_id is None
     assert len(await items.search_items(ctx.db, ctx.actor, "جارو")) == 1
-    _answer(monkeypatch, items_page, True)  # «ذخیره» anyway
-    dlg.submit_button.click()
-    await settle(dlg)
-    assert len(await items.search_items(ctx.db, ctx.actor, "جارو")) == 2
 
 
 async def test_editor_validates_before_asking_to_post(qtbot, ctx, monkeypatch):

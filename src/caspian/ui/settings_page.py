@@ -21,6 +21,7 @@ from caspian.core.permissions import Perm
 from caspian.core.text import ltr, to_persian_digits
 from caspian.db.models import ProviderKind
 from caspian.services.ai import config
+from caspian.services.ai import history as chat_history
 from caspian.services.ai.config import PRESETS, ProviderConfig
 from caspian.services.errors import ServiceError
 from caspian.ui.app_context import AppContext, exec_dialog
@@ -202,6 +203,15 @@ class AITab(QWidget):
         self.allow_post.setToolTip("خاموش: دستیار فقط پیش‌نویس می‌سازد و ثبت نهایی با کاربر است.")
         self.allow_post.toggled.connect(self.on_allow_post)
         layout.addWidget(self.allow_post)
+        retention = QHBoxLayout()
+        retention.addWidget(QLabel("نگهداری سوابق گفتگو با دستیار:"))
+        self.history_days = QSpinBox()
+        self.history_days.setRange(1, 365)
+        self.history_days.setSuffix(" روز")
+        self.history_days.editingFinished.connect(self.on_history_days)
+        retention.addWidget(self.history_days)
+        retention.addStretch(1)
+        layout.addLayout(retention)
         toolbar = QHBoxLayout()
         self.status = QLabel(objectName="Muted")
         toolbar.addWidget(self.status, 1)
@@ -240,6 +250,13 @@ class AITab(QWidget):
         super().showEvent(event)
         self.refresh()
 
+    @asyncSlot()
+    async def on_history_days(self) -> None:
+        try:
+            await chat_history.set_retention_days(self._ctx.db, self._ctx.actor, self.history_days.value())
+        except ServiceError as exc:
+            show_error(self, exc.message)
+
     @asyncSlot(bool)
     async def on_allow_post(self, allowed: bool) -> None:
         try:
@@ -252,6 +269,7 @@ class AITab(QWidget):
         self.allow_post.blockSignals(True)
         self.allow_post.setChecked(await config.ai_may_post(self._ctx.db))
         self.allow_post.blockSignals(False)
+        self.history_days.setValue(await chat_history.retention_days(self._ctx.db))
         rows = await config.list_providers(self._ctx.db)
         self._rows = {p.id: p for p in rows}
         theme = self._ctx.themes.current

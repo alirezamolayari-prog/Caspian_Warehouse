@@ -367,9 +367,18 @@ class SchedulerRunner:
             self._task = None
 
     async def _loop(self) -> None:
+        last_housekeeping: dt.date | None = None
         while True:
             try:
                 await run_due(self._db, self._messenger)
             except Exception:
                 log.exception("Scheduler tick failed")
+            if last_housekeeping != dt.date.today():  # once a day (and right after start)
+                last_housekeeping = dt.date.today()
+                try:
+                    from caspian.services.ai import history
+
+                    await history.purge(self._db)
+                except Exception:
+                    log.exception("Housekeeping failed")
             await asyncio.sleep(self._interval)

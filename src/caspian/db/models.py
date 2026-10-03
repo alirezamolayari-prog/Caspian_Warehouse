@@ -504,3 +504,23 @@ class ScheduledTask(IdMixin, TimestampMixin, CreatedByMixin, Base):
     next_run_at: Mapped[dt.datetime | None]
     last_ok: Mapped[bool | None] = mapped_column(Boolean)
     last_result: Mapped[str] = mapped_column(Text, default="")
+
+
+# ----- assistant chat history (QA round 2, feature B) -----
+
+
+class AssistantMessage(IdMixin, Base):
+    """One line of an assistant conversation, kept for a limited time (app_settings.ai_history_days,
+    default 30). Compact: text is truncated and no audio is ever stored."""
+
+    __tablename__ = "assistant_messages"
+    __table_args__ = (Index(None, "user_id", "created_at"),)
+
+    user_id: Mapped[int] = mapped_column(BigIntPK, ForeignKey("users.id", ondelete="CASCADE"))
+    conversation: Mapped[str] = mapped_column(String(36))
+    created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now(), index=True)
+    role: Mapped[str] = mapped_column(String(16))  # user | assistant
+    text: Mapped[str] = mapped_column(Text, default="")
+    provider: Mapped[str] = mapped_column(String(100), default="")
+    document_ids: Mapped[list | None] = mapped_column(JSON)
+    batch_ids: Mapped[list | None] = mapped_column(JSON)

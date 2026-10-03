@@ -212,3 +212,22 @@ async def test_year_end_on_mariadb(tmp_path):
         async with root.engine.connect() as conn:
             await conn.execute(text(f"DROP DATABASE IF EXISTS `{archive_db}`"))
         await root.dispose()
+
+
+async def test_health_check_ignores_loans_carried_over(env):
+    """After the first year-end the dashboard stayed red: the carried loan looked «outside_year»
+    and the user was told to cancel it (QA round 2 #2)."""
+    from caspian.services import backup as backup_service
+    from caspian.services import health
+
+    db, admin = env["db"], env["admin"]
+    await _close(env)
+    assert await health.check(db, admin) == []
+    await docs.create_and_post(db, admin, docs.DocumentInput(
+        DocType.LOAN_RETURN, NEW, env["wh"], [docs.LineInput(env["ids"]["P"], env["u"]["عدد"], D(4))],
+        person_id=env["emp"], related_document_id=env["loan"]))
+    assert await health.check(db, admin) == []
+    info = await backup_service.create_backup(db, admin, env["dumper"], PASSWORD, env["dir"])
+    approval = await protected.approve(db, admin, protected.ProtectedAction.RESTORE_BACKUP, "admin", "4826")
+    await backup_service.restore_backup(db, admin, env["dumper"], info.path, PASSWORD, approval, env["dir"])
+    assert await health.check(db, admin) == []

@@ -22,7 +22,8 @@ from caspian.core.text import to_persian_digits
 from caspian.services.ai.assistant import Assistant
 from caspian.services.ai.gateway import AIUnavailable
 from caspian.services.errors import ServiceError
-from caspian.ui.app_context import AppContext
+from caspian.ui.app_context import AppContext, exec_dialog
+from caspian.ui.chat_history import HistoryDialog
 from caspian.ui.icons import icon
 from caspian.ui.tasks import spawn
 from caspian.ui.widgets import Card
@@ -63,6 +64,9 @@ class AssistantPage(QWidget):
         top = QHBoxLayout()
         self.status = QLabel(objectName="Muted")
         top.addWidget(self.status, 1)
+        self.history_button = QPushButton("سوابق گفتگو")
+        self.history_button.clicked.connect(self.on_history)
+        top.addWidget(self.history_button)
         self.new_button = QPushButton("گفتگوی جدید")
         self.new_button.clicked.connect(self.on_new_chat)
         top.addWidget(self.new_button)
@@ -247,6 +251,15 @@ class AssistantPage(QWidget):
             self.status.setText("متن گفته‌شده در کادر پایین است؛ بررسی کنید و «ارسال» را بزنید.")
         else:
             self.status.setText("صدایی تشخیص داده نشد.")
+
+    @asyncSlot()
+    async def on_history(self) -> None:
+        dialog = HistoryDialog(self._ctx, self)
+        await dialog.start()
+        if await exec_dialog(dialog) and dialog.chosen_command:
+            # Back into the input box to re-run (or edit first).
+            self.input.setText(dialog.chosen_command)
+            self.input.setFocus()
 
     def on_new_chat(self) -> None:
         self._assistant.reset()
