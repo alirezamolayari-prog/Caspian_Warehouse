@@ -3,6 +3,7 @@
 import datetime as dt
 from decimal import Decimal
 
+import time_machine
 from sqlalchemy import func, select, update
 
 from caspian.db.models import Document, StockBalance, StockLedger, Unit
@@ -10,6 +11,7 @@ from caspian.services import documents, health, items, master
 from caspian.services.items import ItemInput
 
 
+@time_machine.travel(dt.datetime(2026, 10, 3, 10), tick=False)  # «future» stays future
 async def test_lists_old_bad_data_without_changing_it(db, admin):
     u = {x.name: x.id for x in await master.list_units(db)}
     wh = (await master.list_warehouses(db))[0].id
@@ -30,7 +32,7 @@ async def test_lists_old_bad_data_without_changing_it(db, admin):
     async with db.session() as s:
         counts = (await s.scalar(select(func.count()).select_from(StockLedger)),
                   await s.scalar(select(func.count()).select_from(Document)))
-    findings = await health.check(db, admin, today=dt.date(2026, 10, 3))
+    findings = await health.check(db, admin)
     kinds = sorted(f.kind for f in findings)
     assert kinds == ["fractional_balance", "future_date"]
     future_row = next(f for f in findings if f.kind == "future_date")
