@@ -462,11 +462,12 @@ def make_scheduled_handler(db: Database, config: DbConfig, app_password: str, se
     """Handler for TaskKind.BACKUP tasks (runs as the system, audited with no user)."""
     from caspian.core.settings import default_backup_dir
 
-    async def handler(_db: Database, _params: dict) -> str:
+    async def handler(_db: Database, params: dict) -> str:
         password = backup_password()  # none: an unencrypted backup beats no backup (#33)
         info = await create_backup(
             db, None, make_dumper(db, config, app_password, settings.mariadb_tools_dir), password,
-            settings.backup_dir or default_backup_dir(), "زمان‌بندی‌شده", keep=settings.backup_keep)
+            settings.backup_dir or default_backup_dir(), (params or {}).get("label") or "زمان‌بندی‌شده",
+            keep=settings.backup_keep)
         warning = "" if info.encrypted else " — بدون رمز! رمز پشتیبان را در تنظیمات تعیین کنید"
         return f"{info.name} ({format_size(info.size)}){warning}"
 

@@ -1,11 +1,13 @@
 """Backup settings: folder, retention, password, backup now, verify, restore (PIN)."""
 
+import datetime as dt
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QTime, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -14,6 +16,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QTimeEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -24,7 +27,7 @@ from caspian.core.permissions import Perm
 from caspian.core.settings import default_backup_dir
 from caspian.core.text import to_persian_digits
 from caspian.db.bootstrap import prepare
-from caspian.services import backup
+from caspian.services import backup, scheduler
 from caspian.services.backup import BackupInfo, find_tool
 from caspian.services.errors import ServiceError, ValidationError
 from caspian.services.protected import ProtectedAction
@@ -33,6 +36,7 @@ from caspian.ui.auth_dialogs import request_approval
 from caspian.ui.dialogs import FormDialog, password_field
 from caspian.ui.health_dialog import show_health
 from caspian.ui.messages import show_error, show_info
+from caspian.ui.tasks import spawn
 from caspian.ui.widgets import Card, DataTable
 
 
@@ -118,6 +122,19 @@ class BackupTab(QWidget):
         self.keep.setValue(settings.backup_keep)
         self.keep.setSuffix(" نسخه آخر (۰ = همه)")
         form.addRow("نگهداری:", self.keep)
+        # Daily automatic backup: one task of the existing scheduler, approved for this PC (local clock).
+        self.daily = QCheckBox("پشتیبان‌گیری خودکار روزانه")
+        self.daily_time = QTimeEdit(QTime(20, 0))
+        self.daily_time.setDisplayFormat("HH:mm")
+        self.daily_time.setEnabled(False)
+        self.daily.toggled.connect(self._update_daily)
+        daily_row = QHBoxLayout()
+        daily_row.addWidget(self.daily)
+        daily_row.addSpacing(16)
+        daily_row.addWidget(QLabel("ساعت پشتیبان‌گیری:"))
+        daily_row.addWidget(self.daily_time)
+        daily_row.addStretch(1)
+        form.addRow("خودکار:", daily_row)
         tools_row = QHBoxLayout()
         self.tools = QLineEdit(settings.mariadb_tools_dir)
         self.tools.setPlaceholderText("خودکار")
@@ -200,6 +217,23 @@ class BackupTab(QWidget):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self.refresh()
+        spawn(self.load_daily())
+
+    def _update_daily(self, *_args) -> None:
+        allowed = self._ctx.actor.can(Perm.SETTINGS_EDIT)
+        self.daily.setEnabled(allowed)
+        self.daily_time.setEnabled(allowed and self.daily.isChecked())
+        tip = "" if allowed else "فقط مدیر سیستم می‌تواند پشتیبان‌گیری خودکار را تغییر دهد."
+        self.daily.setToolTip(tip)
+        self.daily_time.setToolTip(tip)
+
+    async def load_daily(self) -> None:
+        """The scheduler task is the single source of truth (survives restarts, matches the tasks tab)."""
+        enabled, at = await scheduler.daily_backup(self._ctx.db)
+        self.daily.setChecked(enabled)
+        if at is not None:
+            self.daily_time.setTime(QTime(at.hour, at.minute))
+        self._update_daily()
 
     def refresh(self) -> None:
         rows = backup.list_backups(self.folder.text())
@@ -230,13 +264,26 @@ class BackupTab(QWidget):
             self.tools.setText(path)
             self._refresh_status()
 
-    def on_save_settings(self) -> None:
+    @asyncSlot()
+    async def on_save_settings(self) -> None:
         s = self._ctx.settings
         s.backup_dir, s.backup_keep, s.mariadb_tools_dir = (self.folder.text().strip(),
                                                             self.keep.value(), self.tools.text().strip())
         s.save()
         self._refresh_status()
-        show_info(self, "تنظیمات پشتیبان‌گیری ذخیره شد.")
+        message = "تنظیمات پشتیبان‌گیری ذخیره شد."
+        if self._ctx.actor.can(Perm.SETTINGS_EDIT):
+            t = self.daily_time.time()
+            try:
+                await scheduler.set_daily_backup(self._ctx.db, self._ctx.actor, self.daily.isChecked(),
+                                                 dt.time(t.hour(), t.minute()))
+            except ServiceError as exc:
+                show_error(self, exc.message)
+                return
+            if self.daily.isChecked():
+                message += (f" پشتیبان خودکار هر روز ساعت {to_persian_digits(t.toString('HH:mm'))} "
+                            "گرفته می‌شود (وقتی برنامه روی این رایانه باز است).")
+        show_info(self, message)
 
     @asyncSlot()
     async def on_password(self) -> None:

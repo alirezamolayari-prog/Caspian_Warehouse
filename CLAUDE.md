@@ -37,6 +37,10 @@ license — see LICENSE). Current release: **v1.0.0** (installer on GitHub Relea
 - Read-only MCP server (`caspian-mcp`), Telegram/SMTP messaging to admin-configured recipients,
   scheduled tasks from `.md` instructions (proposed → admin approves → runs on that PC only).
 - Encrypted backups (`.bak`: mariadb-dump + gzip + AES-256-GCM/scrypt), PIN-protected restore.
+- Daily automatic backup (Settings → پشتیبان‌گیری): one `TaskKind.BACKUP` task per PC with
+  `params.auto_daily` (`scheduler.set_daily_backup`, cron `M H * * *`, approved for `MACHINE`, label
+  «خودکار»). `SchedulerRunner` waits `catch_up_delay` (60 s) after login, then `scheduler.catch_up` runs each
+  missed task once (skipped if the next run is < 1 h away) before the normal `run_due` loop.
 - Fiscal year-end wizard: backup → archive DB `<name>_<year>` (SELECT-only) → opening balances.
   Loans carried over by the close are not health-check findings.
 - Document numbering/posting retries on unique/deadlock conflicts (`documents._with_retries`), then a

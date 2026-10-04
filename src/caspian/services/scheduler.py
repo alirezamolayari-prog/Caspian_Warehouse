@@ -237,12 +237,66 @@ async def approve(db: Database, actor: Actor, task_id: int, now: dt.datetime | N
         task = await _load(s, task_id)
         if task.kind == TaskKind.REPORT and not task.params.get("channels"):
             raise ValidationError("برای ارسال گزارش، کانال (تلگرام یا ایمیل) را مشخص کنید.")
-        task.status = TaskStatus.ACTIVE
-        task.machine = MACHINE
-        task.approved_by_id = actor.user_id
-        task.approved_at = dt.datetime.now()
-        task.next_run_at = Cron(task.cron).next_after(now or dt.datetime.now())
+        _activate(task, actor, now)
         audit.record(s, actor, "task.approved", "task", task.id, {"machine": MACHINE, "cron": task.cron})
+
+
+def _activate(task: ScheduledTask, actor: Actor, now: dt.datetime | None) -> None:
+    """Run `task` on THIS PC from its next scheduled time (local clock)."""
+    task.status = TaskStatus.ACTIVE
+    task.machine = MACHINE
+    task.approved_by_id = actor.user_id
+    task.approved_at = dt.datetime.now()
+    task.next_run_at = Cron(task.cron).next_after(now or dt.datetime.now())
+
+
+# ----- daily automatic backup (Settings → پشتیبان‌گیری) -----
+
+DAILY_BACKUP_NAME = "پشتیبان‌گیری خودکار روزانه"
+DAILY_BACKUP_LABEL = "خودکار"
+
+
+async def _daily_task(s) -> ScheduledTask | None:
+    """This PC's daily backup task: one per machine, marked with params["auto_daily"]."""
+    rows = (await s.scalars(select(ScheduledTask).where(
+        ScheduledTask.kind == TaskKind.BACKUP, ScheduledTask.machine == MACHINE)
+        .order_by(ScheduledTask.id))).all()
+    return next((t for t in rows if (t.params or {}).get("auto_daily")), None)
+
+
+async def daily_backup(db: Database) -> tuple[bool, dt.time | None]:
+    """(enabled, time) of this PC's daily backup."""
+    async with db.session() as s:
+        task = await _daily_task(s)
+    if task is None:
+        return False, None
+    minute, hour = task.cron.split()[:2]
+    return task.status == TaskStatus.ACTIVE, dt.time(int(hour), int(minute))
+
+
+async def set_daily_backup(db: Database, actor: Actor, enabled: bool, at: dt.time,
+                           now: dt.datetime | None = None) -> None:
+    """Create/update (enabled) or remove (disabled) this PC's single daily backup task. It is
+    approved for this PC right away (it is the admin's own setting) and shows in the tasks tab."""
+    actor.require_human("تغییر پشتیبان‌گیری خودکار")
+    actor.require(Perm.SETTINGS_EDIT)
+    async with db.session(actor.user_id) as s:
+        task = await _daily_task(s)
+        if not enabled:
+            if task is not None:
+                audit.record(s, actor, "task.daily_backup", "task", task.id, {"enabled": False})
+                await s.delete(task)
+            return
+        if task is None:
+            task = ScheduledTask(name=DAILY_BACKUP_NAME, kind=TaskKind.BACKUP, cron="0 0 * * *",
+                                 source_text=DAILY_BACKUP_NAME)
+            s.add(task)
+        task.cron = f"{at.minute} {at.hour} * * *"
+        task.params = {"auto_daily": True, "label": DAILY_BACKUP_LABEL}
+        _activate(task, actor, now)
+        await s.flush()
+        audit.record(s, actor, "task.daily_backup", "task", task.id,
+                     {"enabled": True, "time": at.strftime("%H:%M"), "machine": MACHINE})
 
 
 async def update_task(db: Database, actor: Actor, task_id: int, name: str, cron: str,
@@ -348,11 +402,40 @@ async def run_due(db: Database, messenger: Messenger, now: dt.datetime | None = 
     return len(due)
 
 
+CATCH_UP_MIN_GAP = dt.timedelta(hours=1)
+
+
+async def catch_up(db: Database, messenger: Messenger, now: dt.datetime | None = None) -> int:
+    """Runs missed tasks (the app was closed at their time) once each, shortly after login.
+    Skipped when the next regular run is close anyway. Running moves next_run_at past `now`, so a
+    task never gets more than one catch-up. Returns how many ran."""
+    now = now or dt.datetime.now()
+    async with db.session() as s:
+        missed = (await s.scalars(select(ScheduledTask).where(
+            ScheduledTask.status == TaskStatus.ACTIVE, ScheduledTask.machine == MACHINE,
+            ScheduledTask.next_run_at < now))).all()
+        todo = []
+        for task in missed:
+            upcoming = Cron(task.cron).next_after(now)
+            if upcoming - now < CATCH_UP_MIN_GAP:
+                log.info("Catch-up of task %s (missed %s) skipped: next run at %s", task.id,
+                         task.next_run_at, upcoming)
+                task.next_run_at = upcoming
+            else:
+                todo.append((task.id, task.next_run_at))
+    for task_id, missed_at in todo:
+        log.info("Catch-up run of task %s (missed %s)", task_id, missed_at)
+        await run_task(db, task_id, messenger, now)
+    return len(todo)
+
+
 class SchedulerRunner:
     """Background loop inside the desktop app."""
 
-    def __init__(self, db: Database, messenger: Messenger, interval: float = 30.0) -> None:
+    def __init__(self, db: Database, messenger: Messenger, interval: float = 30.0,
+                 catch_up_delay: float = 60.0) -> None:
         self._db, self._messenger, self._interval = db, messenger, interval
+        self._catch_up_delay = catch_up_delay
         self._task: asyncio.Task | None = None
 
     def start(self) -> None:
@@ -368,9 +451,17 @@ class SchedulerRunner:
 
     async def _loop(self) -> None:
         last_housekeeping: dt.date | None = None
+        clock = asyncio.get_running_loop().time
+        catch_up_at = clock() + self._catch_up_delay
+        caught_up = False
         while True:
             try:
-                await run_due(self._db, self._messenger)
+                if not caught_up and clock() >= catch_up_at:
+                    # Runs missed while the app was closed wait until shortly after login, once.
+                    caught_up = True
+                    await catch_up(self._db, self._messenger)
+                if caught_up:
+                    await run_due(self._db, self._messenger)
             except Exception:
                 log.exception("Scheduler tick failed")
             if last_housekeeping != dt.date.today():  # once a day (and right after start)
