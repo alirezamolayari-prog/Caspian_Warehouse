@@ -75,3 +75,42 @@ async def test_first_run_prompt_once_and_skip_is_remembered(qtbot, themes, db, a
     dialog().repeat.setText("Backup#Pass2026")
     dialog().submit_button.click()
     assert await task is True and stored == {"pw": "Backup#Pass2026"}
+
+
+async def test_restore_closes_the_window_instead_of_quitting_the_loop(qtbot, themes, db, admin, tmp_path,
+                                                                       monkeypatch):
+    from PySide6.QtWidgets import QApplication, QMainWindow
+
+    from caspian.ui import backup_settings
+
+    monkeypatch.setattr(backup, "backup_password", lambda: "Backup#Pass2026")
+    ctx = AppContext(db, DbConfig(), Settings(backup_dir=str(tmp_path / "bk")), themes, admin)
+    window = QMainWindow()
+    qtbot.addWidget(window)
+    tab = BackupTab(ctx)
+    window.setCentralWidget(tab)
+    window.show()
+    await tab.on_backup()
+    tab.refresh()
+    tab.table.selectRow(0)
+    restored, quits = [], []
+
+    async def fake_restore(*args, **kwargs):
+        restored.append(args[3])
+
+    async def approve(*args, **kwargs):
+        return object()
+
+    async def ok(dialog):
+        return 1
+
+    async def ask(info):
+        return ""
+
+    monkeypatch.setattr(backup_settings, "request_approval", approve)
+    monkeypatch.setattr(backup_settings, "exec_dialog", ok)
+    monkeypatch.setattr(backup_settings.backup, "restore_backup", fake_restore)
+    monkeypatch.setattr(tab, "_ask_password", ask)
+    monkeypatch.setattr(QApplication, "quit", lambda *a: quits.append(1))
+    await tab.on_restore()
+    assert restored and not window.isVisible() and quits == []

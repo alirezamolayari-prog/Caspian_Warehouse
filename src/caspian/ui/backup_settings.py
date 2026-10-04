@@ -6,7 +6,6 @@ from pathlib import Path
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QApplication,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -322,4 +321,7 @@ class BackupTab(QWidget):
                           "بازیابی انجام شد. برنامه بسته می‌شود؛ لطفاً دوباره اجرا و وارد شوید.",
                           QMessageBox.StandardButton.Ok, self)
         await exec_dialog(box)  # wait for the user before quitting
-        QApplication.instance().quit()
+        # Close the main window instead of quitting the Qt app from inside this task: _main() then
+        # finishes normally (scheduler stopped, DB disposed, app.quit()) and qasync's loop is not
+        # stopped under a pending task ("loop ... is not the running loop").
+        self.window().close()
