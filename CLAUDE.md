@@ -3,7 +3,7 @@
 Offline-first, AI-assisted inventory management desktop app for Windows. Persian RTL UI,
 Jalali calendar, MariaDB backend. Built for Caspian Furniture Market, sold/shared as a general
 product. Public repo: https://github.com/alirezamolayari-prog/Caspian_Warehouse (proprietary
-license — see LICENSE). Current release: **v1.0.0** (installer on GitHub Releases).
+license — see LICENSE). Current release: **v1.1.0** (installer on GitHub Releases).
 
 ## Features (all implemented)
 - Users/roles/permissions, login lockout, **admin PIN** for protected actions (delete/deactivate
@@ -135,8 +135,8 @@ Model change → `uv run alembic revision --autogenerate -m "..."` (replace gene
   `printing.rtl_cells`; QTest `keyClicks` with Persian text kills the test process — type Latin.
 
 ## State, known issues, TODOs
-Done: roadmap M0–M13 (docs/ROADMAP.md) and the installer/release pipeline; v1.0.0 published;
-QA rounds (docs/PROGRESS.md, docs/QA_FIX_PLAN.md) merged to main, not yet released.
+Done: roadmap M0–M13 (docs/ROADMAP.md) and the installer/release pipeline; v1.1.0 published;
+QA rounds (docs/PROGRESS.md, docs/QA_FIX_PLAN.md), daily automatic backup and the similar-item fix are in v1.1.0.
 Only tested with mocks / not end-to-end yet:
 - real AI provider keys (the assistant creating/posting documents end-to-end), Telegram/SMTP sending,
   voice with real audio (silence threshold `recorder.MIN_RMS`);
