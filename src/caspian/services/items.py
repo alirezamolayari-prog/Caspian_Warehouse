@@ -588,42 +588,69 @@ async def create_item_with_opening(db: Database, actor: Actor, data: ItemInput,
                          approved_by_id=approver)
         if opening is None:
             return CreatedItem(item.id, None, False)
-        doc = await documents.create_document_in(s, actor, documents.DocumentInput(
-            DocType.OPENING, dt.date.today(), opening.warehouse_id,
-            [documents.LineInput(item.id, item.base_unit_id, opening.qty, opening.unit_price,
-                                 "موجودی اولیه هنگام تعریف کالا")],
-            description=f"موجودی اولیه «{item.name}»"))
-        posted = actor.can(Perm.DOCUMENTS_POST)
-        if posted:
-            await documents.post_document_in(s, actor, doc)
-        return CreatedItem(item.id, doc.id, posted)
+        doc_id, posted = await _opening_document_in(s, actor, item, opening)
+        return CreatedItem(item.id, doc_id, posted)
+
+
+async def _opening_document_in(s: AsyncSession, actor: Actor, item: Item,
+                               opening: OpeningStock) -> tuple[int, bool]:
+    """The explicit opening-stock path: an OPENING document, posted when the user may post."""
+    doc = await documents.create_document_in(s, actor, documents.DocumentInput(
+        DocType.OPENING, dt.date.today(), opening.warehouse_id,
+        [documents.LineInput(item.id, item.base_unit_id, opening.qty, opening.unit_price,
+                             "موجودی اولیه هنگام تعریف کالا")],
+        description=f"موجودی اولیه «{item.name}»"))
+    posted = actor.can(Perm.DOCUMENTS_POST)
+    if posted:
+        await documents.post_document_in(s, actor, doc)
+    return doc.id, posted
+
+
+async def _update_item_in(s: AsyncSession, actor: Actor, item_id: int, expected_version: int,
+                          data: ItemInput, similar_approval: Approval | None) -> Item:
+    actor.require(Perm.ITEMS_EDIT)
+    item = await _load(s, item_id)
+    if item.version_id != expected_version:
+        raise ConcurrencyError()
+    data = await _validate(s, data, item_id)
+    if normalize(data.name) != item.name_normalized:  # a rename must not create a duplicate
+        await _check_name(s, data.name, item_id, similar_ok(similar_approval, actor) is not None)
+    if data.base_unit_id != item.base_unit_id and await _has_movements(s, item_id):
+        raise ValidationError("واحد اصلی کالایی که گردش دارد قابل تغییر نیست.")
+    if data.code != item.code and await _has_movements(s, item_id):  # #23
+        raise ValidationError("کد کالایی که در سندی استفاده شده قابل تغییر نیست.")
+    before = _snapshot(item)
+    _apply(item, data)
+    # Unit/barcode-only edits touch child rows; force a version bump on the item itself.
+    flag_modified(item, "description")
+    await s.flush()
+    after = _snapshot(item)
+    changes = {k: [before[k], after[k]] for k in after if before[k] != after[k]}
+    if changes:
+        audit.record(s, actor, "item.updated", "item", item.id, changes)
+    return item
 
 
 async def update_item(
     db: Database, actor: Actor, item_id: int, expected_version: int, data: ItemInput,
     similar_approval: Approval | None = None,
 ) -> None:
-    actor.require(Perm.ITEMS_EDIT)
     async with db.session(actor.user_id) as s:
-        item = await _load(s, item_id)
-        if item.version_id != expected_version:
-            raise ConcurrencyError()
-        data = await _validate(s, data, item_id)
-        if normalize(data.name) != item.name_normalized:  # a rename must not create a duplicate
-            await _check_name(s, data.name, item_id, similar_ok(similar_approval, actor) is not None)
-        if data.base_unit_id != item.base_unit_id and await _has_movements(s, item_id):
-            raise ValidationError("واحد اصلی کالایی که گردش دارد قابل تغییر نیست.")
-        if data.code != item.code and await _has_movements(s, item_id):  # #23
-            raise ValidationError("کد کالایی که در سندی استفاده شده قابل تغییر نیست.")
-        before = _snapshot(item)
-        _apply(item, data)
-        # Unit/barcode-only edits touch child rows; force a version bump on the item itself.
-        flag_modified(item, "description")
-        await s.flush()
-        after = _snapshot(item)
-        changes = {k: [before[k], after[k]] for k in after if before[k] != after[k]}
-        if changes:
-            audit.record(s, actor, "item.updated", "item", item.id, changes)
+        await _update_item_in(s, actor, item_id, expected_version, data, similar_approval)
+
+
+async def update_item_with_opening(db: Database, actor: Actor, item_id: int, expected_version: int,
+                                   data: ItemInput, opening: OpeningStock | None,
+                                   similar_approval: Approval | None = None) -> CreatedItem:
+    """Edit an existing item and, only if the user explicitly entered one, add its opening stock
+    through an OPENING document — together or not at all (the New Item dialog after the user picked
+    an existing similar item)."""
+    async with db.session(actor.user_id) as s:
+        item = await _update_item_in(s, actor, item_id, expected_version, data, similar_approval)
+        if opening is None:
+            return CreatedItem(item.id, None, False)
+        doc_id, posted = await _opening_document_in(s, actor, item, opening)
+        return CreatedItem(item.id, doc_id, posted)
 
 
 async def set_reorder_points(db: Database, actor: Actor, values: dict[int, Decimal | None]) -> int:

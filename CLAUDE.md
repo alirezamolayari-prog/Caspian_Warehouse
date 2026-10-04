@@ -16,6 +16,8 @@ license — see LICENSE). Current release: **v1.0.0** (installer on GitHub Relea
   `CREATE_SIMILAR_ITEM` PIN approval (with reason) is given — enforced for dialog, opening stock, imports,
   renames, never for the AI. Existing duplicates: health finding + Items filter + PIN-protected
   `merge_items` (moves lines/ledger/balances/barcodes/units, deactivates sources). Never auto-modified.
+  In the New Item dialog, picking a similar item (hint link or «انتخاب این کالا») loads it into the open
+  form; «ذخیره» then calls `update_item_with_opening` (no stock change unless opening qty is entered).
 - Documents: receipt, issue, transfer, adjustment, opening, loan out/return; draft → post
   (stock ledger + balances, row locks) → cancel (reversal rows; history never deleted).
 - **Draft-first imports** (Excel/CSV/Word, barcode scan, typed text) with row statuses

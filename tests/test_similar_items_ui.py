@@ -1,11 +1,13 @@
 """QA round 2, feature A (UI): suggestions while typing, choose existing, PIN override, merge."""
 
+from decimal import Decimal
+
 import pytest
-from sqlalchemy import update
+from sqlalchemy import func, select, update
 
 from caspian.core.settings import Settings
 from caspian.db.database import DbConfig
-from caspian.db.models import Item
+from caspian.db.models import DocType, Document, Item, StockLedger
 from caspian.services import items, master, protected
 from caspian.services.items import ItemInput
 from caspian.services.protected import ProtectedAction
@@ -23,19 +25,67 @@ async def _units(ctx):
     return await master.list_units(ctx.db)
 
 
-async def test_typing_shows_similar_items_and_click_uses_it(qtbot, ctx):
+async def _movements(db) -> tuple[int, int]:
+    async with db.session() as s:
+        return (await s.scalar(select(func.count()).select_from(Document)),
+                await s.scalar(select(func.count()).select_from(StockLedger)))
+
+
+async def _item_count(db) -> int:
+    async with db.session() as s:
+        return await s.scalar(select(func.count()).select_from(Item))
+
+
+async def test_typing_shows_similar_items_and_click_loads_it(qtbot, ctx):
     units = await _units(ctx)
-    existing = await items.create_item(ctx.db, ctx.actor, ItemInput("1006", "جارو", units[0].id))
-    dlg = items_page.ItemDialog(ctx, units, [], suggested_code="1017")
+    existing = await items.create_item(ctx.db, ctx.actor, ItemInput(
+        "1006", "جارو", units[0].id, reorder_point=Decimal(4), description="قدیمی",
+        barcodes=[("6260001", None)]))
+    before = await _movements(ctx.db), await _item_count(ctx.db)
+    dlg = items_page.ItemDialog(ctx, units, [], suggested_code="1017",
+                                warehouses=await master.list_warehouses(ctx.db))
     qtbot.addWidget(dlg)
+    dlg.show()
     dlg.name.setText("جاروو")
     await dlg.update_suggestions()
     assert not dlg.similar_hint.isHidden() and "۱۰۰۶" in dlg.similar_hint.text()
     dlg.similar_hint.linkActivated.emit(str(existing))
-    assert dlg.result() == items_page.USE_EXISTING and dlg.chosen_existing == existing
-    dlg.name.setText("سطل")
-    await dlg.update_suggestions()
+    await wait_until(lambda: dlg.code.text() == "1006")
+    # Still open, filled with the existing item, clearly marked; nothing saved, no stock moved.
+    assert dlg.isVisible() and dlg.result() == 0
+    assert dlg.name.text() == "جارو" and dlg.reorder_point.value() == Decimal(4)
+    assert dlg.description.toPlainText() == "قدیمی"
+    assert [r[0].text() for r in dlg.barcodes.rows] == ["6260001"]
+    assert "ویرایش کالا" in dlg.windowTitle() and not dlg.existing_notice.isHidden()
     assert dlg.similar_hint.isHidden()
+    assert (await _movements(ctx.db), await _item_count(ctx.db)) == before
+
+    dlg.reorder_point.set_value(Decimal(9))
+    dlg.submit_button.click()
+    await settle(dlg)
+    assert dlg.result() == 1 and dlg.saved_id == existing
+    assert (await _movements(ctx.db), await _item_count(ctx.db)) == before  # updated, not inserted
+    detail = await items.get_item(ctx.db, ctx.actor, existing)
+    assert detail.input.reorder_point == Decimal(9) and detail.input.code == "1006"
+
+
+async def test_opening_stock_after_picking_existing_goes_through_an_opening_document(qtbot, ctx):
+    units = await _units(ctx)
+    existing = await items.create_item(ctx.db, ctx.actor, ItemInput("1006", "جارو", units[0].id))
+    dlg = items_page.ItemDialog(ctx, units, [], suggested_code="1017",
+                                warehouses=await master.list_warehouses(ctx.db))
+    qtbot.addWidget(dlg)
+    dlg.name.setText("جاروو")
+    await dlg.load_existing(existing)
+    dlg.opening_qty.set_value(Decimal(5))
+    dlg.submit_button.click()
+    await settle(dlg)
+    assert dlg.saved_id == existing and await _item_count(ctx.db) == 1
+    async with ctx.db.session() as s:
+        [doc] = (await s.scalars(select(Document))).all()
+    assert doc.doc_type is DocType.OPENING
+    [row] = await items.search_items(ctx.db, ctx.actor, "جارو")
+    assert row.on_hand == Decimal(5)
 
 
 async def test_similar_item_choice_or_admin_pin(qtbot, ctx, monkeypatch):
@@ -65,7 +115,8 @@ async def test_similar_item_choice_or_admin_pin(qtbot, ctx, monkeypatch):
     dlg.name.setText("جاروو")
     dlg.submit_button.click()
     await settle(dlg)
-    assert dlg.chosen_existing == existing  # the user picked the existing item
+    # «انتخاب این کالا» loads the existing item into the still-open form
+    assert dlg.chosen_existing == existing and dlg.code.text() == "1006" and dlg.result() == 0
     assert len(await items.search_items(ctx.db, ctx.actor, "جارو")) == 1
     dlg2 = items_page.ItemDialog(ctx, units, [], suggested_code="1017")
     qtbot.addWidget(dlg2)

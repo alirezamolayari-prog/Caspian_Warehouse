@@ -33,6 +33,7 @@ from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import request_approval
 from caspian.ui.dialogs import Cancelled, FormDialog, ltr_field
 from caspian.ui.messages import show_error, show_info
+from caspian.ui.tasks import spawn
 from caspian.ui.widgets import Card, DataTable, EmptyState, QtyEdit, SearchableCombo, SearchBox, Toast
 
 COLUMNS = ("کد", "نام کالا", "گروه", "واحد", "موجودی", "نقطه سفارش", "وضعیت")
@@ -139,6 +140,12 @@ class ItemDialog(FormDialog):
                          parent=parent)
         self.setMinimumWidth(620)
         self._ctx, self._detail, self._units = ctx, detail, units
+        self._title = self.findChild(QLabel, "PageTitle")
+        # Shown when the user picked an existing similar item: the form now edits that item.
+        self.existing_notice = QLabel(objectName="StatusText")
+        self.existing_notice.setWordWrap(True)
+        self.existing_notice.hide()
+        self.body.insertWidget(0, self.existing_notice)
         self.saved_id: int | None = None
         self.result_message = ""
         data = detail.input if editing else ItemInput(code=suggested_code, name="",
@@ -297,11 +304,47 @@ class ItemDialog(FormDialog):
         self.similar_hint.show()
 
     def _on_similar_link(self, href: str) -> None:
-        """Use the existing item instead of defining a duplicate."""
-        self.chosen_existing = int(href)
-        self.saved_id = self.chosen_existing
-        self.dirty = False
-        self.done(USE_EXISTING)
+        """Use the existing item instead of defining a duplicate: load it into this form (the dialog
+        stays open; nothing is saved and no stock moves until «ذخیره»)."""
+        spawn(self.load_existing(int(href)))
+
+    async def load_existing(self, item_id: int) -> None:
+        try:
+            detail = await items.get_item(self._ctx.db, self._ctx.actor, item_id)
+        except ServiceError as exc:
+            self.show_status(exc.message)
+            return
+        data = detail.input
+        self._detail, self.chosen_existing = detail, detail.id
+        self.code.setText(data.code)
+        self.name.setText(data.name)
+        self.category.setCurrentIndex(max(self.category.findData(data.category_id), 0))
+        self.base_unit.setCurrentIndex(max(self.base_unit.findData(data.base_unit_id), 0))
+        self.reorder_point.set_value(data.reorder_point)
+        self.reorder_qty.set_value(data.reorder_qty)
+        self.returnable.setChecked(data.is_returnable)
+        self.description.setPlainText(data.description)
+        for rows, values in ((self.alt_units, data.units), (self.barcodes, data.barcodes)):
+            for entry in list(rows.rows):
+                rows._remove(entry)
+            for value in values:
+                rows.add_row(*value)
+        self._base_locked = detail.has_movements
+        self.code.setReadOnly(detail.has_movements)
+        locked_tip = "کد کالایی که در سندی استفاده شده قابل تغییر نیست."
+        self.code.setToolTip(locked_tip if detail.has_movements else "")
+        self.set_busy(False)
+        title = f"ویرایش کالا: {fa(data.code)} – {data.name}"
+        self.setWindowTitle(f"‏{title}")
+        if self._title is not None:
+            self._title.setText(title)
+        self.existing_notice.setText(
+            "این فرم اکنون کالای موجود را ویرایش می‌کند؛ با ذخیره، کالای تازه‌ای ساخته نمی‌شود. "
+            "موجودی اولیه فقط اگر خودتان مقدار وارد کنید، با سند «موجودی اول دوره» ثبت می‌شود.")
+        self.existing_notice.show()
+        self.similar_hint.hide()
+        self.show_status("")
+        self.dirty = True
 
     async def submit(self) -> None:
         data = self.collect()
@@ -311,9 +354,7 @@ class ItemDialog(FormDialog):
             choice = SimilarItemsDialog(exc.candidates, self)
             result = await exec_dialog(choice)
             if result == USE_EXISTING and choice.chosen:
-                self.chosen_existing = self.saved_id = choice.chosen.id
-                self.dirty = False
-                self.done(USE_EXISTING)
+                await self.load_existing(choice.chosen.id)  # review it, then «ذخیره» updates it
                 raise Cancelled from None
             if result != QDialog.DialogCode.Accepted:
                 raise Cancelled from None
@@ -334,9 +375,13 @@ class ItemDialog(FormDialog):
                 self.result_message = ("کالا ساخته شد. سند «موجودی اول دوره» به‌صورت پیش‌نویس ثبت شد؛ "
                                        "کاربر دارای مجوز ثبت نهایی باید آن را در «اسناد انبار» ثبت کند.")
         else:
-            await items.update_item(self._ctx.db, self._ctx.actor, self._detail.id,
-                                    self._detail.version_id, data, approval)
+            updated = await items.update_item_with_opening(
+                self._ctx.db, self._ctx.actor, self._detail.id, self._detail.version_id, data,
+                self.collect_opening(), approval)
             self.saved_id = self._detail.id
+            if updated.document_id and not updated.posted:
+                self.result_message = ("کالا ذخیره شد. سند «موجودی اول دوره» به‌صورت پیش‌نویس ثبت شد؛ "
+                                       "کاربر دارای مجوز ثبت نهایی باید آن را در «اسناد انبار» ثبت کند.")
 
 
 class MergeDialog(FormDialog):
@@ -534,13 +579,7 @@ class ItemsPage(QWidget):
         code = "" if detail else await items.next_code(self._ctx.db)
         warehouses = [] if detail else await master.list_warehouses(self._ctx.db)
         dialog = ItemDialog(self._ctx, units, self._categories, detail, code, self, warehouses)
-        result = await exec_dialog(dialog)
-        if result == USE_EXISTING and dialog.chosen_existing:  # an existing item instead of a duplicate
-            await self.refresh()
-            self.table.select_id(dialog.chosen_existing)
-            self.toast = Toast(self, "از کالای موجود استفاده شد؛ کالای تکراری ساخته نشد.")
-            return
-        if result:
+        if await exec_dialog(dialog):
             await self.refresh()
             self.table.select_id(dialog.saved_id)
             if dialog.result_message:
