@@ -28,7 +28,7 @@ class Preset:
 PRESETS: dict[ProviderKind, Preset] = {
     ProviderKind.GEMINI: Preset("Google Gemini (سطح رایگان)",
                                 "https://generativelanguage.googleapis.com/v1beta/openai",
-                                "gemini-3.8-flash", True),
+                                "gemini-3.8-flash", True, "gemini-3.8-flash"),
     ProviderKind.OPENROUTER: Preset("OpenRouter (مدل‌های رایگان :free)", "https://openrouter.ai/api/v1",
                                     "openrouter/free", True),
     ProviderKind.CEREBRAS: Preset("Cerebras (سطح رایگان)", "https://api.cerebras.ai/v1", "gpt-oss-120b",

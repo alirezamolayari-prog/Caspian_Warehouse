@@ -8,6 +8,7 @@ cooldown period. When the internet is unreachable only local providers are tried
 """
 
 import asyncio
+import base64
 import logging
 import socket
 import time
@@ -23,6 +24,10 @@ from caspian.services.ai.config import ProviderConfig, get_key, list_providers
 from caspian.services.errors import ServiceError
 
 log = logging.getLogger(__name__)
+
+_GEMINI_STT_PROMPT = ("Transcribe this audio exactly as spoken (the language is most likely Persian/Farsi). "
+                      "Reply with only the transcript text, no quotes, no explanation. "
+                      "If there is no speech, reply with an empty message.")
 
 DEFAULT_COOLDOWN = 60.0
 ONLINE_CACHE_SECONDS = 30.0
@@ -187,6 +192,22 @@ class Gateway:
             raise AIUnavailable("هیچ سرویسی برای تبدیل گفتار به متن تنظیم نشده است "
                                 "(مدل گفتار را در تنظیمات هوش مصنوعی وارد کنید).")
         for provider in providers:
+            if provider.kind == ProviderKind.GEMINI:
+                # Gemini's OpenAI-compatible API has no /audio/transcriptions: audio goes inside a
+                # chat message as input_audio and the model is asked to write down what it hears.
+                body = {"model": provider.stt_model, "temperature": 0, "max_tokens": 1000,
+                        "messages": [{"role": "user", "content": [
+                            {"type": "text", "text": _GEMINI_STT_PROMPT},
+                            {"type": "input_audio", "input_audio": {
+                                "data": base64.b64encode(audio).decode("ascii"), "format": "wav"}},
+                        ]}]}
+                outcome = await self._try(provider, "/chat/completions", json=body)
+                if isinstance(outcome, dict):
+                    try:
+                        return (outcome["choices"][0]["message"].get("content") or "").strip()
+                    except (KeyError, IndexError, TypeError):
+                        continue
+                continue
             outcome = await self._try(
                 provider, "/audio/transcriptions",
                 files={"file": (filename, audio, "audio/wav")},

@@ -1,3 +1,4 @@
+import base64
 import json
 
 import httpx
@@ -316,3 +317,24 @@ async def test_provider_dialog_fetches_models_with_free_filter(qtbot, themes, db
     await settle(dlg)
     [provider] = await config.list_providers(db)
     assert provider.kind is ProviderKind.OPENROUTER and provider.model == "y/model:free"
+
+
+async def test_gemini_transcribes_through_chat_input_audio(db, admin, keys):
+    preset = config.PRESETS[ProviderKind.GEMINI]
+    assert preset.stt_model == "gemini-3.8-flash"
+    await config.save_provider(db, admin, "Gemini", ProviderKind.GEMINI, preset.base_url, preset.model,
+                               stt_model=preset.stt_model, api_key="g")
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        body = json.loads(request.content)
+        assert body["model"] == "gemini-3.8-flash"
+        audio = body["messages"][0]["content"][1]
+        assert audio["type"] == "input_audio" and audio["input_audio"]["format"] == "wav"
+        assert base64.b64decode(audio["input_audio"]["data"]) == b"RIFF-audio"
+        return _answer("  سه عدد پیچ  ")
+
+    gw = Gateway(db, httpx.MockTransport(handler), online_check=lambda: True)
+    assert await gw.transcribe(b"RIFF-audio") == "سه عدد پیچ"
+    assert seen == ["/v1beta/openai/chat/completions"]  # Gemini has no /audio/transcriptions
