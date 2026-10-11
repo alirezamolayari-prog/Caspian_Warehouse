@@ -28,6 +28,8 @@ class Perm(enum.StrEnum):
     BACKUP_RESTORE = "backup.restore"  # protected
     YEAR_CLOSE = "year.close"  # protected
     SETTINGS_EDIT = "settings.edit"
+    # Consumption locations (محل‌های مصرف): add/edit/deactivate and CSV re-import. Admin only.
+    LOCATIONS_MANAGE = "locations.manage"
 
 
 # code -> (display name, permissions)
@@ -37,7 +39,7 @@ DEFAULT_ROLES: dict[str, tuple[str, frozenset[Perm]]] = {
         "مدیر انبار",
         frozenset(Perm)
         - {Perm.USERS_MANAGE, Perm.ROLES_CHANGE, Perm.BACKUP_RESTORE, Perm.YEAR_CLOSE,
-           Perm.AI_CONFIGURE, Perm.SETTINGS_EDIT},
+           Perm.AI_CONFIGURE, Perm.SETTINGS_EDIT, Perm.LOCATIONS_MANAGE},
     ),
     "storekeeper": (
         "انباردار",
