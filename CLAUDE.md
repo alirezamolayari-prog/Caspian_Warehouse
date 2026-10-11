@@ -34,10 +34,18 @@ license — see LICENSE). Current release: **v1.1.0** (installer on GitHub Relea
 - Reports (stock value, cardex, burn-rate reorder analysis, loans, user activity) → Excel/PDF.
 - AI gateway (OpenAI-compatible, Groq, Gemini, OpenRouter, Cerebras, Mistral, Hugging Face, Ollama,
   custom; silent fallback on 429/timeouts, offline → local only), chat + in-app voice button (transcript
-  is confirmed by the user), tool calling. The AI works like a user: creates documents and, if the admin
-  setting `ai_allow_post` is on (default), posts them through the normal services. It **never** does
-  destructive/protected actions: `Actor.require_human()` in services refuses cancel/delete, deactivation,
-  user management, stocktake approve/cancel, import discard, restore for `actor.is_ai`.
+  is confirmed by the user), tool calling. The AI only prepares **drafts** (`create_document`, never
+  posts): `documents.post_document_in` calls `require_human`, so no AI channel can change stock. The chat
+  shows a `ui/confirm_card.ConfirmCard` (plain summary, «بله، ثبت کن» / «نه»); «بله» posts as the person
+  (`via="assistant"` in the audit), «نه» → `documents.discard_assistant_draft`. Ambiguous items, quantities,
+  persons, places and floors are asked (`needs_choice`), never guessed. The old `ai_allow_post` setting is
+  gone (an old row is ignored). It **never** does destructive/protected actions either: `Actor.require_human()`
+  refuses cancel/delete, deactivation, user management, stocktake approve/cancel, import discard, restore.
+- Document checks: `documents.check()` returns every `Problem(field, message)` (incl. posting-only rules and
+  stock); the editor lists them all and marks fields red (`FormDialog.mark_invalid`, QSS `[invalid="true"]`)
+  before asking. Dates are also checked against the DB server's date (`server_today`, MariaDB only);
+  the status bar warns on clock skew. Print templates use RLM marks, never Unicode isolates (Qt and the
+  font don't support them; `tests/test_print_bidi.py`).
   Gateway errors show a short Persian reason per HTTP status; raw server text only in the log.
 - Assistant chat history (`services/ai/history.py`, table `assistant_messages`): saved in the background
   after each reply (≤ 2,000 chars, no audio); own rows only, admins all; the AI never reads it; retention
