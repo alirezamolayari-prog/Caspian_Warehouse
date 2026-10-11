@@ -46,6 +46,16 @@ def normalize(text: str) -> str:
     return text.strip().lower()
 
 
+_NUMBER_SEPARATOR = re.compile(r"(?<=\d)\s*[-/\\]\s*(?=\d)")
+
+
+def normalize_location(text: str) -> str:
+    """Key for consumption-location codes and aliases (spec §2.5), applied to user input and to
+    `location_aliases.alias_normalized` alike: everything `normalize` does, then «126-1» = «126/1»
+    and no spaces at all, so «اسد نژاد» = «اسدنژاد» and «دو قلو» = «دوقلو»."""
+    return _NUMBER_SEPARATOR.sub("/", normalize(text)).replace(" ", "")
+
+
 def ltr(text: str) -> str:
     """Embed left-to-right text (English server messages, usernames, codes) in a Persian sentence
     without breaking its punctuation: isolate it with LRI … PDI (#20)."""
