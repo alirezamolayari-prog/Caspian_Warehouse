@@ -50,6 +50,7 @@ from caspian.services.errors import (
     ConcurrencyError,
     NotFound,
     PermissionDenied,
+    ServiceError,
     StocktakeFrozen,
     ValidationError,
 )
@@ -222,67 +223,187 @@ def _item_factors(item: Item) -> dict[int, Decimal]:
     return factors
 
 
-async def _validate(s: AsyncSession, data: DocumentInput) -> list[DocumentLine]:
-    """Validate header + lines; returns ready DocumentLine objects (unattached)."""
-    if data.doc_date > dt.date.today():
-        raise ValidationError("تاریخ سند نمی‌تواند بعد از امروز باشد. تاریخ را بررسی کنید.")
-    await ensure_open_year(s, jalali.fiscal_year_of(data.doc_date))
+@dataclass(frozen=True)
+class Problem:
+    """One thing to fix before a document can be saved or posted. `field` tells the editor which
+    input to mark: date, warehouse, dest, person, loan, location, floor, lines or line:<n>."""
+
+    field: str
+    message: str
+
+
+async def server_today(s: AsyncSession) -> dt.date | None:
+    """Today on the database server (MariaDB), the clock all PCs share. None on SQLite, whose
+    CURRENT_DATE is UTC and would be a day off after midnight in Iran."""
+    if s.bind.dialect.name not in ("mysql", "mariadb"):
+        return None
+    value = await s.scalar(select(func.current_date()))
+    return value if isinstance(value, dt.date) else dt.date.fromisoformat(str(value))
+
+
+async def clock_skew_days(db: Database) -> int | None:
+    """Days between this PC's date and the database server's (None when unknown, e.g. SQLite)."""
+    async with db.session() as s:
+        server = await server_today(s)
+    return None if server is None else (dt.date.today() - server).days
+
+
+async def _collect(s: AsyncSession, data: DocumentInput) -> tuple[list[DocumentLine], list[Problem]]:
+    """Every problem of the header and lines at once (QA Part A #3), plus the ready lines."""
+    problems: list[Problem] = []
+
+    def bad(field: str, message: str) -> None:
+        problems.append(Problem(field, message))
+
+    today = dt.date.today()
+    server = await server_today(s)
+    if data.doc_date > today or (server is not None and data.doc_date > server):
+        # A PC whose clock runs ahead can't date documents in the future either (QA Part A #6).
+        bad("date", "تاریخ سند نمی‌تواند بعد از امروز باشد. تاریخ را بررسی کنید.")
+    try:
+        await ensure_open_year(s, jalali.fiscal_year_of(data.doc_date))
+    except ServiceError as exc:
+        bad("date", exc.message)
     wh = await s.get(Warehouse, data.warehouse_id)
     if wh is None or not wh.is_active:
-        raise ValidationError("انبار انتخاب‌شده نامعتبر یا غیرفعال است.")
+        bad("warehouse", "انبار انتخاب‌شده نامعتبر یا غیرفعال است.")
     if data.doc_type == DocType.TRANSFER:
         dest = await s.get(Warehouse, data.dest_warehouse_id) if data.dest_warehouse_id else None
         if dest is None or not dest.is_active:
-            raise ValidationError("انبار مقصد را انتخاب کنید.")
-        if dest.id == wh.id:
-            raise ValidationError("انبار مبدأ و مقصد نمی‌توانند یکسان باشند.")
+            bad("dest", "انبار مقصد را انتخاب کنید.")
+        elif wh is not None and dest.id == wh.id:
+            bad("dest", "انبار مبدأ و مقصد نمی‌توانند یکسان باشند.")
     elif data.dest_warehouse_id is not None:
-        raise ValidationError("انبار مقصد فقط برای سند انتقال معنا دارد.")
+        bad("dest", "انبار مقصد فقط برای سند انتقال معنا دارد.")
     if data.person_id is not None:
         person = await s.get(Person, data.person_id)
         if person is None or not person.is_active:
-            raise ValidationError("طرف حساب نامعتبر یا غیرفعال است.")
+            bad("person", "طرف حساب نامعتبر یا غیرفعال است.")
     if data.doc_type in NEEDS_PERSON and data.person_id is None:
-        raise ValidationError("برای سند امانی، تحویل‌گیرنده (شخص) الزامی است.")
+        bad("person", "برای سند امانی، تحویل‌گیرنده (شخص) الزامی است.")
     if data.doc_type == DocType.LOAN_RETURN:
         loan = await s.get(Document, data.related_document_id) if data.related_document_id \
             else None
         if loan is None or loan.doc_type != DocType.LOAN_OUT or loan.status != DocStatus.POSTED:
-            raise ValidationError("سند خروج امانی مرتبط را انتخاب کنید.")
-        if loan.person_id != data.person_id:
-            raise ValidationError("شخص برگشت‌دهنده با تحویل‌گیرنده امانی یکسان نیست.")
+            bad("loan", "سند خروج امانی مرتبط را انتخاب کنید.")
+        elif loan.person_id != data.person_id:
+            bad("loan", "شخص برگشت‌دهنده با تحویل‌گیرنده امانی یکسان نیست.")
     elif data.related_document_id is not None:
-        raise ValidationError("سند مرتبط فقط برای برگشت امانی است.")
-    await _place(s, data)
+        bad("loan", "سند مرتبط فقط برای برگشت امانی است.")
+    try:
+        await _place(s, data)
+    except ServiceError as exc:
+        bad("floor" if exc.message == locations.FLOOR_REQUIRED else "location", exc.message)
     if not data.lines:
-        raise ValidationError("سند باید حداقل یک ردیف کالا داشته باشد.")
+        bad("lines", "سند باید حداقل یک ردیف کالا داشته باشد.")
 
     lines: list[DocumentLine] = []
     for no, line in enumerate(data.lines, start=1):
+        field = f"line:{no}"
         item = await s.get(Item, line.item_id)
         if item is None:
-            raise ValidationError(f"ردیف {no}: کالا پیدا نشد.")
+            bad(field, f"ردیف {no}: کالا پیدا نشد.")
+            continue
         if not item.is_active:
-            raise ValidationError(f"ردیف {no}: کالای «{item.name}» غیرفعال است.")
+            bad(field, f"ردیف {no}: کالای «{item.name}» غیرفعال است.")
+            continue
         if data.doc_type in (DocType.LOAN_OUT, DocType.LOAN_RETURN) and not item.is_returnable:
-            raise ValidationError(f"ردیف {no}: کالای «{item.name}» امانی/برگشتی تعریف نشده است.")
+            bad(field, f"ردیف {no}: کالای «{item.name}» امانی/برگشتی تعریف نشده است.")
+            continue
         factors = _item_factors(item)
         if line.unit_id not in factors:
-            raise ValidationError(f"ردیف {no}: واحد انتخاب‌شده برای «{item.name}» تعریف نشده است.")
+            bad(field, f"ردیف {no}: واحد انتخاب‌شده برای «{item.name}» تعریف نشده است.")
+            continue
         qty = line.qty
         if qty is None or qty == 0 or (qty < 0 and data.doc_type != DocType.ADJUSTMENT):
-            raise ValidationError(f"ردیف {no}: مقدار «{item.name}» باید بزرگ‌تر از صفر باشد.")
+            bad(field, f"ردیف {no}: مقدار «{item.name}» باید بزرگ‌تر از صفر باشد.")
+            continue
         unit = await s.get(Unit, line.unit_id)
         if unit is not None and not unit.allow_decimal and qty != qty.to_integral_value():
-            raise ValidationError(f"ردیف {no}: مقدار «{item.name}» به «{unit.name}» باید عدد صحیح باشد.")
+            bad(field, f"ردیف {no}: مقدار «{item.name}» به «{unit.name}» باید عدد صحیح باشد.")
+            continue
         if line.unit_price is not None and line.unit_price < 0:
-            raise ValidationError(f"ردیف {no}: فی نمی‌تواند منفی باشد.")
+            bad(field, f"ردیف {no}: فی نمی‌تواند منفی باشد.")
+            continue
         factor = factors[line.unit_id]
         lines.append(DocumentLine(
             line_no=no, item_id=item.id, unit_id=line.unit_id, qty=qty, factor=factor,
             base_qty=qty * factor, unit_price=line.unit_price, notes=line.notes.strip(),
         ))
+    return lines, problems
+
+
+async def _validate(s: AsyncSession, data: DocumentInput) -> list[DocumentLine]:
+    """Validate header + lines; returns ready DocumentLine objects (unattached). Raises the first
+    problem (the editor shows them all with `check`)."""
+    lines, problems = await _collect(s, data)
+    if problems:
+        raise ValidationError(problems[0].message)
     return lines
+
+
+async def _posting_problems(s: AsyncSession, data: DocumentInput, lines: list[DocumentLine],
+                            doc_id: int | None) -> list[Problem]:
+    """What only posting checks: recipient, place, loan limits, stock (same texts as posting)."""
+    problems: list[Problem] = []
+    if data.doc_type == DocType.ISSUE and data.person_id is None:
+        problems.append(Problem("person", "برای ثبت نهایی حواله خروج، تحویل‌گیرنده را انتخاب کنید."))
+    if (data.doc_type == DocType.ISSUE and data.location_id is None
+            and await locations.required_on_issue_in(s)):
+        problems.append(Problem("location", "برای ثبت نهایی حواله خروج، محل مصرف را انتخاب کنید."))
+    by_line = {ln.line_no: ln for ln in lines}
+    if data.doc_type == DocType.LOAN_RETURN and data.related_document_id:
+        outstanding = {r.item_id: r.outstanding
+                       for r in await _loan_rows(s, loan_id=data.related_document_id, exclude_doc=doc_id)}
+        returning: dict[int, Decimal] = defaultdict(Decimal)
+        for ln in lines:
+            returning[ln.item_id] += ln.base_qty
+        for item_id, qty in returning.items():
+            if qty > outstanding.get(item_id, Decimal(0)):
+                item = await s.get(Item, item_id)
+                no = next(n for n, ln in by_line.items() if ln.item_id == item_id)
+                problems.append(Problem(f"line:{no}",
+                                        f"مقدار برگشتی «{item.name}» بیشتر از مانده امانی است."))
+    if lines and not await _allow_negative(s):
+        needed: dict[tuple[int, int], Decimal] = defaultdict(Decimal)
+        first_line: dict[tuple[int, int], int] = {}
+        sign = _SOURCE_SIGN[data.doc_type]
+        for ln in lines:
+            changes = [(data.warehouse_id, sign * ln.base_qty)]
+            if data.doc_type == DocType.TRANSFER:
+                changes.append((data.dest_warehouse_id, ln.base_qty))
+            for wh_id, change in changes:
+                needed[(ln.item_id, wh_id)] += change
+                first_line.setdefault((ln.item_id, wh_id), ln.line_no)
+        for (item_id, wh_id), change in sorted(needed.items()):
+            if change >= 0:
+                continue
+            balance = await s.scalar(select(StockBalance.qty).where(
+                StockBalance.item_id == item_id, StockBalance.warehouse_id == wh_id)) or Decimal(0)
+            if balance + change < 0:
+                item = await s.get(Item, item_id)
+                wh = await s.get(Warehouse, wh_id)
+                hint = pending_hint(await _pending_incoming_in(s, item_id, wh_id, doc_id),
+                                    item.base_unit.name)
+                problems.append(Problem(
+                    f"line:{first_line[(item_id, wh_id)]}",
+                    f"موجودی «{item.name}» در «{wh.name}» کافی نیست "
+                    f"(موجود: {format_qty(balance)}، نیاز: {format_qty(-change)})."
+                    + (f" {hint}" if hint else "")))
+    return problems
+
+
+async def check(db: Database, actor: Actor, data: DocumentInput, doc_id: int | None = None,
+                for_post: bool = True) -> list[Problem]:
+    """All problems at once, without writing anything: the editor runs this before asking «آیا
+    مطمئنید» and marks every field that needs fixing (QA Part A #3)."""
+    actor.require(Perm.DOCUMENTS_EDIT)
+    async with db.session() as s:
+        lines, problems = await _collect(s, data)
+        if for_post:
+            problems += await _posting_problems(s, data, lines, doc_id)
+        await s.rollback()
+    return problems
 
 
 def _effects(doc: Document) -> list[tuple[DocumentLine, int, Decimal]]:

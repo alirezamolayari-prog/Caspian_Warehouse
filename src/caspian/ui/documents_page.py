@@ -468,9 +468,42 @@ class DocumentDialog(FormDialog):
         self.print_button.setEnabled(True)
         return self.saved_id
 
+    def _field_widgets(self, field: str) -> list:
+        """The inputs a `documents.Problem.field` refers to (marked red until edited)."""
+        if field.startswith("line:"):
+            no = int(field.split(":", 1)[1])
+            if 0 < no <= len(self.lines):
+                line = self.lines[no - 1]
+                return [line.qty, line.unit]
+            return [self.item_input]
+        return {"date": [self.date], "warehouse": [self.warehouse], "dest": [self.dest],
+                "person": [self.person], "loan": [self.loan], "location": [self.place.edit],
+                "floor": [self.place.floor], "lines": [self.item_input]}.get(field, [])
+
+    async def check_all(self, for_post: bool) -> bool:
+        """Every problem at once, before any question or save (QA Part A #3). False if any."""
+        self.clear_invalid()
+        try:
+            data = self.collect()
+        except ValidationError as exc:  # unreadable input (bad date, empty quantity, …)
+            self.show_status(exc.message)
+            return False
+        problems = await docs.check(self._ctx.db, self._ctx.actor, data, self.saved_id, for_post)
+        if not problems:
+            return True
+        messages = [p.message for p in problems]
+        if for_post and not await docs.check(self._ctx.db, self._ctx.actor, data, self.saved_id, False):
+            # Only posting is blocked (recipient, place, stock…): keep the work as a draft (#15).
+            await self._save()
+            messages.append("سند به‌صورت پیش‌نویس ذخیره شد؛ پس از اصلاح موارد بالا دوباره ثبت نهایی کنید.")
+        self.show_problems(messages)
+        self.mark_invalid(w for p in problems for w in self._field_widgets(p.field))
+        return False
+
     async def submit(self) -> None:
-        # Problems first (e.g. no lines), then the question (#15).
-        await docs.validate_input(self._ctx.db, self._ctx.actor, self.collect())
+        # All problems first (recipient, place, lines, stock…), then the question (#15, QA Part A #3).
+        if not await self.check_all(for_post=True):
+            raise Cancelled
         if not await confirm(self, "سند ذخیره و ثبت نهایی شود؟ موجودی تغییر می‌کند و سند پس از آن فقط با "
                              "ابطال قابل برگشت است.", "ثبت نهایی"):
             raise Cancelled
@@ -483,6 +516,8 @@ class DocumentDialog(FormDialog):
     async def on_save_draft(self) -> None:
         self.set_busy(True)
         try:
+            if not await self.check_all(for_post=False):
+                return
             await self._save()
         except ServiceError as exc:
             self.show_status(exc.message)

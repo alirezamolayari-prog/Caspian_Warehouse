@@ -1,4 +1,5 @@
 import datetime as dt
+import logging
 
 from PySide6.QtCore import QByteArray, QSize, Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -21,7 +22,7 @@ from caspian import APP_DISPLAY_NAME, __version__
 from caspian.core import jalali
 from caspian.core.permissions import DEFAULT_ROLES
 from caspian.db.models import DocStatus
-from caspian.services import auth
+from caspian.services import auth, documents
 from caspian.services.actor import Actor
 from caspian.ui.about import AboutDialog
 from caspian.ui.app_context import AppContext, exec_dialog
@@ -38,8 +39,11 @@ from caspian.ui.pages import PAGES, DashboardPage, PageSpec, PlaceholderPage
 from caspian.ui.reports_page import ReportsPage
 from caspian.ui.settings_page import SettingsPage
 from caspian.ui.stocktake_page import StocktakePage
+from caspian.ui.tasks import spawn
 from caspian.ui.theme import Theme
 from caspian.ui.users_page import UsersPage
+
+log = logging.getLogger(__name__)
 
 
 class ProfileDialog(FormDialog):
@@ -215,6 +219,23 @@ class MainWindow(QMainWindow):
         bar.addWidget(QLabel(f"پایگاه داده: {config.name} @ {config.host}"))
         bar.addPermanentWidget(QLabel(jalali.format_date(dt.date.today())))
         bar.addPermanentWidget(QLabel(f"نسخه {__version__}"))
+        self.clock_warning = QLabel(objectName="StatusText")
+        self.clock_warning.setProperty("error", True)
+        self.clock_warning.hide()
+        bar.addWidget(self.clock_warning)
+        spawn(self.check_clock())
+
+    async def check_clock(self) -> None:
+        """A PC whose clock differs from the server would date documents wrongly (QA Part A #6)."""
+        try:
+            skew = await documents.clock_skew_days(self.ctx.db)
+        except Exception:
+            log.warning("Clock check failed", exc_info=True)
+            return
+        if skew is not None and abs(skew) > 1:
+            self.clock_warning.setText("ساعت این رایانه با سرور یکسان نیست؛ "
+                                       "تاریخ و ساعت ویندوز را درست کنید.")
+            self.clock_warning.show()
 
     # ----- navigation & permissions -----
 
