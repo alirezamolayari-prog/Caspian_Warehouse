@@ -1,4 +1,5 @@
 * text=auto eol=lf
 *.ttf binary
 *.png binary
-*.msi binarydata/seed/*.csv -text
+*.msi binary
+data/seed/*.csv -text
