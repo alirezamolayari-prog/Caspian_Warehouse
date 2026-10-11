@@ -57,7 +57,7 @@ async def test_plate_stores_its_floor_on_the_voucher(env):
         env, location_id=plate.id, floor_id=env["floor"]["F3"], usage_note=" تعویض لامپ راهرو "))
     assert await _place(env, doc_id) == (plate.id, env["floor"]["G"], "تعویض لامپ راهرو")
     sheet = await docs.print_sheet(env["db"], env["admin"], doc_id)
-    assert sheet.place == "پلاک ۶۸ · همکف" and sheet.usage_note == "تعویض لامپ راهرو"
+    assert sheet.place == "پلاک ۶۸ · طبقه همکف" and sheet.usage_note == "تعویض لامپ راهرو"
     detail = await docs.get_document(env["db"], env["admin"], doc_id)
     assert detail.input.location_id == plate.id and detail.input.floor_id == env["floor"]["G"]
 
@@ -99,7 +99,7 @@ async def test_deactivated_location_refused_for_new_vouchers_but_old_ones_keep_i
     await locations.set_location_active(env["db"], env["admin"], cafe.id, False)
     with pytest.raises(ValidationError, match="غیرفعال"):
         await docs.create_document(env["db"], env["admin"], issue(env, location_id=cafe.id))
-    assert (await docs.print_sheet(env["db"], env["admin"], old)).place == "کافه کاسپین · زیرهمکف"
+    assert (await docs.print_sheet(env["db"], env["admin"], old)).place == "کافه کاسپین · طبقه زیرهمکف"
 
 
 async def test_setting_off_allows_issues_without_location(env):

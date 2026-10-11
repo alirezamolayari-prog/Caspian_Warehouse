@@ -30,7 +30,7 @@ from caspian.core.text import to_persian_digits
 from caspian.core.text import to_persian_digits as fa  # display-only digits (#19)
 from caspian.db.models import DocStatus, DocType
 from caspian.services import documents as docs
-from caspian.services import items, master
+from caspian.services import items, locations, master
 from caspian.services.documents import (
     DOC_TYPE_NAMES,
     STATUS_NAMES,
@@ -326,7 +326,7 @@ class DocumentDialog(FormDialog):
 
         r = self.table.rowCount()
         self.table.insertRow(r)
-        for col, text in ((0, code), (1, name)):
+        for col, text in ((0, locations.fa_digits(code)), (1, name)):  # Persian digits (QA Part A #5)
             cell = QTableWidgetItem(text)
             cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(r, col, cell)

@@ -62,8 +62,8 @@ async def test_by_floor_in_building_order(env):
 async def test_by_location_keeps_deactivated_places(env):
     rows = await reports.consumption(env["db"], env["admin"], "location")
     labels = {r.location for r in rows}
-    assert {"پلاک ۶۸ · همکف", "پلاک ۷۰ · همکف", "آسانسور باری اسدنژاد · طبقه دوم",
-            "مشاعات عمومی طبقه · طبقه دوم", "کافه کاسپین · زیرهمکف"} == labels  # CAFE deactivated
+    assert {"پلاک ۶۸ · طبقه همکف", "پلاک ۷۰ · طبقه همکف", "آسانسور باری اسدنژاد · طبقه دوم",
+            "مشاعات عمومی طبقه · طبقه دوم", "کافه کاسپین · طبقه زیرهمکف"} == labels  # CAFE deactivated
     assert {r.location_code for r in rows} == {"68", "70", "AB-ASD", "GEN", "CAFE"}
 
 
@@ -84,7 +84,7 @@ async def test_table_and_excel(env, tmp_path):
     assert table.totals[3] == 6 and table.totals[1] == 3
     write_xlsx(table, tmp_path / "c.xlsx")
     values = [c.value for row in openpyxl.load_workbook(tmp_path / "c.xlsx").active.iter_rows() for c in row]
-    assert "همکف" in values and "طبقه دوم" in values
+    assert "طبقه همکف" in values and "طبقه دوم" in values
     scheduled = await scheduler.build_report(env["db"], "consumption_location")
     assert scheduled.title == "مصرف به تفکیک محل"
 

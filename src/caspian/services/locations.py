@@ -55,8 +55,9 @@ class FloorRow:
 
     @property
     def display(self) -> str:
-        """«همکف», «طبقه دوم», «پارکینگ P1», «بام»."""
-        return f"طبقه {self.name_fa}" if self.code.startswith("F") else self.name_fa
+        """One style everywhere (QA Part A #5): every storey says «طبقه …» («طبقه همکف»,
+        «طبقه زیرهمکف», «طبقه دوم», «طبقه بام»); parking levels keep their own name («پارکینگ P1»)."""
+        return self.name_fa if self.code.startswith("P") else f"طبقه {self.name_fa}"
 
 
 @dataclass(frozen=True)

@@ -138,3 +138,12 @@ async def test_clock_warning_in_the_status_bar(qtbot, env, monkeypatch, tmp_path
     qtbot.addWidget(win)
     assert await wait_until(lambda: not win.clock_warning.isHidden())
     assert "ساعت این رایانه" in win.clock_warning.text()
+
+
+async def test_item_code_shows_persian_digits(qtbot, env):
+    """QA Part A #5: the voucher table showed «1016»."""
+    dlg = await _dialog(qtbot, env)
+    dlg.item_input.setText("3001")
+    await dlg.on_item_entered()
+    assert dlg.table.item(0, 0).text() == "۳۰۰۱"
+    assert dlg.collect().lines[0].item_id == env["lamp"]  # display only; the code itself is unchanged

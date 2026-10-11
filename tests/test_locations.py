@@ -37,7 +37,7 @@ async def test_plate_68_in_every_writing(db, text):
     index = await locations.load_index(db)
     loc = index.exact(text)
     assert loc is not None and loc.code == "68" and loc.floor.code == "G"
-    assert loc.label() == "پلاک ۶۸ · همکف"
+    assert loc.label() == "پلاک ۶۸ · طبقه همکف"
 
 
 @pytest.mark.parametrize("text", ["126/1", "126-1", "۱۲۶/۱", "١٢٦/١", "۱۲۶-۱", "126 / 1"])
@@ -184,3 +184,11 @@ async def test_phase1_ranges_are_settings(db, admin):
     assert index.exact("50") is None  # no longer a Phase 1 plate, and not a known plate either
     with pytest.raises(Phase1Plate):
         index.exact("3")
+
+
+async def test_one_floor_style_everywhere(db):
+    """QA Part A #5: «همکف» next to «طبقه دوم» looked inconsistent."""
+    floors = {f.code: f.display for f in (await locations.load_index(db)).floors}
+    assert floors == {"P4": "پارکینگ P4", "P3": "پارکینگ P3", "P2": "پارکینگ P2", "P1": "پارکینگ P1",
+                      "B": "طبقه زیرهمکف", "G": "طبقه همکف", "F1": "طبقه اول", "F2": "طبقه دوم",
+                      "F3": "طبقه سوم", "ROOF": "طبقه بام"}

@@ -29,7 +29,7 @@ async def test_plate_number_then_enter_selects_directly(picker):
     picker.completer.popup().hide()  # Enter on an exact plate selects it without the list
     QTest.keyClick(picker.edit, Qt.Key.Key_Return)
     assert picker.location.code == "68" and picker.floor.isHidden()
-    assert picker.summary.text() == "پلاک ۶۸ · همکف"
+    assert picker.summary.text() == "پلاک ۶۸ · طبقه همکف"
     loc_id, floor_id = picker.value()
     assert floor_id is None and loc_id == picker.location.id
     picker.validate()

@@ -28,7 +28,7 @@ async def test_list_filters_and_search(qtbot, ctx):
     await tab.refresh()
     assert tab.table.rowCount() == 9
     tab.type_filter.setCurrentIndex(0)
-    tab.floor_filter.setCurrentIndex(tab.floor_filter.findText("همکف"))
+    tab.floor_filter.setCurrentIndex(tab.floor_filter.findText("طبقه همکف"))
     await tab.refresh()
     assert tab.table.rowCount() == 25  # plates 58–82
     tab.floor_filter.setCurrentIndex(0)
@@ -46,7 +46,7 @@ async def test_add_edit_and_deactivate(qtbot, ctx):
     qtbot.addWidget(dialog)
     dialog.code.setText("LOBBY")
     dialog.name.setText("Lobby")
-    dialog.floor.setCurrentIndex(dialog.floor.findText("همکف"))
+    dialog.floor.setCurrentIndex(dialog.floor.findText("طبقه همکف"))
     dialog.aliases.setText("lobby main; front")
     await dialog.submit()
     index = await locations.load_index(ctx.db)
