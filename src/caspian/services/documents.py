@@ -31,7 +31,9 @@ from caspian.db.models import (
     DocType,
     Document,
     DocumentLine,
+    Floor,
     Item,
+    Location,
     Person,
     StockBalance,
     StockLedger,
@@ -42,7 +44,7 @@ from caspian.db.models import (
     User,
     Warehouse,
 )
-from caspian.services import audit
+from caspian.services import audit, locations
 from caspian.services.actor import Actor
 from caspian.services.errors import (
     ConcurrencyError,
@@ -116,6 +118,11 @@ class DocumentInput:
     person_id: int | None = None
     related_document_id: int | None = None
     description: str = ""
+    # Consumption place of an issue voucher (spec Part 2). floor_id only matters for locations whose
+    # floor the user picks (stairs, elevators, «مشاعات»); others always use their own floor.
+    location_id: int | None = None
+    floor_id: int | None = None
+    usage_note: str = ""
 
 
 @dataclass(frozen=True)
@@ -246,6 +253,7 @@ async def _validate(s: AsyncSession, data: DocumentInput) -> list[DocumentLine]:
             raise ValidationError("شخص برگشت‌دهنده با تحویل‌گیرنده امانی یکسان نیست.")
     elif data.related_document_id is not None:
         raise ValidationError("سند مرتبط فقط برای برگشت امانی است.")
+    await _place(s, data)
     if not data.lines:
         raise ValidationError("سند باید حداقل یک ردیف کالا داشته باشد.")
 
@@ -328,13 +336,28 @@ async def _next_number(s: AsyncSession, doc_type: DocType, fiscal_year: int) -> 
     return (current or 0) + 1
 
 
-def _set_header(doc: Document, data: DocumentInput) -> None:
+async def _place(s: AsyncSession, data: DocumentInput) -> tuple[int | None, int | None]:
+    """(location_id, floor_id) to store: the floor is always stored on the document, so later
+    edits of the location list never rewrite history."""
+    if data.location_id is None:
+        if data.floor_id is not None:
+            raise ValidationError("ابتدا محل مصرف را انتخاب کنید.")
+        return None, None
+    if data.doc_type != DocType.ISSUE:
+        raise ValidationError("محل مصرف فقط برای حواله خروج ثبت می‌شود.")
+    place = await locations.resolve_place_in(s, data.location_id, data.floor_id)
+    return place.location.id, place.floor.id
+
+
+def _set_header(doc: Document, data: DocumentInput, place: tuple[int | None, int | None]) -> None:
     doc.doc_date = data.doc_date
     doc.warehouse_id = data.warehouse_id
     doc.dest_warehouse_id = data.dest_warehouse_id
     doc.person_id = data.person_id
     doc.related_document_id = data.related_document_id
     doc.description = data.description.strip()
+    doc.location_id, doc.consumption_floor_id = place
+    doc.usage_note = data.usage_note.strip()
 
 
 async def _check_loan_return_limits(s: AsyncSession, doc: Document) -> None:
@@ -445,6 +468,7 @@ async def get_document(db: Database, actor: Actor, doc_id: int) -> DocumentDetai
             dest_warehouse_id=doc.dest_warehouse_id, person_id=doc.person_id,
             related_document_id=doc.related_document_id, description=doc.description,
             lines=[LineInput(v.item_id, v.unit_id, v.qty, v.unit_price, v.notes) for v in views],
+            location_id=doc.location_id, floor_id=doc.consumption_floor_id, usage_note=doc.usage_note,
         )
         return DocumentDetail(doc.id, doc.version_id, doc.number, doc.fiscal_year, doc.status,
                               data, views)
@@ -485,6 +509,8 @@ class PrintSheet:
     posted_by: str
     print_count: int  # copies issued so far
     last_printed_by: str
+    place: str = ""  # «پلاک ۶۸ · همکف» (issue vouchers)
+    usage_note: str = ""
 
     @property
     def total_amount(self) -> Decimal | None:
@@ -517,6 +543,7 @@ async def print_sheet(db: Database, actor: Actor, doc_id: int) -> PrintSheet:
             lines.append(PrintLine(item.code, item.name, await name_of(Unit, ln.unit_id), ln.qty,
                                    ln.unit_price, ln.notes))
         company = await s.get(AppSetting, "company_name")
+        place = await place_text_in(s, doc)
         return PrintSheet(
             doc.id, doc.doc_type, number_text(doc.doc_type, doc.number), DOC_TYPE_NAMES[doc.doc_type],
             doc.status, doc.doc_date, await name_of(Warehouse, doc.warehouse_id),
@@ -524,7 +551,17 @@ async def print_sheet(db: Database, actor: Actor, doc_id: int) -> PrintSheet:
             PERSON_LABELS.get(doc.doc_type, "طرف حساب"), doc.description, lines,
             str(company.value) if company and company.value else "",
             await person_name(doc.created_by_id), await person_name(doc.posted_by_id),
-            doc.print_count, await person_name(doc.last_printed_by_id))
+            doc.print_count, await person_name(doc.last_printed_by_id), place, doc.usage_note)
+
+
+async def place_text_in(s: AsyncSession, doc: Document) -> str:
+    """The stored place of a document as people say it, e.g. «پلاک ۶۸ · همکف»."""
+    if doc.location_id is None:
+        return ""
+    location = await s.get(Location, doc.location_id)
+    floor = await s.get(Floor, doc.consumption_floor_id) if doc.consumption_floor_id else None
+    return locations.place_label(location.name_fa, location.type, floor.code if floor else None,
+                                 floor.name_fa if floor else None)
 
 
 async def record_print(db: Database, actor: Actor, doc_id: int, kind: str) -> int:
@@ -692,7 +729,7 @@ async def create_document_in(s: AsyncSession, actor: Actor, data: DocumentInput)
                    number=await _next_number(s, data.doc_type, year),
                    status=DocStatus.DRAFT, doc_date=data.doc_date,
                    warehouse_id=data.warehouse_id)
-    _set_header(doc, data)
+    _set_header(doc, data, await _place(s, data))
     doc.lines = lines
     s.add(doc)
     await s.flush()
@@ -752,7 +789,7 @@ async def update_document(db: Database, actor: Actor, doc_id: int, expected_vers
         if jalali.fiscal_year_of(data.doc_date) != doc.fiscal_year:
             raise ValidationError("تاریخ سند باید در همان سال مالی بماند.")
         lines = await _validate(s, data)
-        _set_header(doc, data)
+        _set_header(doc, data, await _place(s, data))
         doc.lines.clear()
         await s.flush()
         doc.lines.extend(lines)
@@ -818,6 +855,11 @@ async def post_document_in(s: AsyncSession, actor: Actor, doc: Document, *,
         await _check_loan_return_limits(s, doc)
     if doc.doc_type == DocType.ISSUE and doc.person_id is None:
         raise ValidationError("برای ثبت نهایی حواله خروج، تحویل‌گیرنده را انتخاب کنید.")
+    if doc.doc_type == DocType.ISSUE:
+        if doc.location_id is None and await locations.required_on_issue_in(s):
+            raise ValidationError("برای ثبت نهایی حواله خروج، محل مصرف را انتخاب کنید.")
+        # Freeze the place as it is now: later edits of the location list never change history.
+        doc.location_id, doc.consumption_floor_id = await _place(s, _input_of(doc))
     override = await _stocktake_override(s, actor, doc, approval, stocktake_id)
     approver_id = override.pop("approved_by_id", None)
     await _apply_effects(s, doc, reverse=False)
@@ -836,6 +878,7 @@ def _input_of(doc: Document) -> DocumentInput:
         related_document_id=doc.related_document_id, description=doc.description,
         lines=[LineInput(ln.item_id, ln.unit_id, ln.qty, ln.unit_price, ln.notes)
                for ln in doc.lines],
+        location_id=doc.location_id, floor_id=doc.consumption_floor_id, usage_note=doc.usage_note,
     )
 
 

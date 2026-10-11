@@ -72,6 +72,11 @@ def document_html(sheet: PrintSheet, copy_no: int, paper: str = "A5") -> str:
         footer.append(field("ثبت نهایی", sheet.posted_by))
     footer.append(field("تاریخ چاپ", printed))
     sep = f"{RLM} — {RLM}"
+    if sheet.place or sheet.usage_note:  # issue vouchers: where the goods are consumed
+        place = [field("محل مصرف", sheet.place)] if sheet.place else []
+        if sheet.usage_note:
+            place.append(field("شرح مصرف", sheet.usage_note))
+        description = f"<p>{sep.join(place)}</p>" + description
     doc_date = to_persian_digits(jalali.format_date(sheet.doc_date))
     signature_cells = rtl_cells([f'<td width="33%" align="center">{s}<br><br><br><br></td>'
                                  for s in SIGNATURES])

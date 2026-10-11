@@ -21,10 +21,10 @@ from rapidfuzz import fuzz
 
 from caspian.core import jalali
 from caspian.core.permissions import Perm
-from caspian.core.text import normalize, to_ascii_digits
+from caspian.core.text import normalize, normalize_location, to_ascii_digits
 from caspian.db.database import Database
 from caspian.db.models import DocType, ImportKind, ImportSource
-from caspian.services import documents, imports, items, master, reports
+from caspian.services import documents, imports, items, locations, master, reports
 from caspian.services.actor import Actor
 from caspian.services.errors import ServiceError
 from caspian.services.import_files import RawRow
@@ -249,6 +249,40 @@ async def _create_stock_draft(ctx: ToolContext, args: dict) -> dict:
     return result
 
 
+async def _resolve_place(ctx: ToolContext, args: dict) -> tuple[dict, dict | None]:
+    """Consumption place of an issue from the user's words: ({location_id, floor_id}, question)."""
+    index = await locations.load_index(ctx.db)
+    text = str(args.get("location", "") or "").strip()
+    if not text:
+        async with ctx.db.session() as s:
+            required = await locations.required_on_issue_in(s)
+        if not required:
+            return {}, None
+        return {}, {"needs_choice": "location", "candidates": [],
+                    "note": "محل مصرف حواله لازم است؛ از کاربر بپرس کجا مصرف شده (شماره پلاک یا نام محل، "
+                            "مثل «پلاک ۶۸» یا «آسانسور باری اسدنژاد»)."}
+    try:
+        loc = index.exact(text)
+        found = [] if loc else index.search(text, limit=8)
+    except locations.Phase1Plate as exc:
+        return {}, {"error": exc.message}
+    if loc is None and len(found) == 1:
+        loc = found[0]
+    if loc is None:
+        return {}, {"needs_choice": "location", "candidates": [x.label() for x in found],
+                    "note": "محل مصرف مشخص نیست؛ از کاربر بپرس کدام." if found
+                    else "محلی با این نام پیدا نشد؛ از کاربر بپرس."}
+    if not loc.needs_floor:
+        return {"location_id": loc.id}, None
+    key = normalize_location(str(args.get("floor", "") or ""))
+    floor = next((f for f in index.floors if f.is_active and key and key in {
+        normalize_location(f.code), normalize_location(f.name_fa), normalize_location(f.display)}), None)
+    if floor is None:
+        return {}, {"needs_choice": "floor", "candidates": [f.display for f in index.floors if f.is_active],
+                    "note": f"برای «{loc.name_fa}» طبقه لازم است؛ از کاربر بپرس کدام طبقه."}
+    return {"location_id": loc.id, "floor_id": floor.id}, None
+
+
 async def _create_document(ctx: ToolContext, args: dict) -> dict:
     """A real warehouse document (draft), optionally posted — like a user would in «اسناد انبار»."""
     try:
@@ -284,6 +318,12 @@ async def _create_document(ctx: ToolContext, args: dict) -> dict:
     if doc_type in (DocType.ISSUE, DocType.LOAN_OUT, DocType.LOAN_RETURN) and person_id is None:
         return {"needs_choice": "person", "candidates": [],
                 "note": "برای این سند تحویل‌گیرنده لازم است؛ نام شخص را از کاربر بپرس."}
+    place: dict = {}
+    if doc_type == DocType.ISSUE:
+        place, question = await _resolve_place(ctx, args)
+        if question:
+            return question
+        place["usage_note"] = str(args.get("usage_note", "") or "")[:500]
     units = {normalize(u.name): u.id for u in await master.list_units(ctx.db)}
     doc_lines = []
     for line in lines_in:
@@ -312,7 +352,7 @@ async def _create_document(ctx: ToolContext, args: dict) -> dict:
     doc_id = await documents.create_document(ctx.db, ctx.actor, documents.DocumentInput(
         doc_type, dt.date.today(), wh.id, doc_lines, dest_warehouse_id=dest.id if dest else None,
         person_id=person_id, related_document_id=related,
-        description=str(args.get("description", "") or "ثبت توسط دستیار هوشمند")[:500]))
+        description=str(args.get("description", "") or "ثبت توسط دستیار هوشمند")[:500], **place))
     detail = await documents.get_document(ctx.db, ctx.actor, doc_id)
     result = {"document_id": doc_id, "number": documents.number_text(doc_type, detail.number),
               "type": documents.DOC_TYPE_NAMES[doc_type], "status": "DRAFT",
@@ -406,12 +446,15 @@ TOOLS: list[Tool] = [
          "ساخت سند انبار مثل کاربر: رسید (RECEIPT)، حواله خروج (ISSUE)، انتقال (TRANSFER)، خروج امانی "
          "(LOAN_OUT) یا برگشت امانی (LOAN_RETURN). person = نام تحویل‌گیرنده/تأمین‌کننده (برای حواله و "
          "امانی الزامی). هر ردیف: code یا name یا barcode، qty، unit اختیاری. post=true یعنی بلافاصله "
-         "ثبت نهایی شود. اگر پاسخ needs_choice داشت، از کاربر بپرس و دوباره بساز.",
+         "ثبت نهایی شود. برای حواله خروج: location = محل مصرف (شماره پلاک یا نام محل)، floor = طبقه "
+         "(فقط برای پله، آسانسور و مشاعات)، usage_note = شرح مصرف. اگر پاسخ needs_choice داشت، از "
+         "کاربر بپرس و دوباره بساز.",
          _obj({"doc_type": {"type": "string",
                             "enum": ["RECEIPT", "ISSUE", "TRANSFER", "LOAN_OUT", "LOAN_RETURN"]},
                "person": {"type": "string"}, "warehouse": {"type": "string"},
                "dest_warehouse": {"type": "string"}, "description": {"type": "string"},
-               "post": {"type": "boolean"},
+               "location": {"type": "string"}, "floor": {"type": "string"},
+               "usage_note": {"type": "string"}, "post": {"type": "boolean"},
                "lines": {"type": "array", "items": _obj({
                    "name": {"type": "string"}, "code": {"type": "string"},
                    "barcode": {"type": "string"}, "qty": {"type": "number"},

@@ -47,6 +47,7 @@ from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import request_approval
 from caspian.ui.dialogs import Cancelled, FormDialog
 from caspian.ui.document_print import document_print_menu
+from caspian.ui.location_picker import LocationPicker
 from caspian.ui.master_page import person_picker
 from caspian.ui.messages import confirm, show_error, show_info
 from caspian.ui.widgets import (
@@ -191,6 +192,15 @@ class DocumentDialog(FormDialog):
         self.description = QLineEdit(data.description)
         left.addRow("توضیحات:", self.description)
 
+        # Where the goods are consumed (spec Part 2): one entry; a plate fills its floor.
+        self.place = LocationPicker()
+        self.usage_note = QLineEdit(data.usage_note)
+        self.usage_note.setPlaceholderText("مثلاً تعویض لامپ راهرو، نظافت پله…")
+        self._place_value = (data.location_id, data.floor_id)
+        if doc_type == DocType.ISSUE:
+            self.form.addRow("محل مصرف:", self.place)
+            self.form.addRow("شرح مصرف:", self.usage_note)
+
         # Line entry: barcode scanner or typed code/name, then Enter.
         entry = QHBoxLayout()
         self.item_input = QLineEdit()
@@ -229,7 +239,8 @@ class DocumentDialog(FormDialog):
         self.print_button.setEnabled(self.saved_id is not None)
         self.buttons.insertWidget(1, self.print_button)
         self._inputs += [self.date, self.warehouse, self.dest, self.person, self.loan,
-                         self.description, self.item_input, self.draft_button]
+                         self.description, self.place, self.usage_note, self.item_input,
+                         self.draft_button]
         if self._read_only:
             for w in self._inputs:
                 w.setEnabled(False)
@@ -242,6 +253,9 @@ class DocumentDialog(FormDialog):
 
     async def load_lines(self) -> None:
         """Existing lines need each item's unit list; loaded once after construction."""
+        if self._type == DocType.ISSUE:
+            await self.place.load(self._ctx.db)
+            self.place.set_value(*self._place_value)
         for v in self._pending_lines:
             await self._ensure_units(v.item_id)
             self._add_line(v.item_id, v.item_code, v.item_name, v.unit_id, v.qty, v.unit_price,
@@ -426,7 +440,20 @@ class DocumentDialog(FormDialog):
             related_document_id=self.loan.currentData() if self._type == DocType.LOAN_RETURN
             else None,
             description=self.description.text(), lines=lines,
+            **self._collect_place(),
         )
+
+    def _collect_place(self) -> dict:
+        if self._type != DocType.ISSUE:
+            return {}
+        value = self.place.value()
+        if value is None:
+            if self.place.edit.text().strip():
+                raise ValidationError("محل مصرف را از فهرست انتخاب کنید (یا کادر را خالی بگذارید).")
+            return {"usage_note": self.usage_note.text()}
+        if self.place.location.needs_floor:
+            self.place.validate()  # «طبقه را انتخاب کنید» right here, not after a server round trip
+        return {"location_id": value[0], "floor_id": value[1], "usage_note": self.usage_note.text()}
 
     async def _save(self) -> int:
         data = self.collect()
