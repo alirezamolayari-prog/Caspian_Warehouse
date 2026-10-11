@@ -47,7 +47,8 @@ def test_no_destructive_tools_exist():
     names = {t.name for t in TOOLS}
     assert names == {"search_items", "item_stock", "reorder_analysis", "recent_documents",
                      "open_loans", "suppliers", "create_document", "post_document",
-                     "create_stock_draft", "send_report", "propose_tasks"}
+                     "create_stock_draft", "send_report", "propose_tasks",
+                     "find_location", "consumption_report"}  # both read-only
     for forbidden in ("delete", "approve", "apply", "cancel", "merge", "restore", "role", "deactivate"):
         assert not any(forbidden in n for n in names)
 
