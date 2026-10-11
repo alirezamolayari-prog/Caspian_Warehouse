@@ -815,7 +815,8 @@ async def delete_draft(db: Database, actor: Actor, doc_id: int) -> None:
 
 
 async def post_document(db: Database, actor: Actor, doc_id: int,
-                        expected_version: int | None = None, approval: Approval | None = None) -> None:
+                        expected_version: int | None = None, approval: Approval | None = None,
+                        via: str | None = None) -> None:
     """Finalize a draft: write the ledger and update balances atomically.
 
     `approval` (STOCKTAKE_OVERRIDE) is only needed while a stocktake freezes the items."""
@@ -824,7 +825,7 @@ async def post_document(db: Database, actor: Actor, doc_id: int,
             doc = await _load(s, doc_id)
             if expected_version is not None and doc.version_id != expected_version:
                 raise ConcurrencyError()
-            await post_document_in(s, actor, doc, approval=approval)
+            await post_document_in(s, actor, doc, approval=approval, via=via)
 
     if approval is not None:  # an approval is single-use: no silent second attempt
         try:
@@ -837,16 +838,16 @@ async def post_document(db: Database, actor: Actor, doc_id: int,
 
 
 async def post_document_in(s: AsyncSession, actor: Actor, doc: Document, *,
-                           approval: Approval | None = None, stocktake_id: int | None = None) -> None:
+                           approval: Approval | None = None, stocktake_id: int | None = None,
+                           via: str | None = None) -> None:
     """Post inside the caller's transaction. `stocktake_id`: the stocktake whose own adjustment
-    this is (exempt from its freeze)."""
-    actor.require(Perm.DOCUMENTS_POST)
-    if actor.is_ai:
-        from caspian.services.ai.config import ai_may_post_in
+    this is (exempt from its freeze). `via`: e.g. "assistant" when a person confirmed a draft the
+    assistant prepared (recorded in the audit log).
 
-        if not await ai_may_post_in(s):
-            raise PermissionDenied("ثبت نهایی سند توسط دستیار در تنظیمات غیرفعال است؛ پیش‌نویس ساخته شد "
-                                   "و باید خودتان آن را ثبت نهایی کنید.")
+    Posting changes stock, so it is always a person's decision: the AI assistant (chat, MCP or any
+    later channel) only prepares drafts; the app asks the user to confirm."""
+    actor.require_human("ثبت نهایی سند")
+    actor.require(Perm.DOCUMENTS_POST)
     if doc.status != DocStatus.DRAFT:
         raise ValidationError("این سند قبلاً ثبت یا ابطال شده است.")
     # Re-validate: items/warehouses may have been deactivated since the draft was saved.
@@ -867,8 +868,64 @@ async def post_document_in(s: AsyncSession, actor: Actor, doc: Document, *,
     doc.posted_at = dt.datetime.now()
     doc.posted_by_id = actor.user_id
     audit.record(s, actor, "document.posted", "document", doc.id,
-                 {"type": doc.doc_type.value, "number": doc.number, **override},
+                 {"type": doc.doc_type.value, "number": doc.number, **override,
+                  **({"via": via} if via else {})},
                  approved_by_id=approver_id)
+
+
+@dataclass(frozen=True)
+class Confirmation:
+    """What the user confirms before a draft prepared by the assistant changes stock."""
+
+    document_id: int
+    version_id: int
+    title: str  # «حواله خروج ح-۱۰»
+    lines: list[str]  # «۱ عدد شمع (کد ۱۰۱۶)»
+    details: list[tuple[str, str]]  # (label, value): تحویل‌گیرنده، محل مصرف، شرح مصرف، انبار…
+
+    @property
+    def text(self) -> str:
+        rows = [self.title, *(f"• {line}" for line in self.lines)]
+        rows += [f"{label}: {value}" for label, value in self.details if value]
+        return "\n".join(rows)
+
+
+async def confirmation(db: Database, actor: Actor, doc_id: int) -> Confirmation:
+    actor.require(Perm.DOCUMENTS_VIEW)
+    async with db.session() as s:
+        doc = await _load(s, doc_id)
+        lines = []
+        for ln in doc.lines:
+            item = await s.get(Item, ln.item_id)
+            unit = await s.get(Unit, ln.unit_id)
+            lines.append(f"{format_qty(ln.qty)} {unit.name} {item.name} (کد {to_persian_digits(item.code)})")
+        person = await s.get(Person, doc.person_id) if doc.person_id else None
+        warehouse = await s.get(Warehouse, doc.warehouse_id)
+        dest = await s.get(Warehouse, doc.dest_warehouse_id) if doc.dest_warehouse_id else None
+        details = [(PERSON_LABELS.get(doc.doc_type, "طرف حساب"), person.name if person else ""),
+                   ("محل مصرف", await place_text_in(s, doc)), ("شرح مصرف", doc.usage_note),
+                   ("از انبار" if dest else "انبار", warehouse.name if warehouse else ""),
+                   ("به انبار", dest.name if dest else ""),
+                   ("تاریخ", jalali.format_date(doc.doc_date))]
+        return Confirmation(doc.id, doc.version_id,
+                            f"{DOC_TYPE_NAMES[doc.doc_type]} {number_text(doc.doc_type, doc.number)}",
+                            lines, details)
+
+
+async def discard_assistant_draft(db: Database, actor: Actor, doc_id: int) -> None:
+    """«نه» on the assistant's confirmation card: remove the draft it prepared for this user.
+    Drafts never touched stock; only the user's own, still-draft documents qualify."""
+    actor.require_human("حذف پیش‌نویس دستیار")
+    actor.require(Perm.DOCUMENTS_EDIT)
+    async with db.session(actor.user_id) as s:
+        doc = await _load(s, doc_id)
+        if doc.status != DocStatus.DRAFT:
+            raise ValidationError("این سند دیگر پیش‌نویس نیست.")
+        if doc.created_by_id != actor.user_id:
+            raise PermissionDenied("این پیش‌نویس را کاربر دیگری ساخته است.")
+        audit.record(s, actor, "document.assistant_draft_discarded", "document", doc.id,
+                     {"type": doc.doc_type.value, "number": doc.number, "via": "assistant"})
+        await s.delete(doc)
 
 
 def _input_of(doc: Document) -> DocumentInput:

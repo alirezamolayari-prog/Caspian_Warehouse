@@ -111,7 +111,7 @@ async def test_setting_off_allows_issues_without_location(env):
 
 
 async def _ai(env, **args):
-    ctx = ToolContext(env["db"], env["admin"].as_ai(), [], allow_post=False)
+    ctx = ToolContext(env["db"], env["admin"].as_ai(), [])
     base = {"doc_type": "ISSUE", "person": "حسن نگهبان", "lines": [{"code": "3001", "qty": 2}]}
     return json.loads(await run_tool(ctx, "create_document", {**base, **args}))
 

@@ -319,6 +319,10 @@ ACTION_NAMES = {
     "document.created": "ایجاد سند", "document.updated": "ویرایش سند",
     "document.posted": "ثبت نهایی سند", "document.cancelled": "ابطال سند",
     "document.draft_deleted": "حذف پیش‌نویس سند",
+    "document.assistant_draft_discarded": "رد پیش‌نویس دستیار",
+    "location.created": "ایجاد محل مصرف", "location.updated": "ویرایش محل مصرف",
+    "location.activated": "فعال‌سازی محل مصرف", "location.deactivated": "غیرفعال‌سازی محل مصرف",
+    "locations.imported": "ورود محل‌های مصرف از فایل", "locations.settings": "تنظیمات محل مصرف",
     "import.batch_created": "ایجاد پیش‌نویس ورود اطلاعات",
     "import.batch_applied": "اعمال ورود اطلاعات", "import.batch_discarded": "حذف پیش‌نویس ورود",
     "stocktake.created": "شروع انبارگردانی", "stocktake.submitted": "ثبت شمارش",
@@ -350,10 +354,17 @@ async def user_activity(db: Database, actor: Actor, user_id: int | None = None,
             who = user.username if user else "?"
     out = []
     for entry, username, approved_by in rows:
-        details = entry.details or {}
+        details = dict(entry.details or {})
+        action = ACTION_NAMES.get(entry.action, entry.action)
+        # Who really did it: the assistant on the user's behalf, or the user confirming its draft.
+        if details.pop("via_ai", False):
+            action += f" — توسط دستیار از طرف {details.pop('on_behalf_of', username or '')}"
+        elif details.get("via") == "assistant":
+            details.pop("via")
+            action += f" — به پیشنهاد دستیار، با تأیید {username or ''}"
         summary = "، ".join(f"{k}: {v}" for k, v in details.items()
                            if k not in ("before",))[:200]
-        out.append([entry.at, username or "سیستم", ACTION_NAMES.get(entry.action, entry.action),
+        out.append([entry.at, username or "سیستم", action,
                     f"{entry.entity_type or ''} {entry.entity_id or ''}".strip(), summary,
                     entry.machine or "", approved_by or ""])
     return ReportTable(

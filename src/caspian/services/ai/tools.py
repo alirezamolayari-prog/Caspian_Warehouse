@@ -2,11 +2,11 @@
 
 Every tool runs as `actor.as_ai()`: the signed-in user's permissions, flagged as AI so
 protected actions and applying drafts are refused by the services themselves. Besides the
-read-only tools the assistant can work like a user: create warehouse documents
-(`create_document`) and, when the admin allows it, post them (`post_document`) — through the
-same services, so stock, dates, units, stocktake freeze and permissions all apply. There is
-deliberately no tool to cancel, delete, deactivate, merge, restore or change roles/settings,
-and the services refuse those for AI actors anyway (`Actor.require_human`).
+read-only tools the assistant can prepare warehouse documents (`create_document`) — always as
+DRAFTS. Anything that changes stock is confirmed by the user on a card in the chat («بله، ثبت کن»)
+and then posted by the person, never by the assistant: `documents.post_document_in` refuses AI
+actors. There is deliberately no tool to post, cancel, delete, deactivate, merge, restore or change
+roles/settings, and the services refuse those for AI actors anyway (`Actor.require_human`).
 """
 
 import datetime as dt
@@ -40,7 +40,6 @@ class ToolContext:
     actor: Actor  # already restricted with as_ai()
     created_batches: list[int]
     messenger: object | None = None  # caspian.services.messaging.Messenger
-    allow_post: bool = False  # «اجازه ثبت نهایی سند توسط دستیار»
     created_documents: list[dict] = field(default_factory=list)
     signatures: dict[str, dict] = field(default_factory=dict)  # one create per request (#4)
 
@@ -131,11 +130,9 @@ async def _resolve_item(ctx: ToolContext, line: dict) -> tuple[int | None, dict 
     exact = [i for i, n in index.names.items() if n == normalize(name)]
     if len(exact) == 1:
         return exact[0], None
-    if found and len(exact) == 0:
-        best = found[0][1]
-        second = found[1][1] if len(found) > 1 else 0
-        if best >= imports.AUTO_MATCH and best - second > imports.AMBIGUOUS_GAP + 4:
-            return found[0][0], None
+    if len(exact) == 0 and len(found) == 1 and found[0][1] >= imports.AUTO_MATCH:
+        return found[0][0], None  # the only candidate there is; the user still confirms it on the card
+    # Several similar items: never pick one — the user says which (QA: «یه شمع» must not guess).
     pool = [(i, 100) for i in exact] or found
     return None, {"needs_choice": "item", "asked": name, "candidates": await _item_candidates(ctx, pool),
                   "note": f"چند کالا با «{name}» مطابقت دارد یا کالا پیدا نشد؛ از کاربر بپرس کدام "
@@ -405,9 +402,12 @@ async def _create_document(ctx: ToolContext, args: dict) -> dict:
         allowed = {detail.input.base_unit_id, *(u for u, _f in detail.input.units)}
         unit_id = units.get(normalize(str(line.get("unit", "") or "")))
         try:
-            qty = Decimal(str(line.get("qty")))
+            qty = Decimal(to_ascii_digits(str(line.get("qty", "")).strip()))
         except (InvalidOperation, ValueError):
-            return {"error": f"مقدار «{detail.input.name}» عدد نیست."}
+            qty = None
+        if qty is None or not qty.is_finite() or qty <= 0:
+            return {"needs_choice": "qty", "asked": detail.input.name,
+                    "note": f"مقدار «{detail.input.name}» مشخص نیست؛ از کاربر بپرس چند تا (حدس نزن)."}
         doc_lines.append(documents.LineInput(
             item_id, unit_id if unit_id in allowed else detail.input.base_unit_id, qty,
             notes=str(line.get("notes", "") or "")[:200]))
@@ -425,47 +425,17 @@ async def _create_document(ctx: ToolContext, args: dict) -> dict:
         person_id=person_id, related_document_id=related,
         description=str(args.get("description", "") or "ثبت توسط دستیار هوشمند")[:500], **place))
     detail = await documents.get_document(ctx.db, ctx.actor, doc_id)
+    summary = await documents.confirmation(ctx.db, ctx.actor, doc_id)
     result = {"document_id": doc_id, "number": documents.number_text(doc_type, detail.number),
               "type": documents.DOC_TYPE_NAMES[doc_type], "status": "DRAFT",
               "lines": [{"code": ln.item_code, "name": ln.item_name, "qty": _num(ln.qty),
-                         "unit": ln.unit_name} for ln in detail.lines]}
+                         "unit": ln.unit_name} for ln in detail.lines],
+              "needs_confirmation": True, "summary": summary.text,
+              "note": "پیش‌نویس ساخته شد و هنوز روی موجودی اثری ندارد. برنامه خلاصه را با دکمه‌های "
+                      "«بله، ثبت کن» / «نه» به کاربر نشان می‌دهد؛ خودت ثبت نهایی نکن."}
     ctx.created_documents.append(result)
     ctx.signatures[signature] = result
-    if args.get("post"):
-        result.update(await _post(ctx, doc_id))
     return result
-
-
-async def _post(ctx: ToolContext, doc_id: int) -> dict:
-    if not ctx.allow_post:
-        return {"posted": False, "note": "ثبت نهایی توسط دستیار در تنظیمات غیرفعال است؛ پیش‌نویس ماند."}
-    try:
-        await documents.post_document(ctx.db, ctx.actor, doc_id)
-    except ServiceError as exc:
-        return {"posted": False, "post_error": exc.message, "note": "سند به‌صورت پیش‌نویس ماند."}
-    for created in ctx.created_documents:
-        if created["document_id"] == doc_id:
-            created["status"] = "POSTED"
-    return {"posted": True, "status": "POSTED"}
-
-
-async def _post_document(ctx: ToolContext, args: dict) -> dict:
-    ref = str(args.get("document", "") or args.get("document_id", "")).strip()
-    doc_id = int(ref) if ref.isdigit() else None
-    if doc_id is None:
-        rows = await documents.list_documents(ctx.db, ctx.actor, query=ref, limit=5)
-        drafts = [r for r in rows if r.number_text == ref or str(r.number) in ref]
-        if len(drafts) != 1:
-            return {"error": "سند پیش‌نویس با این شماره پیدا نشد."}
-        doc_id = drafts[0].id
-    result = await _post(ctx, doc_id)
-    detail = await documents.get_document(ctx.db, ctx.actor, doc_id)
-    already = any(c["document_id"] == doc_id for c in ctx.created_documents)
-    if not already and result.get("posted"):
-        ctx.created_documents.append({"document_id": doc_id, "status": "POSTED",
-                                      "number": documents.number_text(detail.input.doc_type, detail.number),
-                                      "type": documents.DOC_TYPE_NAMES[detail.input.doc_type]})
-    return {"document_id": doc_id, **result}
 
 
 async def _send_report(ctx: ToolContext, args: dict) -> dict:
@@ -527,8 +497,9 @@ TOOLS: list[Tool] = [
     Tool("create_document",
          "ساخت سند انبار مثل کاربر: رسید (RECEIPT)، حواله خروج (ISSUE)، انتقال (TRANSFER)، خروج امانی "
          "(LOAN_OUT) یا برگشت امانی (LOAN_RETURN). person = نام تحویل‌گیرنده/تأمین‌کننده (برای حواله و "
-         "امانی الزامی). هر ردیف: code یا name یا barcode، qty، unit اختیاری. post=true یعنی بلافاصله "
-         "ثبت نهایی شود. برای حواله خروج: location = محل مصرف (شماره پلاک یا نام محل)، floor = طبقه "
+         "امانی الزامی). هر ردیف: code یا name یا barcode، qty، unit اختیاری. سند همیشه پیش‌نویس "
+         "ساخته می‌شود و کاربر با دکمه تأیید آن را ثبت می‌کند. برای حواله خروج: location = محل مصرف "
+         "(شماره پلاک یا نام محل)، floor = طبقه "
          "(فقط برای پله، آسانسور و مشاعات)، usage_note = شرح مصرف. اگر پاسخ needs_choice داشت، از "
          "کاربر بپرس و دوباره بساز.",
          _obj({"doc_type": {"type": "string",
@@ -536,16 +507,13 @@ TOOLS: list[Tool] = [
                "person": {"type": "string"}, "warehouse": {"type": "string"},
                "dest_warehouse": {"type": "string"}, "description": {"type": "string"},
                "location": {"type": "string"}, "floor": {"type": "string"},
-               "usage_note": {"type": "string"}, "post": {"type": "boolean"},
+               "usage_note": {"type": "string"},
                "lines": {"type": "array", "items": _obj({
                    "name": {"type": "string"}, "code": {"type": "string"},
                    "barcode": {"type": "string"}, "qty": {"type": "number"},
                    "unit": {"type": "string"}, "notes": {"type": "string"}})}},
               ("doc_type", "lines")),
          _create_document, Perm.DOCUMENTS_EDIT),
-    Tool("post_document", "ثبت نهایی یک سند پیش‌نویس با شناسه (document_id) یا شماره (مثل ح-۱۲). "
-         "همه کنترل‌های موجودی و تاریخ اعمال می‌شود.",
-         _obj({"document": {"type": "string"}}, ("document",)), _post_document, Perm.DOCUMENTS_POST),
     Tool("create_stock_draft",
          "ساخت پیش‌نویس «ورود اطلاعات» از فهرست طولانی کالا (برای بررسی کاربر). برای یک سند معمولی "
          "از create_document استفاده کن. هر ردیف: name یا code یا barcode، qty و unit.",
@@ -572,16 +540,14 @@ _BY_NAME = {t.name: t for t in TOOLS}
 AI_DOC_TYPES = (DocType.RECEIPT, DocType.ISSUE, DocType.TRANSFER, DocType.LOAN_OUT, DocType.LOAN_RETURN)
 
 
-def available_tools(actor: Actor, allow_post: bool = False) -> list[Tool]:
-    return [t for t in TOOLS if (t.permission is None or actor.can(t.permission))
-            and (allow_post or t.name != "post_document")]
+def available_tools(actor: Actor) -> list[Tool]:
+    return [t for t in TOOLS if t.permission is None or actor.can(t.permission)]
 
 
 async def run_tool(ctx: ToolContext, name: str, arguments: str | dict) -> str:
     """Execute a tool call and return a JSON string for the model. Never raises."""
     tool = _BY_NAME.get(name)
-    if tool is None or (tool.permission and not ctx.actor.can(tool.permission)) or (
-            name == "post_document" and not ctx.allow_post):
+    if tool is None or (tool.permission and not ctx.actor.can(tool.permission)):
         return json.dumps({"error": f"ابزار «{name}» در دسترس نیست."}, ensure_ascii=False)
     try:
         args = json.loads(arguments) if isinstance(arguments, str) and arguments else (arguments or {})
