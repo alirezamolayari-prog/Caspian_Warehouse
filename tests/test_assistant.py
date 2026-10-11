@@ -46,9 +46,12 @@ def test_no_destructive_tools_exist():
     """QA round 1: the assistant may create and post documents (like a user), nothing destructive."""
     names = {t.name for t in TOOLS}
     assert names == {"search_items", "item_stock", "reorder_analysis", "recent_documents",
-                     "open_loans", "suppliers", "create_document", "post_document",
-                     "create_stock_draft", "send_report", "propose_tasks"}
-    for forbidden in ("delete", "approve", "apply", "cancel", "merge", "restore", "role", "deactivate"):
+                     "open_loans", "suppliers", "create_document",
+                     "create_stock_draft", "send_report", "propose_tasks",
+                     "find_location", "consumption_report"}  # both read-only
+    # No posting either: stock changes only after the person's «بله» (QA Part A #1).
+    for forbidden in ("delete", "approve", "apply", "cancel", "merge", "restore", "role", "deactivate",
+                      "post"):
         assert not any(forbidden in n for n in names)
 
 

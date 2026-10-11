@@ -198,11 +198,11 @@ class AITab(QWidget):
             "برنامه کاملاً آفلاین کار می‌کند.", objectName="Muted")
         intro.setWordWrap(True)
         layout.addWidget(intro)
-        self.allow_post = QCheckBox("اجازه ثبت نهایی سند توسط دستیار (با همه کنترل‌های موجودی و تاریخ؛ "
-                                    "حذف و ابطال هرگز)")
-        self.allow_post.setToolTip("خاموش: دستیار فقط پیش‌نویس می‌سازد و ثبت نهایی با کاربر است.")
-        self.allow_post.toggled.connect(self.on_allow_post)
-        layout.addWidget(self.allow_post)
+        rule = QLabel("دستیار فقط پیش‌نویس می‌سازد؛ هر ثبت نهایی (تغییر موجودی) را خودتان در گفتگو با "
+                      "دکمه «بله، ثبت کن» تأیید می‌کنید. حذف، ابطال و عملیات حساس همیشه با شماست.",
+                      objectName="Muted")
+        rule.setWordWrap(True)
+        layout.addWidget(rule)
         retention = QHBoxLayout()
         retention.addWidget(QLabel("نگهداری سوابق گفتگو با دستیار:"))
         self.history_days = QSpinBox()
@@ -257,18 +257,8 @@ class AITab(QWidget):
         except ServiceError as exc:
             show_error(self, exc.message)
 
-    @asyncSlot(bool)
-    async def on_allow_post(self, allowed: bool) -> None:
-        try:
-            await config.set_ai_may_post(self._ctx.db, self._ctx.actor, allowed)
-        except ServiceError as exc:
-            show_error(self, exc.message)
-
     @asyncSlot()
     async def refresh(self) -> None:
-        self.allow_post.blockSignals(True)
-        self.allow_post.setChecked(await config.ai_may_post(self._ctx.db))
-        self.allow_post.blockSignals(False)
         self.history_days.setValue(await chat_history.retention_days(self._ctx.db))
         rows = await config.list_providers(self._ctx.db)
         self._rows = {p.id: p for p in rows}

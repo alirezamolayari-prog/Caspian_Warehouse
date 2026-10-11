@@ -191,6 +191,9 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateEdit, QPlainTextEdit, QText
 }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus,
 QPlainTextEdit:focus, QTextEdit:focus {{ border: 1px solid {t.primary}; }}
+/* A field the user must fix before saving (all problems are shown at once). */
+QLineEdit[invalid="true"], QComboBox[invalid="true"], QSpinBox[invalid="true"],
+QDoubleSpinBox[invalid="true"], QPlainTextEdit[invalid="true"] {{ border: 2px solid {t.danger}; }}
 QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0; border: none; }}
 QComboBox::drop-down {{ border: none; width: 26px; subcontrol-origin: padding; subcontrol-position: center left; }}
 QComboBox::down-arrow {{ image: url("{themed_svg('chevron-down', t.text_muted)}"); width: 14px; height: 14px; }}

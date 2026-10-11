@@ -17,13 +17,16 @@ from PySide6.QtWidgets import (
 )
 from qasync import asyncSlot
 
+from caspian.core.permissions import Perm
 from caspian.core.recorder import Recorder, RecorderError, has_microphone, is_silent
 from caspian.core.text import to_persian_digits
+from caspian.services import documents
 from caspian.services.ai.assistant import Assistant
 from caspian.services.ai.gateway import AIUnavailable
 from caspian.services.errors import ServiceError
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.chat_history import HistoryDialog
+from caspian.ui.confirm_card import ConfirmCard
 from caspian.ui.icons import icon
 from caspian.ui.tasks import spawn
 from caspian.ui.widgets import Card
@@ -80,6 +83,11 @@ class AssistantPage(QWidget):
         self.transcript.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         card.body.addWidget(self.transcript)
         layout.addWidget(card, 1)
+
+        # Stock changes the assistant prepared wait here for the user's «بله» (QA, Part A, issue 1).
+        self.cards = QVBoxLayout()
+        self.cards.setSpacing(8)
+        layout.addLayout(self.cards)
 
         chips = QHBoxLayout()
         for label, prompt in SUGGESTIONS:
@@ -208,6 +216,75 @@ class AssistantPage(QWidget):
             for d in reply.created_documents)
         self._append("assistant", reply.text, links)
         self._set_busy(False, f"پاسخ از «{reply.provider}»" if reply.provider else "")
+        for d in reply.created_documents:
+            if d.get("status") == "DRAFT" and d.get("needs_confirmation"):
+                await self.add_card(d["document_id"])
+
+    # ----- confirmation cards -----
+
+    async def add_card(self, doc_id: int) -> ConfirmCard | None:
+        try:
+            summary = await documents.confirmation(self._ctx.db, self._ctx.actor, doc_id)
+        except ServiceError as exc:
+            self._append("error", exc.message)
+            return None
+        card = ConfirmCard(summary, self._ctx.actor.can(Perm.DOCUMENTS_POST), self)
+        card.confirmed.connect(lambda c: spawn(self.on_confirm(c)))
+        card.rejected.connect(lambda c: spawn(self.on_reject(c)))
+        card.open_requested.connect(lambda doc: spawn(self._open(doc)))
+        self.cards.addWidget(card)
+        card.show()  # a child added to an already visible page is not shown by itself
+        (card.yes if not card.yes.isHidden() else card.no).setFocus()
+        return card
+
+    def pending_cards(self) -> list[ConfirmCard]:
+        return [self.cards.itemAt(i).widget() for i in range(self.cards.count())
+                if isinstance(self.cards.itemAt(i).widget(), ConfirmCard)]
+
+    def _close_card(self, card: ConfirmCard) -> None:
+        self.cards.removeWidget(card)
+        card.deleteLater()
+        remaining = self.pending_cards()
+        if remaining:
+            remaining[0].yes.setFocus()
+        else:
+            self.input.setFocus()
+
+    async def on_confirm(self, card: ConfirmCard) -> None:
+        """«بله، ثبت کن»: post as the signed-in person (never as the assistant)."""
+        from caspian.ui.documents_page import with_stocktake_override
+
+        s = card.summary
+        card.set_busy(True)
+        try:
+            await with_stocktake_override(self._ctx, self, lambda approval: documents.post_document(
+                self._ctx.db, self._ctx.actor, s.document_id, s.version_id, approval, via="assistant"))
+        except ServiceError as exc:
+            card.set_busy(False)
+            card.show_message(exc.message)
+            self._append("error", f"{s.title} ثبت نشد: {exc.message}\nپیش‌نویس باقی ماند.")
+            return
+        except Exception:
+            log.exception("Posting the assistant's draft %s failed", s.document_id)
+            card.set_busy(False)
+            card.show_message("خطای غیرمنتظره؛ جزئیات در فایل گزارش ثبت شد.")
+            return
+        self._append("assistant", f"✓ {s.title} ثبت نهایی شد و موجودی به‌روز شد.",
+                     f'<br><a href="doc:{s.document_id}">باز کردن {s.title} ←</a>')
+        self._close_card(card)
+
+    async def on_reject(self, card: ConfirmCard) -> None:
+        """«نه»: the draft goes away; nothing was ever posted."""
+        s = card.summary
+        card.set_busy(True)
+        try:
+            await documents.discard_assistant_draft(self._ctx.db, self._ctx.actor, s.document_id)
+        except ServiceError as exc:
+            card.set_busy(False)
+            card.show_message(exc.message)
+            return
+        self._append("assistant", f"{s.title} ثبت نشد و پیش‌نویس آن حذف شد.")
+        self._close_card(card)
 
     @asyncSlot()
     async def on_mic(self) -> None:
@@ -263,11 +340,28 @@ class AssistantPage(QWidget):
 
     def on_new_chat(self) -> None:
         self._assistant.reset()
+        for card in self.pending_cards():  # their drafts stay in «اسناد انبار»
+            self._close_card(card)
         self._welcome()
 
     def on_link(self, url: QUrl) -> None:
         target = url.toString()
+        log.info("Assistant link clicked: %s", target)
         if target.startswith("batch:") and self._open_batch:
             self._open_batch(int(target.split(":", 1)[1]))
-        elif target.startswith("doc:") and self._open_document:
-            spawn(self._open_document(int(target.split(":", 1)[1])))
+        elif target.startswith("doc:"):
+            spawn(self._open(int(target.split(":", 1)[1])))
+
+    async def _open(self, doc_id: int) -> None:
+        """Open a document from a link or a card; a failure is shown, never silent (QA issue 4)."""
+        if self._open_document is None:
+            self._append("error", "باز کردن سند از اینجا ممکن نیست؛ آن را در «اسناد انبار» باز کنید.")
+            return
+        try:
+            await self._open_document(doc_id)
+        except ServiceError as exc:
+            self._append("error", exc.message)
+        except Exception:
+            log.exception("Opening document %s from the assistant failed", doc_id)
+            self._append("error", "سند باز نشد؛ جزئیات در فایل گزارش ثبت شد. "
+                                  "آن را در «اسناد انبار» باز کنید.")

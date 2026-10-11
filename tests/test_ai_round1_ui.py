@@ -142,20 +142,20 @@ async def test_text_import_is_busy_then_falls_back_when_ai_hangs(qtbot, themes, 
     assert dlg.batch_id is not None and not dlg.used_ai
 
 
-async def test_ai_post_setting_in_settings(qtbot, themes, db, admin, no_keys):
+async def test_no_ai_posting_setting_any_more(qtbot, themes, db, admin, no_keys):
+    """QA Part A #1: the assistant never posts, so there is nothing to switch on; the AI tab says
+    that every stock change is confirmed by the person."""
+    from PySide6.QtWidgets import QCheckBox, QLabel
+
     from caspian.ui.settings_page import AITab
 
     ctx = make_ctx(db, admin, themes, lambda r: httpx.Response(500))
     tab = AITab(ctx)
     qtbot.addWidget(tab)
     await tab.refresh()
-    assert tab.allow_post.isChecked()  # default on
-    tab.allow_post.setChecked(False)
-    for _ in range(100):
-        if not await config.ai_may_post(db):
-            break
-        await asyncio.sleep(0.02)
-    assert not await config.ai_may_post(db)
+    assert not hasattr(tab, "allow_post")
+    assert not any("ثبت نهایی سند توسط دستیار" in c.text() for c in tab.findChildren(QCheckBox))
+    assert any("بله، ثبت کن" in label.text() for label in tab.findChildren(QLabel))
 
 
 async def test_created_document_link_opens_it(qtbot, themes, db, admin, no_keys):

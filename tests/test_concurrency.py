@@ -12,7 +12,7 @@ from caspian.db.base import Base
 from caspian.db.bootstrap import prepare
 from caspian.db.database import Database
 from caspian.db.models import DocType, Document, PersonKind, StockBalance
-from caspian.services import auth, documents, items, master
+from caspian.services import auth, documents, items, locations, master
 from caspian.services.errors import ValidationError
 from caspian.services.items import ItemInput
 
@@ -27,10 +27,12 @@ async def _scenario(db: Database, admin) -> None:
     await documents.create_and_post(db, admin, documents.DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh, [documents.LineInput(item, unit, Decimal(10))]))
 
+    plate = (await locations.load_index(db)).find("68").id  # issues need a consumption place
+
     def issue(qty):
         return documents.create_and_post(db, admin, documents.DocumentInput(
             DocType.ISSUE, dt.date.today(), wh, [documents.LineInput(item, unit, Decimal(qty))],
-            person_id=person))
+            person_id=person, location_id=plate))
 
     # 5 issues of 2 at the same moment: all fit, numbers must be unique, no raw DB error.
     ids = await asyncio.gather(*(issue(2) for _ in range(5)))

@@ -1,8 +1,9 @@
 """Base dialog: title, form, inline status line, and an async submit action."""
 
+import contextlib
 import logging
 
-from PySide6.QtCore import QLocale, Qt
+from PySide6.QtCore import QLocale, Qt, QTimer
 from PySide6.QtWidgets import (
     QAbstractButton,
     QAbstractSpinBox,
@@ -40,6 +41,25 @@ def ltr_field(text: str = "") -> QLineEdit:
     edit.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
     edit.setLocale(QLocale.c())
     return edit
+
+
+def _set_invalid(widget: QWidget, invalid: bool) -> None:
+    with contextlib.suppress(RuntimeError):  # the widget was deleted meanwhile (e.g. a removed line)
+        widget.setProperty("invalid", invalid)
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+
+
+def _focus(widget: QWidget) -> None:
+    with contextlib.suppress(RuntimeError):  # deleted meanwhile
+        widget.setFocus()
+
+
+def _clear_on_edit(widget: QWidget):
+    def clear(*_args) -> None:
+        _set_invalid(widget, False)
+
+    return clear
 
 
 class Cancelled(Exception):
@@ -153,6 +173,32 @@ class FormDialog(QDialog):
         self.form.addRow(label, widget)
         self._inputs.append(widget)
         return widget
+
+    # ----- several problems at once (QA Part A #3) -----
+
+    def mark_invalid(self, widgets) -> None:
+        """Red border on every widget that needs fixing; the mark goes when the user edits it."""
+        self.clear_invalid()
+        self._invalid = [w for w in widgets if w is not None]
+        for widget in self._invalid:
+            _set_invalid(widget, True)
+            for signal in ("textEdited", "currentIndexChanged", "valueChanged", "textChanged"):
+                if hasattr(widget, signal):
+                    getattr(widget, signal).connect(_clear_on_edit(widget))
+                    break
+        if self._invalid:  # after the busy state ends (disabled inputs can't take focus)
+            first = self._invalid[0]
+            QTimer.singleShot(0, lambda: _focus(first))
+
+    def clear_invalid(self) -> None:
+        for widget in getattr(self, "_invalid", []):
+            _set_invalid(widget, False)
+        self._invalid = []
+
+    def show_problems(self, messages) -> None:
+        """All messages, one per line, instead of the first one only."""
+        unique = list(dict.fromkeys(messages))
+        self.show_status("\n".join(f"• {m}" for m in unique) if len(unique) > 1 else "".join(unique))
 
     def show_status(self, text: str, is_error: bool = True) -> None:
         self.status.setText(text)

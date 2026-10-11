@@ -262,3 +262,31 @@ Found and fixed beyond the list:
   installer built (`dist\installer\CaspianWarehouse-Setup-1.0.0.exe`, 65 MB, app-only; not published).
   Frozen `caspian-mcp.exe --help` shows the new `--http/--port/--lan`; uvicorn and starlette are bundled.
 - The version is still 1.0.0: bump it in `pyproject.toml` when you release this branch.
+
+---
+
+# Owner approval phase — progress (October 2026)
+
+Plan agreed on 2026-10-11 (one PR per part). Binding spec for locations:
+[docs/specs/caspian_consumption_location_spec.md](specs/caspian_consumption_location_spec.md), Part 2.
+
+| Part | Content | Branch / PR | State |
+|---|---|---|---|
+| A | Consumption locations: data, picker, issue vouchers, admin tab, reports | `feature/a-consumption-locations` | in review |
+| B | Goods requests with owner approval (approval engine, print, issue from request) | — | next |
+| C | Surprise count with network-wide lock and stock hiding | — | planned |
+| D | Caspian Owner readiness: OpenAPI contract, outbox, sync service | — | planned |
+| E | Automatic updates | — | planned |
+| F | Ownership metadata (Alireza Molayari) | — | planned |
+
+### Part A notes
+- Seed migration `7f3c2a9d41e6` inserts only missing codes (re-running never duplicates and never
+  overwrites the admin's edits); schema migration `225596383a11` adds floors, locations, aliases and the
+  voucher columns (nullable, existing vouchers untouched). Up → down → up tested on SQLite and MariaDB.
+- The CSV is stored byte-for-byte (`data/seed/*.csv -text`), sha256 `dbaa625e…`.
+- New setting «محل مصرف برای حواله خروج الزامی است» (default on). The test template turns it off so
+  tests written before locations keep testing what they were written for; tests of the location rules
+  turn it on (`locations_required` fixture).
+- Recommended spec changes applied: seed inserts only missing rows; Phase 1 plates are data
+  (app_settings); duplicate nicknames across locations are refused; drafts may lack a place, posting
+  needs it; Latin codes keep Latin digits («پارکینگ P1»).

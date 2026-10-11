@@ -33,7 +33,7 @@ async def test_tools_listed_and_read_only(ro_db):
     server = build_server(ro_db, allow_sql=False)
     names = {t.name for t in await server.list_tools()}
     assert names == {"search_items", "item_stock", "reorder_analysis", "recent_documents",
-                     "open_loans", "report"}
+                     "open_loans", "report", "locations", "consumption_report"}
     result = _payload(await server.call_tool("search_items", {"query": "دريل"}))
     assert result[0]["name"] == "دریل بوش"
     report = _payload(await server.call_tool("report", {"name": "stock_balance"}))
