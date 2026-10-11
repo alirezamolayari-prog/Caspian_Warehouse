@@ -362,3 +362,137 @@ async def user_activity(db: Database, actor: Actor, user_id: int | None = None,
          Column("جزئیات"), Column("رایانه"), Column("تأییدکننده")],
         out, [f"کاربر: {who}", _period(date_from, date_to)])
 
+
+
+# ----- consumption by floor / location (docs/specs/caspian_consumption_location_spec.md §2.8) -----
+
+NO_PLACE = "بدون محل مصرف"
+
+
+@dataclass(frozen=True)
+class ConsumptionRow:
+    """One group of posted issue vouchers. Codes, not ids: also what the owner app receives."""
+
+    location_code: str | None
+    location: str  # display text, e.g. «پلاک ۶۸ · همکف» (empty when grouping by floor)
+    floor_code: str | None
+    floor: str
+    floor_sort: int
+    documents: int
+    items: int
+    qty: Decimal  # base-unit quantity; meaningful when one item is filtered
+    value: Decimal  # at the latest purchase price
+
+
+def month_start(today: dt.date | None = None) -> dt.date:
+    """First day of the current Jalali month («this month» in reports and questions)."""
+    j = jalali.to_jalali(today or dt.date.today())
+    return j.replace(day=1).togregorian()
+
+
+async def consumption(db: Database, actor: Actor, group_by: str = "floor",
+                      date_from: dt.date | None = None, date_to: dt.date | None = None,
+                      item_id: int | None = None, person_id: int | None = None,
+                      warehouse_id: int | None = None) -> list[ConsumptionRow]:
+    """Posted issue vouchers grouped by the floor (building order, every floor listed) or by the
+    location + floor stored on each voucher. Deactivated locations still appear: history is never
+    hidden. Vouchers from before locations existed are grouped as «بدون محل مصرف»."""
+    from caspian.db.models import Floor, Location
+    from caspian.services.locations import FloorRow, place_label
+
+    actor.require(Perm.REPORTS_VIEW)
+    if group_by not in ("floor", "location"):
+        raise ValueError(group_by)
+    async with db.session() as s:
+        stmt = (select(Document.id, Document.location_id, Document.consumption_floor_id,
+                       DocumentLine.item_id, DocumentLine.base_qty)
+                .join(DocumentLine, DocumentLine.document_id == Document.id)
+                .where(Document.doc_type == DocType.ISSUE, Document.status == DocStatus.POSTED))
+        if date_from:
+            stmt = stmt.where(Document.doc_date >= date_from)
+        if date_to:
+            stmt = stmt.where(Document.doc_date <= date_to)
+        if item_id is not None:
+            stmt = stmt.where(DocumentLine.item_id == item_id)
+        if person_id is not None:
+            stmt = stmt.where(Document.person_id == person_id)
+        if warehouse_id is not None:
+            stmt = stmt.where(Document.warehouse_id == warehouse_id)
+        lines = (await s.execute(stmt)).all()
+        floors = {f.id: f for f in (await s.scalars(select(Floor))).all()}
+        places = {loc.id: loc for loc in (await s.scalars(select(Location))).unique().all()}
+        prices = await last_purchase_prices(s, sorted({ln.item_id for ln in lines}))
+
+    groups: dict[tuple, dict] = {}
+    if group_by == "floor":
+        for f in sorted(floors.values(), key=lambda f: f.sort_order):
+            if f.is_active:
+                groups[(f.id,)] = {"docs": set(), "items": set(), "qty": Decimal(0), "value": Decimal(0)}
+    for doc_id, location_id, floor_id, line_item, qty in lines:
+        key = (floor_id,) if group_by == "floor" else (location_id, floor_id)
+        g = groups.setdefault(key, {"docs": set(), "items": set(), "qty": Decimal(0), "value": Decimal(0)})
+        g["docs"].add(doc_id)
+        g["items"].add(line_item)
+        g["qty"] += qty
+        g["value"] += qty * prices.get(line_item, Decimal(0))
+
+    rows = []
+    for key, g in groups.items():
+        floor = floors.get(key[-1]) if key[-1] is not None else None
+        floor_text = FloorRow(0, floor.code, floor.name_fa, 0, True).display if floor else NO_PLACE
+        location_code, location_text = None, ""
+        if group_by == "location":
+            loc = places.get(key[0]) if key[0] is not None else None
+            location_code = loc.code if loc else None
+            location_text = place_label(loc.name_fa, loc.type, floor.code if floor else None,
+                                        floor.name_fa if floor else None) if loc else NO_PLACE
+        rows.append(ConsumptionRow(location_code, location_text, floor.code if floor else None, floor_text,
+                                   floor.sort_order if floor else 999, len(g["docs"]), len(g["items"]),
+                                   g["qty"], g["value"]))
+    if group_by == "floor":
+        rows.sort(key=lambda r: r.floor_sort)
+    else:
+        rows.sort(key=lambda r: (-r.documents, -r.value, r.floor_sort))
+    return rows
+
+
+async def consumption_table(db: Database, actor: Actor, group_by: str = "floor",
+                            date_from: dt.date | None = None, date_to: dt.date | None = None,
+                            item_id: int | None = None, person_id: int | None = None,
+                            warehouse_id: int | None = None) -> ReportTable:
+    rows = await consumption(db, actor, group_by, date_from, date_to, item_id, person_id, warehouse_id)
+    meta = [_period(date_from, date_to)]
+    async with db.session() as s:
+        if item_id is not None:
+            item = await s.get(Item, item_id)
+            unit = await s.get(Unit, item.base_unit_id) if item else None
+            meta.append(f"کالا: {item.name} ({unit.name if unit else ''})" if item else "")
+        if person_id is not None:
+            from caspian.db.models import Person
+
+            person = await s.get(Person, person_id)
+            meta.append(f"درخواست‌کننده / تحویل‌گیرنده: {person.name}" if person else "")
+        if warehouse_id is not None:
+            meta.append(await _warehouse_name(s, warehouse_id))
+    columns = [Column("طبقه")] if group_by == "floor" else [Column("محل مصرف"), Column("طبقه")]
+    columns += [Column("تعداد حواله", "int"), Column("تعداد اقلام", "int")]
+    if item_id is not None:
+        columns.append(Column("مقدار", "qty"))
+    columns.append(Column("ارزش تقریبی (ریال)", "money"))
+    table_rows = []
+    for r in rows:
+        cells = [r.floor] if group_by == "floor" else [r.location, r.floor]
+        cells += [r.documents, r.items]
+        if item_id is not None:
+            cells.append(r.qty)
+        cells.append(r.value)
+        table_rows.append(cells)
+    value_col = len(columns) - 1
+    totals = {value_col: sum((r.value for r in rows), Decimal(0)),
+              columns.index(next(c for c in columns if c.title == "تعداد حواله")):
+                  sum(r.documents for r in rows)}
+    if item_id is not None:
+        totals[value_col - 1] = sum((r.qty for r in rows), Decimal(0))
+    title = "مصرف به تفکیک طبقه" if group_by == "floor" else "مصرف به تفکیک محل"
+    return ReportTable(title, columns, table_rows, [m for m in meta if m], totals,
+                       row_ids=[r.location_code or r.floor_code for r in rows])

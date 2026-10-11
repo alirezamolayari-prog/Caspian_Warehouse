@@ -159,6 +159,21 @@ def build_server(db: Database, allow_sql: bool, write_db: Database | None = None
     async def recent_documents(doc_type: str = "", limit: int = 20) -> str:
         return await run_tool(ctx, "recent_documents", {"doc_type": doc_type or None, "limit": limit})
 
+    @tool("Consumption locations (محل مصرف) matching a plate number, a name or what staff call it, "
+          "plus the list of floors (codes P4..P1, B, G, F1..F3, ROOF).")
+    async def locations(query: str) -> str:
+        return await run_tool(ctx, "find_location", {"query": query})
+
+    @tool("Consumption (posted issue vouchers) grouped by floor or by location. group_by: floor or "
+          "location. period: this_month (default), last_30_days, this_year, all; or Jalali "
+          "date_from/date_to like 1405/07/01. floor: optional floor code or Persian name. item: "
+          "optional item code or name.")
+    async def consumption_report(group_by: str = "floor", period: str = "this_month", date_from: str = "",
+                                 date_to: str = "", floor: str = "", item: str = "") -> str:
+        args = {"group_by": group_by, "period": period, "date_from": date_from, "date_to": date_to,
+                "floor": floor, "item": item}
+        return await run_tool(ctx, "consumption_report", {k: v for k, v in args.items() if v})
+
     @tool("Returnable items that are still out on loan.")
     async def open_loans() -> str:
         return await run_tool(ctx, "open_loans", {})
@@ -166,7 +181,8 @@ def build_server(db: Database, allow_sql: bool, write_db: Database | None = None
     @tool(f"A full report as JSON rows. name: {', '.join(REPORT_NAMES)}.")
     async def report(name: str) -> str:
         if name not in REPORT_NAMES or name == "activity":  # activity needs admin rights
-            return _json({"error": "Unknown report. Use one of: stock_balance, reorder, loans"})
+            names = ", ".join(n for n in REPORT_NAMES if n != "activity")
+            return _json({"error": f"Unknown report. Use one of: {names}"})
         table = await build_report(db, name)
         return _json({"title": table.title, "meta": table.meta,
                       "columns": [c.title for c in table.columns], "rows": table.rows})

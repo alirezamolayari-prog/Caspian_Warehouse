@@ -189,6 +189,77 @@ async def _reorder_analysis(ctx: ToolContext, args: dict) -> list[dict]:
              "summary": r.suggestion_text} for r in rates[:MAX_ROWS]]
 
 
+async def _find_location(ctx: ToolContext, args: dict) -> dict:
+    """Consumption locations matching the user's words (plate, name or what staff call it)."""
+    index = await locations.load_index(ctx.db)
+    text = str(args.get("query", "") or "")
+    try:
+        exact = index.exact(text)
+        found = [exact] if exact else index.search(text, limit=10)
+    except locations.Phase1Plate as exc:
+        return {"error": exc.message}
+    return {"locations": [{"code": loc.code, "name": loc.label(), "floor": loc.floor.display if loc.floor
+                           else "طبقه هنگام ثبت انتخاب می‌شود", "needs_floor": loc.needs_floor}
+                          for loc in found],
+            "floors": [{"code": f.code, "name": f.display} for f in index.floors if f.is_active]}
+
+
+def _period_of(args: dict) -> tuple[dt.date | None, dt.date | None]:
+    """«this_month» (default), «last_30_days», «this_year», or Jalali date_from/date_to."""
+    today = dt.date.today()
+    date_from = date_to = None
+    for key in ("date_from", "date_to"):
+        text = str(args.get(key, "") or "").strip()
+        if text:
+            value = jalali.parse_date(to_ascii_digits(text))
+            if key == "date_from":
+                date_from = value
+            else:
+                date_to = value
+    if date_from or date_to:
+        return date_from, date_to
+    period = str(args.get("period", "this_month") or "this_month")
+    if period == "last_30_days":
+        return today - dt.timedelta(days=30), today
+    if period == "this_year":
+        return jalali.fiscal_year_bounds(jalali.fiscal_year_of(today))[0], today
+    if period == "all":
+        return None, None
+    return reports.month_start(today), today
+
+
+async def _consumption_report(ctx: ToolContext, args: dict) -> dict:
+    """Consumption grouped by floor or by location for a period, optionally for one item/person."""
+    group_by = "location" if str(args.get("group_by", "floor")) == "location" else "floor"
+    try:
+        date_from, date_to = _period_of(args)
+    except ValueError:
+        return {"error": "تاریخ نامعتبر است (نمونه: ۱۴۰۵/۰۷/۰۱)."}
+    item_id = person_id = None
+    if args.get("item"):
+        item_id, question = await _resolve_item(ctx, {"name": str(args["item"]), "code": str(args["item"])})
+        if question:
+            return question
+    if args.get("person"):
+        person_id, question = await _resolve_person(ctx, str(args["person"]))
+        if question:
+            return question
+    rows = await reports.consumption(ctx.db, ctx.actor, group_by, date_from, date_to, item_id, person_id)
+    floor_code = str(args.get("floor", "") or "").strip()
+    if floor_code:  # «مصرف همکف»: only that floor (by code or Persian name)
+        index = await locations.load_index(ctx.db)
+        key = normalize_location(floor_code)
+        wanted = {f.code for f in index.floors if key in {normalize_location(f.code),
+                                                          normalize_location(f.name_fa),
+                                                          normalize_location(f.display)}}
+        rows = [r for r in rows if r.floor_code in wanted]
+    return {"period": reports._period(date_from, date_to), "group_by": group_by,
+            "rows": [{"location_code": r.location_code, "location": r.location, "floor_code": r.floor_code,
+                      "floor": r.floor, "vouchers": r.documents, "items": r.items,
+                      "qty": _num(r.qty) if item_id else None, "value_rial": _num(r.value)}
+                     for r in rows if r.documents or group_by == "floor"][:MAX_ROWS]}
+
+
 async def _recent_documents(ctx: ToolContext, args: dict) -> list[dict]:
     doc_type = args.get("doc_type")
     rows = await documents.list_documents(ctx.db, ctx.actor,
@@ -438,6 +509,17 @@ TOOLS: list[Tool] = [
          "ADJUSTMENT, LOAN_OUT, LOAN_RETURN, OPENING.",
          _obj({"doc_type": {"type": "string"}, "limit": {"type": "integer"}}),
          _recent_documents, Perm.DOCUMENTS_VIEW),
+    Tool("find_location", "جستجوی محل مصرف (پلاک، نام محل یا اسمی که کارکنان می‌گویند) و فهرست طبقه‌ها.",
+         _obj({"query": {"type": "string"}}, ("query",)), _find_location, Perm.DOCUMENTS_VIEW),
+    Tool("consumption_report",
+         "مصرف کالا (حواله‌های خروج ثبت‌شده) به تفکیک طبقه یا محل مصرف. group_by: floor یا location. "
+         "period: this_month (پیش‌فرض)، last_30_days، this_year، all؛ یا date_from/date_to شمسی. "
+         "floor (اختیاری) = فقط یک طبقه مثل «همکف». item و person اختیاری.",
+         _obj({"group_by": {"type": "string", "enum": ["floor", "location"]},
+               "period": {"type": "string", "enum": ["this_month", "last_30_days", "this_year", "all"]},
+               "date_from": {"type": "string"}, "date_to": {"type": "string"},
+               "floor": {"type": "string"}, "item": {"type": "string"}, "person": {"type": "string"}}),
+         _consumption_report, Perm.REPORTS_VIEW),
     Tool("open_loans", "کالاهای امانی که هنوز برنگشته‌اند.", _obj({}), _open_loans,
          Perm.DOCUMENTS_VIEW),
     Tool("suppliers", "فهرست تأمین‌کنندگان (برای نوشتن پیام درخواست خرید).",

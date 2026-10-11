@@ -249,6 +249,28 @@ class ReportsPage(QWidget):
         self.burn.extra_actions.insertWidget(0, self.apply_rp)
         self.tabs.addTab(self.burn, "تحلیل مصرف و سفارش")
 
+        # consumption by floor / location (spec §2.8)
+        self.places = ReportView(ctx, self._run_places)
+        self.places_group = QComboBox()
+        self.places_group.addItem("به تفکیک طبقه", "floor")
+        self.places_group.addItem("به تفکیک محل", "location")
+        self.places_item = SearchableCombo("همه کالاها")
+        self.places_item.setMinimumWidth(220)
+        self.places_person = SearchableCombo("همه")
+        self.places_from = JalaliDateEdit(reports.month_start())
+        self.places_to = JalaliDateEdit()
+        for w in (self.places_group, QLabel("از:"), self.places_from, QLabel("تا:"), self.places_to):
+            self.places.filters.addWidget(w)
+        self.places.filters.addStretch(1)
+        places_second = QHBoxLayout()
+        for w in (QLabel("کالا:"), self.places_item, QLabel("درخواست‌کننده / تحویل‌گیرنده:"),
+                  self.places_person):
+            places_second.addWidget(w)
+        places_second.addStretch(1)
+        self.places.layout().insertLayout(self.places.layout().indexOf(self.places.filters) + 1,
+                                          places_second)
+        self.tabs.addTab(self.places, "مصرف به تفکیک محل")
+
         # loans
         self.loans = ReportView(ctx, self._run_loans)
         self.loans.filters.addStretch(1)
@@ -300,6 +322,8 @@ class ReportsPage(QWidget):
         self.stock_cat.set_items(((c.name, c.id) for c in await master.list_categories(db)),
                                  none_text="همه گروه‌ها")
         await self._load_cardex_items()
+        self.places_person.set_items(((p.name, p.id) for p in await master.search_persons(db, limit=10_000)),
+                                     none_text="همه")
         if self._ctx.actor.can(Perm.USERS_MANAGE):
             self.activity_user.clear()
             self.activity_user.addItem("همه کاربران", None)
@@ -334,7 +358,9 @@ class ReportsPage(QWidget):
         self.cardex_to.set_date(end)
         self.activity_from.set_date(act_start)
         self.activity_to.set_date(end)
-        for view in (self.stock, self.cardex, self.burn, self.loans, self.activity):
+        self.places_from.set_date(reports.month_start() if year is None else start)
+        self.places_to.set_date(end)
+        for view in (self.stock, self.cardex, self.burn, self.places, self.loans, self.activity):
             view.table.setRowCount(0)
             view.report = None
 
@@ -363,6 +389,11 @@ class ReportsPage(QWidget):
         self._rates = {r.item_id: r for r in rates}
         return reports.burn_rate_table(rates, params)
 
+    async def _run_places(self) -> ReportTable:
+        return await reports.consumption_table(
+            await self._db(), self._ctx.actor, self.places_group.currentData(), self.places_from.date(),
+            self.places_to.date(), self.places_item.currentData(), self.places_person.currentData())
+
     async def _run_loans(self) -> ReportTable:
         return await reports.loans_report(await self._db(), self._ctx.actor)
 
@@ -376,6 +407,8 @@ class ReportsPage(QWidget):
                                         limit=100_000)
         self.cardex_item.set_items(((f"{r.code} — {r.name}", r.id) for r in rows), none_text="",
                                    current=self.cardex_item.currentData())
+        self.places_item.set_items(((f"{r.code} — {r.name}", r.id) for r in rows), none_text="همه کالاها",
+                                   current=self.places_item.currentData())
 
     def _on_cardex_item_chosen(self, *_args) -> None:
         if self.cardex_item.currentData() is not None:
