@@ -18,6 +18,14 @@ license — see LICENSE). Current release: **v1.1.0** (installer on GitHub Relea
   `merge_items` (moves lines/ledger/balances/barcodes/units, deactivates sources). Never auto-modified.
   In the New Item dialog, picking a similar item (hint link or «انتخاب این کالا») loads it into the open
   form; «ذخیره» then calls `update_item_with_opening` (no stock change unless opening qty is entered).
+- **Consumption locations** (`services/locations.py`, spec `docs/specs/caspian_consumption_location_spec.md`
+  Part 2): floors/locations/aliases seeded from `data/seed/caspian_locations.csv` by data migration
+  `7f3c2a9d41e6` (insert-missing only; `db/location_seed.py`, bundled as `seed/` in the frozen app);
+  `core.text.normalize_location`; `ui/location_picker.LocationPicker` on issue vouchers (location_id +
+  consumption_floor_id stored and frozen at posting, + usage_note); admin tab `ui/locations_tab.py`
+  (perm `locations.manage`); report `reports.consumption(_table)`; AI `find_location`/`consumption_report`,
+  MCP `locations`/`consumption_report`. Setting `app_settings.locations.required_on_issue` (default on;
+  the test template sets it off, fixture `locations_required` turns it on).
 - Documents: receipt, issue, transfer, adjustment, opening, loan out/return; draft → post
   (stock ledger + balances, row locks) → cancel (reversal rows; history never deleted).
 - **Draft-first imports** (Excel/CSV/Word, barcode scan, typed text) with row statuses
@@ -68,7 +76,9 @@ src/caspian/
 tests/              pytest; conftest.py (template SQLite DB, fast hashing, isolated settings)
 packaging/          caspian.spec, installer.iss, build.ps1, test_installer.ps1, licenses/
 .github/workflows/  ci.yml (tests on push/PR), release.yml (tags → build/test/publish)
-docs/               USER_GUIDE.md (Persian), LAN_SETUP.md, ROADMAP.md, screenshots/
+docs/               USER_GUIDE.md (Persian), LAN_SETUP.md, ROADMAP.md, PROGRESS.md, specs/, screenshots/
+data/seed/          caspian_locations.csv (stored byte-for-byte, -text)
+CHANGELOG.md        user-facing changes per version
 ```
 
 ## Run / test / build
