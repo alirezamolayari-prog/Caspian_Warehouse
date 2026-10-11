@@ -22,7 +22,7 @@ from caspian.ui.messages import show_error, show_info
 from caspian.ui.printing import build_document, rtl_cells, save_pdf
 from caspian.ui.tasks import callback
 
-RLM, RLI, PDI = "‏", "⁧", "⁩"  # right-to-left mark / isolate (bidi, #16)
+RLM = "‏"  # right-to-left mark (bidi, #16); no isolates: Qt ignores them (QA Part A #2)
 PAPERS = {"A5": QPageSize.PageSizeId.A5, "A4": QPageSize.PageSizeId.A4}
 SIGNATURES = ("تحویل‌دهنده", "تحویل‌گیرنده", "انباردار")
 
@@ -51,9 +51,11 @@ def document_html(sheet: PrintSheet, copy_no: int, paper: str = "A5") -> str:
                       format_qty(ln.amount) if ln.amount is not None else ""]
         cells.append(ln.notes)
         rows.append("<tr>" + rtl_cells([f"<td>{esc(c)}</td>" for c in cells]) + "</tr>")
-    # Label and value in separate RTL-isolated pieces so colons and numbers stay in place (#16).
+    # «برچسب: مقدار» kept in right-to-left order with plain RLM marks. Qt's text engine does not
+    # support the Unicode isolates (RLI/PDI) and the font has no glyph for them: with them the
+    # colon jumped to the start of the label («:محل مصرف») and spaces were lost (QA Part A #2).
     def field(label: str, value: str) -> str:
-        return f"{RLI}{esc(label)}:{PDI}{RLM} {RLI}<b>{esc(value)}</b>{PDI}"
+        return f"{esc(label)}:{RLM}&nbsp;<b>{RLM}{esc(value)}{RLM}</b>"
 
     parties = [field("انبار", sheet.warehouse)]
     if sheet.dest_warehouse:
@@ -65,7 +67,8 @@ def document_html(sheet: PrintSheet, copy_no: int, paper: str = "A5") -> str:
         summary.append(field("جمع مبلغ", f"{format_qty(sheet.total_amount)} ریال"))
     stamp = _stamp(sheet, copy_no)
     stamp_html = f'<p align="center" class="stamp">{esc(stamp)}</p>' if stamp else ""
-    description = f"<p>{field('توضیحات', sheet.description)}</p>" if sheet.description else ""
+    description = (f'<p dir="rtl" align="right">{field("توضیحات", sheet.description)}</p>'
+                   if sheet.description else "")
     printed = to_persian_digits(jalali.format_date(dt.date.today()))
     footer = [field("صادرکننده", sheet.created_by)]
     if sheet.posted_by:
@@ -76,7 +79,7 @@ def document_html(sheet: PrintSheet, copy_no: int, paper: str = "A5") -> str:
         place = [field("محل مصرف", sheet.place)] if sheet.place else []
         if sheet.usage_note:
             place.append(field("شرح مصرف", sheet.usage_note))
-        description = f"<p>{sep.join(place)}</p>" + description
+        description = f'<p dir="rtl" align="right">{sep.join(place)}</p>' + description
     doc_date = to_persian_digits(jalali.format_date(sheet.doc_date))
     signature_cells = rtl_cells([f'<td width="33%" align="center">{s}<br><br><br><br></td>'
                                  for s in SIGNATURES])
@@ -93,18 +96,18 @@ h1 {{ font-size: {size + 6}pt; margin: 0; }}
 <table width="100%" style="border:none"><tr>
 <td width="40%" style="border:none" align="left"><b>{esc(sheet.company or APP_DISPLAY_NAME)}</b><br>
 <span class="muted">{esc(APP_DISPLAY_NAME)}</span></td>
-<td width="60%" style="border:none"><h1>{esc(sheet.type_name)}</h1>
+<td width="60%" style="border:none" dir="rtl" align="right"><h1>{esc(sheet.type_name)}</h1>
 {field("شماره", sheet.number_text)}{sep}{field("تاریخ", doc_date)}</td>
 </tr></table>
 {stamp_html}
-<p>{sep.join(parties)}</p>
+<p dir="rtl" align="right">{sep.join(parties)}</p>
 {description}
 <table class="grid" width="100%" cellspacing="0" cellpadding="4"><thead><tr>
 {rtl_cells([f"<th>{h}</th>" for h in heads])}</tr></thead>
 <tbody>{"".join(rows)}</tbody></table>
-<p>{sep.join(summary)}</p>
+<p dir="rtl" align="right">{sep.join(summary)}</p>
 <table width="100%" cellspacing="0" cellpadding="6" border="1"><tr>{signature_cells}</tr></table>
-<p class="muted">{sep.join(footer)}</p>
+<p dir="rtl" align="right" class="muted">{sep.join(footer)}</p>
 </body></html>"""
 
 
