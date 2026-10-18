@@ -64,3 +64,41 @@ async def test_concurrent_posting_mariadb():
         await _scenario(db, admin)
     finally:
         await db.dispose()
+
+
+async def test_same_draft_posted_from_two_pcs(db, admin):
+    """Two PCs post the same draft at once: stock moves once, the loser gets a Persian message."""
+    from caspian.db.models import StockLedger
+    from caspian.services.errors import ServiceError
+
+    unit = (await master.list_units(db))[0].id
+    wh = (await master.list_warehouses(db))[0].id
+    item = await items.create_item(db, admin, ItemInput("C-2", "صندلی همزمان", unit))
+    receipt = documents.DocumentInput(DocType.RECEIPT, dt.date.today(), wh,
+                                      [documents.LineInput(item, unit, Decimal(7))])
+    doc = await documents.create_document(db, admin, receipt)
+
+    results = await asyncio.gather(documents.post_document(db, admin, doc),
+                                   documents.post_document(db, admin, doc), return_exceptions=True)
+    errors = [r for r in results if isinstance(r, BaseException)]
+    assert len(errors) == 1 and isinstance(errors[0], ServiceError), results
+    async with db.session() as s:
+        assert await s.scalar(select(StockBalance.qty).where(StockBalance.item_id == item)) == 7
+        assert len((await s.scalars(select(StockLedger).where(StockLedger.item_id == item))).all()) == 1
+
+    # Cancelled from two PCs at once: reversed once, again a Persian message for the second.
+    results = await asyncio.gather(documents.cancel_document(db, admin, doc),
+                                   documents.cancel_document(db, admin, doc), return_exceptions=True)
+    errors = [r for r in results if isinstance(r, BaseException)]
+    assert len(errors) == 1 and isinstance(errors[0], ServiceError), results
+    async with db.session() as s:
+        assert await s.scalar(select(StockBalance.qty).where(StockBalance.item_id == item)) == 0
+
+    # Draft deleted on one PC while edited on another: Persian conflict, never a raw DB error.
+    draft = await documents.create_document(db, admin, receipt)
+    detail = await documents.get_document(db, admin, draft)
+    results = await asyncio.gather(documents.delete_draft(db, admin, draft),
+                                   documents.delete_draft(db, admin, draft), return_exceptions=True)
+    assert all(r is None or isinstance(r, ServiceError) for r in results), results
+    with pytest.raises(ServiceError):
+        await documents.update_document(db, admin, draft, detail.version_id, receipt)

@@ -89,7 +89,18 @@ def write_xlsx(report: ReportTable, target: str | Path | io.BytesIO) -> None:
     ws.freeze_panes = ws.cell(header_row + 1, 1)
     if report.rows:
         ws.auto_filter.ref = f"A{header_row}:{get_column_letter(ncols)}{header_row + len(report.rows)}"
+    _no_formulas(ws)
     wb.save(target)
+
+
+def _no_formulas(ws) -> None:
+    """Reports never contain formulas. openpyxl turns any text starting with "=" into one, so an
+    item/person name like `=HYPERLINK(...)` would run when the report is opened in Excel (formula
+    injection). Keep such values as plain text."""
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.data_type == "f":
+                cell.data_type = "s"
 
 
 def xlsx_bytes(report: ReportTable) -> bytes:
