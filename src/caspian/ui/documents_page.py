@@ -500,9 +500,17 @@ class DocumentDialog(FormDialog):
         self.mark_invalid(w for p in problems for w in self._field_widgets(p.field))
         return False
 
+    async def confirm_date(self) -> bool:
+        """An unusual date (other fiscal year, > 30 days away) is asked about, never refused."""
+        date = self.date.date()
+        warning = docs.date_warning(date) if date is not None else None
+        return warning is None or await confirm(self, warning, "بله، با همین تاریخ")
+
     async def submit(self) -> None:
         # All problems first (recipient, place, lines, stock…), then the question (#15, QA Part A #3).
         if not await self.check_all(for_post=True):
+            raise Cancelled
+        if not await self.confirm_date():
             raise Cancelled
         if not await confirm(self, "سند ذخیره و ثبت نهایی شود؟ موجودی تغییر می‌کند و سند پس از آن فقط با "
                              "ابطال قابل برگشت است.", "ثبت نهایی"):
@@ -516,7 +524,7 @@ class DocumentDialog(FormDialog):
     async def on_save_draft(self) -> None:
         self.set_busy(True)
         try:
-            if not await self.check_all(for_post=False):
+            if not await self.check_all(for_post=False) or not await self.confirm_date():
                 return
             await self._save()
         except ServiceError as exc:
@@ -719,7 +727,9 @@ class DocumentsList(QWidget):
         if (row := self.selected()) is None:
             return
         title = doc_title(row.doc_type, row.number)
-        if not await confirm(self, f"«{title}» ثبت نهایی شود؟\nموجودی تغییر می‌کند و سند پس از آن فقط با "
+        warning = docs.date_warning(row.doc_date)
+        if not await confirm(self, (f"{warning}\n\n" if warning else "")
+                             + f"«{title}» ثبت نهایی شود؟\nموجودی تغییر می‌کند و سند پس از آن فقط با "
                              "ابطال قابل برگشت است.", "ثبت نهایی"):
             return
         try:

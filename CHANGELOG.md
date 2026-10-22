@@ -16,6 +16,8 @@ All notable changes to Caspian Warehouse. Versions follow `pyproject.toml`; inst
 - **Changing a unit's factor no longer posts old drafts wrongly.** A draft saved with «1 کارتن = 24»
   is refused after the factor became 12, with a message saying so; open the draft, check it and save
   it again.
+- **Unusual dates are questioned, not refused.** Saving or posting a document dated outside the
+  current fiscal year, or more than 30 days ago, asks «با همین تاریخ ادامه می‌دهید؟» first.
 
 ### Part A — consumption locations (محل مصرف)
 - Floors and consumption locations of Caspian Phase 2 (141 plates and named places), seeded

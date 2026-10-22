@@ -244,6 +244,27 @@ async def server_today(s: AsyncSession) -> dt.date | None:
     return value if isinstance(value, dt.date) else dt.date.fromisoformat(str(value))
 
 
+DATE_WARNING_DAYS = 30
+
+
+def date_warning(doc_date: dt.date, today: dt.date | None = None) -> str | None:
+    """A question before saving an unusual date (test report issue 6): outside the current fiscal year
+    or more than DATE_WARNING_DAYS from today. Never a refusal — old documents are sometimes right."""
+    today = today or dt.date.today()
+    year, current = jalali.fiscal_year_of(doc_date), jalali.fiscal_year_of(today)
+    reasons = []
+    if year != current:
+        reasons.append(f"در سال مالی {to_persian_digits(year)} است، "
+                       f"نه سال جاری ({to_persian_digits(current)})")
+    days = (today - doc_date).days
+    if abs(days) > DATE_WARNING_DAYS:
+        reasons.append(f"{to_persian_digits(abs(days))} روز {'قبل' if days > 0 else 'بعد'} از امروز است")
+    if not reasons:
+        return None
+    return (f"تاریخ سند {jalali.format_date(doc_date)} " + " و ".join(reasons)
+            + ". اگر تاریخ درست است ادامه دهید؛ وگرنه آن را اصلاح کنید.\nبا همین تاریخ ادامه می‌دهید؟")
+
+
 async def clock_skew_days(db: Database) -> int | None:
     """Days between this PC's date and the database server's (None when unknown, e.g. SQLite)."""
     async with db.session() as s:
