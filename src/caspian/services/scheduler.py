@@ -37,6 +37,8 @@ REPORT_NAMES = {
     "reorder": "کالاهای نیازمند سفارش",
     "loans": "امانی‌های باز",
     "activity": "فعالیت کاربران (۲۴ ساعت گذشته)",
+    "consumption_floor": "مصرف به تفکیک طبقه (این ماه)",
+    "consumption_location": "مصرف به تفکیک محل (این ماه)",
 }
 KIND_NAMES = {TaskKind.BACKUP: "پشتیبان‌گیری", TaskKind.REPORT: "ارسال گزارش"}
 STATUS_NAMES = {TaskStatus.PROPOSED: "در انتظار تأیید", TaskStatus.ACTIVE: "فعال",
@@ -114,7 +116,11 @@ def parse_instruction(line: str) -> TaskProposal | None:
         kind, params, name = TaskKind.BACKUP, {}, "پشتیبان‌گیری"
     elif any(k in text for k in ("گزارش", "report")):
         report = "stock_balance"
-        if any(k in text for k in ("سفارش", "کمبود", "reorder")):
+        if "مصرف" in text and ("طبقه" in text or "floor" in text):
+            report = "consumption_floor"
+        elif "مصرف" in text and ("محل" in text or "location" in text):
+            report = "consumption_location"
+        elif any(k in text for k in ("سفارش", "کمبود", "reorder")):
             report = "reorder"
         elif "امانی" in text or "loan" in text:
             report = "loans"
@@ -156,7 +162,8 @@ def parse_instructions(text: str) -> list[TaskProposal]:
 
 AI_PROMPT = """دستورالعمل‌های زیر را به کارهای زمان‌بندی‌شده تبدیل کن. فقط JSON برگردان به شکل
 {"tasks": [{"name": str, "kind": "BACKUP"|"REPORT", "cron": "دقیقه ساعت روزماه ماه روزهفته",
-"report": "stock_balance"|"reorder"|"loans"|"activity" (فقط برای REPORT),
+"report": "stock_balance"|"reorder"|"loans"|"activity"|"consumption_floor"|"consumption_location"
+(فقط برای REPORT),
 "channels": ["telegram","email"] (فقط برای REPORT)}]}
 روز هفته در cron: ۰=یکشنبه، ۱=دوشنبه ... ۶=شنبه. «۸ شب» یعنی ساعت 20. کارهای دیگر را نادیده بگیر.
 دستورالعمل‌ها:
@@ -344,6 +351,9 @@ async def build_report(db: Database, name: str) -> reports.ReportTable:
             await reports.burn_rates(db, actor, only_needing_order=True), reports.DEFAULT_PARAMS)
     if name == "loans":
         return await reports.loans_report(db, actor)
+    if name in ("consumption_floor", "consumption_location"):
+        group_by = "floor" if name == "consumption_floor" else "location"
+        return await reports.consumption_table(db, actor, group_by, reports.month_start(), dt.date.today())
     if name == "activity":
         today = dt.date.today()
         return await reports.user_activity(db, actor, date_from=today - dt.timedelta(days=1),

@@ -28,6 +28,8 @@ datas = [
     (str(SRC / "caspian" / "resources"), "caspian/resources"),
     # Alembic loads migration scripts from disk, so they ship as files.
     (str(SRC / "caspian" / "db" / "migrations"), "caspian/db/migrations"),
+    # Consumption locations seed, read by a data migration (caspian.db.location_seed.seed_path).
+    (str(ROOT / "data" / "seed"), "seed"),
     # Package metadata, so caspian.__version__ works in the frozen app.
     *copy_metadata("caspian-warehouse"),
 ]

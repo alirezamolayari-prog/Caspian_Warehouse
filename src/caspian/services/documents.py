@@ -31,7 +31,9 @@ from caspian.db.models import (
     DocType,
     Document,
     DocumentLine,
+    Floor,
     Item,
+    Location,
     Person,
     StockBalance,
     StockLedger,
@@ -42,12 +44,13 @@ from caspian.db.models import (
     User,
     Warehouse,
 )
-from caspian.services import audit
+from caspian.services import audit, locations
 from caspian.services.actor import Actor
 from caspian.services.errors import (
     ConcurrencyError,
     NotFound,
     PermissionDenied,
+    ServiceError,
     StocktakeFrozen,
     ValidationError,
 )
@@ -116,6 +119,11 @@ class DocumentInput:
     person_id: int | None = None
     related_document_id: int | None = None
     description: str = ""
+    # Consumption place of an issue voucher (spec Part 2). floor_id only matters for locations whose
+    # floor the user picks (stairs, elevators, «مشاعات»); others always use their own floor.
+    location_id: int | None = None
+    floor_id: int | None = None
+    usage_note: str = ""
 
 
 @dataclass(frozen=True)
@@ -215,66 +223,187 @@ def _item_factors(item: Item) -> dict[int, Decimal]:
     return factors
 
 
-async def _validate(s: AsyncSession, data: DocumentInput) -> list[DocumentLine]:
-    """Validate header + lines; returns ready DocumentLine objects (unattached)."""
-    if data.doc_date > dt.date.today():
-        raise ValidationError("تاریخ سند نمی‌تواند بعد از امروز باشد. تاریخ را بررسی کنید.")
-    await ensure_open_year(s, jalali.fiscal_year_of(data.doc_date))
+@dataclass(frozen=True)
+class Problem:
+    """One thing to fix before a document can be saved or posted. `field` tells the editor which
+    input to mark: date, warehouse, dest, person, loan, location, floor, lines or line:<n>."""
+
+    field: str
+    message: str
+
+
+async def server_today(s: AsyncSession) -> dt.date | None:
+    """Today on the database server (MariaDB), the clock all PCs share. None on SQLite, whose
+    CURRENT_DATE is UTC and would be a day off after midnight in Iran."""
+    if s.bind.dialect.name not in ("mysql", "mariadb"):
+        return None
+    value = await s.scalar(select(func.current_date()))
+    return value if isinstance(value, dt.date) else dt.date.fromisoformat(str(value))
+
+
+async def clock_skew_days(db: Database) -> int | None:
+    """Days between this PC's date and the database server's (None when unknown, e.g. SQLite)."""
+    async with db.session() as s:
+        server = await server_today(s)
+    return None if server is None else (dt.date.today() - server).days
+
+
+async def _collect(s: AsyncSession, data: DocumentInput) -> tuple[list[DocumentLine], list[Problem]]:
+    """Every problem of the header and lines at once (QA Part A #3), plus the ready lines."""
+    problems: list[Problem] = []
+
+    def bad(field: str, message: str) -> None:
+        problems.append(Problem(field, message))
+
+    today = dt.date.today()
+    server = await server_today(s)
+    if data.doc_date > today or (server is not None and data.doc_date > server):
+        # A PC whose clock runs ahead can't date documents in the future either (QA Part A #6).
+        bad("date", "تاریخ سند نمی‌تواند بعد از امروز باشد. تاریخ را بررسی کنید.")
+    try:
+        await ensure_open_year(s, jalali.fiscal_year_of(data.doc_date))
+    except ServiceError as exc:
+        bad("date", exc.message)
     wh = await s.get(Warehouse, data.warehouse_id)
     if wh is None or not wh.is_active:
-        raise ValidationError("انبار انتخاب‌شده نامعتبر یا غیرفعال است.")
+        bad("warehouse", "انبار انتخاب‌شده نامعتبر یا غیرفعال است.")
     if data.doc_type == DocType.TRANSFER:
         dest = await s.get(Warehouse, data.dest_warehouse_id) if data.dest_warehouse_id else None
         if dest is None or not dest.is_active:
-            raise ValidationError("انبار مقصد را انتخاب کنید.")
-        if dest.id == wh.id:
-            raise ValidationError("انبار مبدأ و مقصد نمی‌توانند یکسان باشند.")
+            bad("dest", "انبار مقصد را انتخاب کنید.")
+        elif wh is not None and dest.id == wh.id:
+            bad("dest", "انبار مبدأ و مقصد نمی‌توانند یکسان باشند.")
     elif data.dest_warehouse_id is not None:
-        raise ValidationError("انبار مقصد فقط برای سند انتقال معنا دارد.")
+        bad("dest", "انبار مقصد فقط برای سند انتقال معنا دارد.")
     if data.person_id is not None:
         person = await s.get(Person, data.person_id)
         if person is None or not person.is_active:
-            raise ValidationError("طرف حساب نامعتبر یا غیرفعال است.")
+            bad("person", "طرف حساب نامعتبر یا غیرفعال است.")
     if data.doc_type in NEEDS_PERSON and data.person_id is None:
-        raise ValidationError("برای سند امانی، تحویل‌گیرنده (شخص) الزامی است.")
+        bad("person", "برای سند امانی، تحویل‌گیرنده (شخص) الزامی است.")
     if data.doc_type == DocType.LOAN_RETURN:
         loan = await s.get(Document, data.related_document_id) if data.related_document_id \
             else None
         if loan is None or loan.doc_type != DocType.LOAN_OUT or loan.status != DocStatus.POSTED:
-            raise ValidationError("سند خروج امانی مرتبط را انتخاب کنید.")
-        if loan.person_id != data.person_id:
-            raise ValidationError("شخص برگشت‌دهنده با تحویل‌گیرنده امانی یکسان نیست.")
+            bad("loan", "سند خروج امانی مرتبط را انتخاب کنید.")
+        elif loan.person_id != data.person_id:
+            bad("loan", "شخص برگشت‌دهنده با تحویل‌گیرنده امانی یکسان نیست.")
     elif data.related_document_id is not None:
-        raise ValidationError("سند مرتبط فقط برای برگشت امانی است.")
+        bad("loan", "سند مرتبط فقط برای برگشت امانی است.")
+    try:
+        await _place(s, data)
+    except ServiceError as exc:
+        bad("floor" if exc.message == locations.FLOOR_REQUIRED else "location", exc.message)
     if not data.lines:
-        raise ValidationError("سند باید حداقل یک ردیف کالا داشته باشد.")
+        bad("lines", "سند باید حداقل یک ردیف کالا داشته باشد.")
 
     lines: list[DocumentLine] = []
     for no, line in enumerate(data.lines, start=1):
+        field = f"line:{no}"
         item = await s.get(Item, line.item_id)
         if item is None:
-            raise ValidationError(f"ردیف {no}: کالا پیدا نشد.")
+            bad(field, f"ردیف {no}: کالا پیدا نشد.")
+            continue
         if not item.is_active:
-            raise ValidationError(f"ردیف {no}: کالای «{item.name}» غیرفعال است.")
+            bad(field, f"ردیف {no}: کالای «{item.name}» غیرفعال است.")
+            continue
         if data.doc_type in (DocType.LOAN_OUT, DocType.LOAN_RETURN) and not item.is_returnable:
-            raise ValidationError(f"ردیف {no}: کالای «{item.name}» امانی/برگشتی تعریف نشده است.")
+            bad(field, f"ردیف {no}: کالای «{item.name}» امانی/برگشتی تعریف نشده است.")
+            continue
         factors = _item_factors(item)
         if line.unit_id not in factors:
-            raise ValidationError(f"ردیف {no}: واحد انتخاب‌شده برای «{item.name}» تعریف نشده است.")
+            bad(field, f"ردیف {no}: واحد انتخاب‌شده برای «{item.name}» تعریف نشده است.")
+            continue
         qty = line.qty
         if qty is None or qty == 0 or (qty < 0 and data.doc_type != DocType.ADJUSTMENT):
-            raise ValidationError(f"ردیف {no}: مقدار «{item.name}» باید بزرگ‌تر از صفر باشد.")
+            bad(field, f"ردیف {no}: مقدار «{item.name}» باید بزرگ‌تر از صفر باشد.")
+            continue
         unit = await s.get(Unit, line.unit_id)
         if unit is not None and not unit.allow_decimal and qty != qty.to_integral_value():
-            raise ValidationError(f"ردیف {no}: مقدار «{item.name}» به «{unit.name}» باید عدد صحیح باشد.")
+            bad(field, f"ردیف {no}: مقدار «{item.name}» به «{unit.name}» باید عدد صحیح باشد.")
+            continue
         if line.unit_price is not None and line.unit_price < 0:
-            raise ValidationError(f"ردیف {no}: فی نمی‌تواند منفی باشد.")
+            bad(field, f"ردیف {no}: فی نمی‌تواند منفی باشد.")
+            continue
         factor = factors[line.unit_id]
         lines.append(DocumentLine(
             line_no=no, item_id=item.id, unit_id=line.unit_id, qty=qty, factor=factor,
             base_qty=qty * factor, unit_price=line.unit_price, notes=line.notes.strip(),
         ))
+    return lines, problems
+
+
+async def _validate(s: AsyncSession, data: DocumentInput) -> list[DocumentLine]:
+    """Validate header + lines; returns ready DocumentLine objects (unattached). Raises the first
+    problem (the editor shows them all with `check`)."""
+    lines, problems = await _collect(s, data)
+    if problems:
+        raise ValidationError(problems[0].message)
     return lines
+
+
+async def _posting_problems(s: AsyncSession, data: DocumentInput, lines: list[DocumentLine],
+                            doc_id: int | None) -> list[Problem]:
+    """What only posting checks: recipient, place, loan limits, stock (same texts as posting)."""
+    problems: list[Problem] = []
+    if data.doc_type == DocType.ISSUE and data.person_id is None:
+        problems.append(Problem("person", "برای ثبت نهایی حواله خروج، تحویل‌گیرنده را انتخاب کنید."))
+    if (data.doc_type == DocType.ISSUE and data.location_id is None
+            and await locations.required_on_issue_in(s)):
+        problems.append(Problem("location", "برای ثبت نهایی حواله خروج، محل مصرف را انتخاب کنید."))
+    by_line = {ln.line_no: ln for ln in lines}
+    if data.doc_type == DocType.LOAN_RETURN and data.related_document_id:
+        outstanding = {r.item_id: r.outstanding
+                       for r in await _loan_rows(s, loan_id=data.related_document_id, exclude_doc=doc_id)}
+        returning: dict[int, Decimal] = defaultdict(Decimal)
+        for ln in lines:
+            returning[ln.item_id] += ln.base_qty
+        for item_id, qty in returning.items():
+            if qty > outstanding.get(item_id, Decimal(0)):
+                item = await s.get(Item, item_id)
+                no = next(n for n, ln in by_line.items() if ln.item_id == item_id)
+                problems.append(Problem(f"line:{no}",
+                                        f"مقدار برگشتی «{item.name}» بیشتر از مانده امانی است."))
+    if lines and not await _allow_negative(s):
+        needed: dict[tuple[int, int], Decimal] = defaultdict(Decimal)
+        first_line: dict[tuple[int, int], int] = {}
+        sign = _SOURCE_SIGN[data.doc_type]
+        for ln in lines:
+            changes = [(data.warehouse_id, sign * ln.base_qty)]
+            if data.doc_type == DocType.TRANSFER:
+                changes.append((data.dest_warehouse_id, ln.base_qty))
+            for wh_id, change in changes:
+                needed[(ln.item_id, wh_id)] += change
+                first_line.setdefault((ln.item_id, wh_id), ln.line_no)
+        for (item_id, wh_id), change in sorted(needed.items()):
+            if change >= 0:
+                continue
+            balance = await s.scalar(select(StockBalance.qty).where(
+                StockBalance.item_id == item_id, StockBalance.warehouse_id == wh_id)) or Decimal(0)
+            if balance + change < 0:
+                item = await s.get(Item, item_id)
+                wh = await s.get(Warehouse, wh_id)
+                hint = pending_hint(await _pending_incoming_in(s, item_id, wh_id, doc_id),
+                                    item.base_unit.name)
+                problems.append(Problem(
+                    f"line:{first_line[(item_id, wh_id)]}",
+                    f"موجودی «{item.name}» در «{wh.name}» کافی نیست "
+                    f"(موجود: {format_qty(balance)}، نیاز: {format_qty(-change)})."
+                    + (f" {hint}" if hint else "")))
+    return problems
+
+
+async def check(db: Database, actor: Actor, data: DocumentInput, doc_id: int | None = None,
+                for_post: bool = True) -> list[Problem]:
+    """All problems at once, without writing anything: the editor runs this before asking «آیا
+    مطمئنید» and marks every field that needs fixing (QA Part A #3)."""
+    actor.require(Perm.DOCUMENTS_EDIT)
+    async with db.session() as s:
+        lines, problems = await _collect(s, data)
+        if for_post:
+            problems += await _posting_problems(s, data, lines, doc_id)
+        await s.rollback()
+    return problems
 
 
 def _effects(doc: Document) -> list[tuple[DocumentLine, int, Decimal]]:
@@ -328,13 +457,28 @@ async def _next_number(s: AsyncSession, doc_type: DocType, fiscal_year: int) -> 
     return (current or 0) + 1
 
 
-def _set_header(doc: Document, data: DocumentInput) -> None:
+async def _place(s: AsyncSession, data: DocumentInput) -> tuple[int | None, int | None]:
+    """(location_id, floor_id) to store: the floor is always stored on the document, so later
+    edits of the location list never rewrite history."""
+    if data.location_id is None:
+        if data.floor_id is not None:
+            raise ValidationError("ابتدا محل مصرف را انتخاب کنید.")
+        return None, None
+    if data.doc_type != DocType.ISSUE:
+        raise ValidationError("محل مصرف فقط برای حواله خروج ثبت می‌شود.")
+    place = await locations.resolve_place_in(s, data.location_id, data.floor_id)
+    return place.location.id, place.floor.id
+
+
+def _set_header(doc: Document, data: DocumentInput, place: tuple[int | None, int | None]) -> None:
     doc.doc_date = data.doc_date
     doc.warehouse_id = data.warehouse_id
     doc.dest_warehouse_id = data.dest_warehouse_id
     doc.person_id = data.person_id
     doc.related_document_id = data.related_document_id
     doc.description = data.description.strip()
+    doc.location_id, doc.consumption_floor_id = place
+    doc.usage_note = data.usage_note.strip()
 
 
 async def _check_loan_return_limits(s: AsyncSession, doc: Document) -> None:
@@ -445,6 +589,7 @@ async def get_document(db: Database, actor: Actor, doc_id: int) -> DocumentDetai
             dest_warehouse_id=doc.dest_warehouse_id, person_id=doc.person_id,
             related_document_id=doc.related_document_id, description=doc.description,
             lines=[LineInput(v.item_id, v.unit_id, v.qty, v.unit_price, v.notes) for v in views],
+            location_id=doc.location_id, floor_id=doc.consumption_floor_id, usage_note=doc.usage_note,
         )
         return DocumentDetail(doc.id, doc.version_id, doc.number, doc.fiscal_year, doc.status,
                               data, views)
@@ -485,6 +630,8 @@ class PrintSheet:
     posted_by: str
     print_count: int  # copies issued so far
     last_printed_by: str
+    place: str = ""  # «پلاک ۶۸ · همکف» (issue vouchers)
+    usage_note: str = ""
 
     @property
     def total_amount(self) -> Decimal | None:
@@ -517,6 +664,7 @@ async def print_sheet(db: Database, actor: Actor, doc_id: int) -> PrintSheet:
             lines.append(PrintLine(item.code, item.name, await name_of(Unit, ln.unit_id), ln.qty,
                                    ln.unit_price, ln.notes))
         company = await s.get(AppSetting, "company_name")
+        place = await place_text_in(s, doc)
         return PrintSheet(
             doc.id, doc.doc_type, number_text(doc.doc_type, doc.number), DOC_TYPE_NAMES[doc.doc_type],
             doc.status, doc.doc_date, await name_of(Warehouse, doc.warehouse_id),
@@ -524,7 +672,17 @@ async def print_sheet(db: Database, actor: Actor, doc_id: int) -> PrintSheet:
             PERSON_LABELS.get(doc.doc_type, "طرف حساب"), doc.description, lines,
             str(company.value) if company and company.value else "",
             await person_name(doc.created_by_id), await person_name(doc.posted_by_id),
-            doc.print_count, await person_name(doc.last_printed_by_id))
+            doc.print_count, await person_name(doc.last_printed_by_id), place, doc.usage_note)
+
+
+async def place_text_in(s: AsyncSession, doc: Document) -> str:
+    """The stored place of a document as people say it, e.g. «پلاک ۶۸ · همکف»."""
+    if doc.location_id is None:
+        return ""
+    location = await s.get(Location, doc.location_id)
+    floor = await s.get(Floor, doc.consumption_floor_id) if doc.consumption_floor_id else None
+    return locations.place_label(location.name_fa, location.type, floor.code if floor else None,
+                                 floor.name_fa if floor else None)
 
 
 async def record_print(db: Database, actor: Actor, doc_id: int, kind: str) -> int:
@@ -692,7 +850,7 @@ async def create_document_in(s: AsyncSession, actor: Actor, data: DocumentInput)
                    number=await _next_number(s, data.doc_type, year),
                    status=DocStatus.DRAFT, doc_date=data.doc_date,
                    warehouse_id=data.warehouse_id)
-    _set_header(doc, data)
+    _set_header(doc, data, await _place(s, data))
     doc.lines = lines
     s.add(doc)
     await s.flush()
@@ -752,7 +910,7 @@ async def update_document(db: Database, actor: Actor, doc_id: int, expected_vers
         if jalali.fiscal_year_of(data.doc_date) != doc.fiscal_year:
             raise ValidationError("تاریخ سند باید در همان سال مالی بماند.")
         lines = await _validate(s, data)
-        _set_header(doc, data)
+        _set_header(doc, data, await _place(s, data))
         doc.lines.clear()
         await s.flush()
         doc.lines.extend(lines)
@@ -778,7 +936,8 @@ async def delete_draft(db: Database, actor: Actor, doc_id: int) -> None:
 
 
 async def post_document(db: Database, actor: Actor, doc_id: int,
-                        expected_version: int | None = None, approval: Approval | None = None) -> None:
+                        expected_version: int | None = None, approval: Approval | None = None,
+                        via: str | None = None) -> None:
     """Finalize a draft: write the ledger and update balances atomically.
 
     `approval` (STOCKTAKE_OVERRIDE) is only needed while a stocktake freezes the items."""
@@ -787,7 +946,7 @@ async def post_document(db: Database, actor: Actor, doc_id: int,
             doc = await _load(s, doc_id)
             if expected_version is not None and doc.version_id != expected_version:
                 raise ConcurrencyError()
-            await post_document_in(s, actor, doc, approval=approval)
+            await post_document_in(s, actor, doc, approval=approval, via=via)
 
     if approval is not None:  # an approval is single-use: no silent second attempt
         try:
@@ -800,16 +959,16 @@ async def post_document(db: Database, actor: Actor, doc_id: int,
 
 
 async def post_document_in(s: AsyncSession, actor: Actor, doc: Document, *,
-                           approval: Approval | None = None, stocktake_id: int | None = None) -> None:
+                           approval: Approval | None = None, stocktake_id: int | None = None,
+                           via: str | None = None) -> None:
     """Post inside the caller's transaction. `stocktake_id`: the stocktake whose own adjustment
-    this is (exempt from its freeze)."""
-    actor.require(Perm.DOCUMENTS_POST)
-    if actor.is_ai:
-        from caspian.services.ai.config import ai_may_post_in
+    this is (exempt from its freeze). `via`: e.g. "assistant" when a person confirmed a draft the
+    assistant prepared (recorded in the audit log).
 
-        if not await ai_may_post_in(s):
-            raise PermissionDenied("ثبت نهایی سند توسط دستیار در تنظیمات غیرفعال است؛ پیش‌نویس ساخته شد "
-                                   "و باید خودتان آن را ثبت نهایی کنید.")
+    Posting changes stock, so it is always a person's decision: the AI assistant (chat, MCP or any
+    later channel) only prepares drafts; the app asks the user to confirm."""
+    actor.require_human("ثبت نهایی سند")
+    actor.require(Perm.DOCUMENTS_POST)
     if doc.status != DocStatus.DRAFT:
         raise ValidationError("این سند قبلاً ثبت یا ابطال شده است.")
     # Re-validate: items/warehouses may have been deactivated since the draft was saved.
@@ -818,6 +977,11 @@ async def post_document_in(s: AsyncSession, actor: Actor, doc: Document, *,
         await _check_loan_return_limits(s, doc)
     if doc.doc_type == DocType.ISSUE and doc.person_id is None:
         raise ValidationError("برای ثبت نهایی حواله خروج، تحویل‌گیرنده را انتخاب کنید.")
+    if doc.doc_type == DocType.ISSUE:
+        if doc.location_id is None and await locations.required_on_issue_in(s):
+            raise ValidationError("برای ثبت نهایی حواله خروج، محل مصرف را انتخاب کنید.")
+        # Freeze the place as it is now: later edits of the location list never change history.
+        doc.location_id, doc.consumption_floor_id = await _place(s, _input_of(doc))
     override = await _stocktake_override(s, actor, doc, approval, stocktake_id)
     approver_id = override.pop("approved_by_id", None)
     await _apply_effects(s, doc, reverse=False)
@@ -825,8 +989,64 @@ async def post_document_in(s: AsyncSession, actor: Actor, doc: Document, *,
     doc.posted_at = dt.datetime.now()
     doc.posted_by_id = actor.user_id
     audit.record(s, actor, "document.posted", "document", doc.id,
-                 {"type": doc.doc_type.value, "number": doc.number, **override},
+                 {"type": doc.doc_type.value, "number": doc.number, **override,
+                  **({"via": via} if via else {})},
                  approved_by_id=approver_id)
+
+
+@dataclass(frozen=True)
+class Confirmation:
+    """What the user confirms before a draft prepared by the assistant changes stock."""
+
+    document_id: int
+    version_id: int
+    title: str  # «حواله خروج ح-۱۰»
+    lines: list[str]  # «۱ عدد شمع (کد ۱۰۱۶)»
+    details: list[tuple[str, str]]  # (label, value): تحویل‌گیرنده، محل مصرف، شرح مصرف، انبار…
+
+    @property
+    def text(self) -> str:
+        rows = [self.title, *(f"• {line}" for line in self.lines)]
+        rows += [f"{label}: {value}" for label, value in self.details if value]
+        return "\n".join(rows)
+
+
+async def confirmation(db: Database, actor: Actor, doc_id: int) -> Confirmation:
+    actor.require(Perm.DOCUMENTS_VIEW)
+    async with db.session() as s:
+        doc = await _load(s, doc_id)
+        lines = []
+        for ln in doc.lines:
+            item = await s.get(Item, ln.item_id)
+            unit = await s.get(Unit, ln.unit_id)
+            lines.append(f"{format_qty(ln.qty)} {unit.name} {item.name} (کد {to_persian_digits(item.code)})")
+        person = await s.get(Person, doc.person_id) if doc.person_id else None
+        warehouse = await s.get(Warehouse, doc.warehouse_id)
+        dest = await s.get(Warehouse, doc.dest_warehouse_id) if doc.dest_warehouse_id else None
+        details = [(PERSON_LABELS.get(doc.doc_type, "طرف حساب"), person.name if person else ""),
+                   ("محل مصرف", await place_text_in(s, doc)), ("شرح مصرف", doc.usage_note),
+                   ("از انبار" if dest else "انبار", warehouse.name if warehouse else ""),
+                   ("به انبار", dest.name if dest else ""),
+                   ("تاریخ", jalali.format_date(doc.doc_date))]
+        return Confirmation(doc.id, doc.version_id,
+                            f"{DOC_TYPE_NAMES[doc.doc_type]} {number_text(doc.doc_type, doc.number)}",
+                            lines, details)
+
+
+async def discard_assistant_draft(db: Database, actor: Actor, doc_id: int) -> None:
+    """«نه» on the assistant's confirmation card: remove the draft it prepared for this user.
+    Drafts never touched stock; only the user's own, still-draft documents qualify."""
+    actor.require_human("حذف پیش‌نویس دستیار")
+    actor.require(Perm.DOCUMENTS_EDIT)
+    async with db.session(actor.user_id) as s:
+        doc = await _load(s, doc_id)
+        if doc.status != DocStatus.DRAFT:
+            raise ValidationError("این سند دیگر پیش‌نویس نیست.")
+        if doc.created_by_id != actor.user_id:
+            raise PermissionDenied("این پیش‌نویس را کاربر دیگری ساخته است.")
+        audit.record(s, actor, "document.assistant_draft_discarded", "document", doc.id,
+                     {"type": doc.doc_type.value, "number": doc.number, "via": "assistant"})
+        await s.delete(doc)
 
 
 def _input_of(doc: Document) -> DocumentInput:
@@ -836,6 +1056,7 @@ def _input_of(doc: Document) -> DocumentInput:
         related_document_id=doc.related_document_id, description=doc.description,
         lines=[LineInput(ln.item_id, ln.unit_id, ln.qty, ln.unit_price, ln.notes)
                for ln in doc.lines],
+        location_id=doc.location_id, floor_id=doc.consumption_floor_id, usage_note=doc.usage_note,
     )
 
 

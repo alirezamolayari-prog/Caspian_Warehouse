@@ -1,4 +1,4 @@
-"""Reference data tabs: warehouses, persons, categories, units."""
+"""Reference data tabs: warehouses, persons, categories, units, consumption locations."""
 
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -358,10 +358,14 @@ class MasterDataPage(QWidget):
         self.persons = PersonsTab(ctx)
         self.categories = CategoriesTab(ctx)
         self.units = UnitsTab(ctx)
+        from caspian.ui.locations_tab import LocationsTab  # locations_tab builds on _Tab here
+
+        self.locations = LocationsTab(ctx)
         self.tabs.addTab(self.persons, "اشخاص")
         self.tabs.addTab(self.warehouses, "انبارها")
         self.tabs.addTab(self.categories, "گروه‌های کالا")
         self.tabs.addTab(self.units, "واحدها")
+        self.tabs.addTab(self.locations, "محل‌های مصرف")
         self.tabs.currentChanged.connect(lambda _: self.tabs.currentWidget().reload())
         layout.addWidget(self.tabs)
 

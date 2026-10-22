@@ -7,14 +7,12 @@ import uuid
 from dataclasses import dataclass, field
 
 from caspian.core import jalali
-from caspian.core.permissions import Perm
 from caspian.core.text import to_persian_digits
 from caspian.db.database import Database
 from caspian.db.models import DocType, ImportKind, ImportSource
 from caspian.services import imports, master
 from caspian.services.actor import Actor
 from caspian.services.ai import history as chat_history
-from caspian.services.ai.config import ai_may_post
 from caspian.services.ai.gateway import AIUnavailable, Gateway
 from caspian.services.ai.text_parser import parse_text
 from caspian.services.ai.tools import ToolContext, available_tools, run_tool
@@ -34,8 +32,8 @@ SYSTEM_PROMPT = """تو دستیار هوشمند نرم‌افزار انبار
 - برای هر عدد یا اطلاعات انبار حتماً از ابزارها استفاده کن و هرگز عدد از خودت نساز.
 - وقتی کاربر کاری مثل «حواله خروج بزن برای آقای X که ۲ عدد جارو برده» خواست، مثل یک کاربر عمل کن:
   با create_document سند را بساز (نام شخص در person، کالاها در lines). {post_rule}
-- هر سند را فقط یک بار بساز. اگر ابزار needs_choice برگرداند (چند کالا یا شخص مشابه، یا پیدا نشد)،
-  هرگز حدس نزن: گزینه‌ها را با کد و موجودی نشان بده و از کاربر بپرس، بعد دوباره بساز.
+- هر سند را فقط یک بار بساز. اگر ابزار needs_choice برگرداند (چند کالا یا شخص مشابه، مقدار نامشخص،
+  محل یا طبقه، یا پیدا نشد) هرگز حدس نزن: گزینه‌ها را با کد نشان بده و از کاربر بپرس، بعد دوباره بساز.
 - برای فهرست‌های طولانی که کاربر باید بررسی کند، create_stock_draft (بخش «ورود اطلاعات») مناسب است.
 - تو هرگز سندی را ابطال یا حذف نمی‌کنی، کالا/شخص/کاربر را غیرفعال یا ادغام نمی‌کنی، نسخه پشتیبان را
   بازیابی نمی‌کنی، نقش تغییر نمی‌دهی، سال مالی نمی‌بندی و PIN مدیر را دور نمی‌زنی. اگر خواستند،
@@ -44,10 +42,10 @@ SYSTEM_PROMPT = """تو دستیار هوشمند نرم‌افزار انبار
   مصرف را پوشش می‌دهد» بیان کن. اگر پیام درخواست خرید برای تأمین‌کننده خواستند، متن مؤدبانه و آماده
   ارسال بنویس.
 """
-POST_ALLOWED = ("اگر کاربر صریحاً یا ضمنی خواست کار تمام شود (مثلاً «حواله بزن»)، post=true بگذار تا ثبت "
-                "نهایی شود؛ اگر ثبت نهایی خطا داد (مثلاً موجودی کافی نیست)، توضیح بده که پیش‌نویس ماند.")
-POST_FORBIDDEN = ("ثبت نهایی توسط دستیار در تنظیمات غیرفعال است: فقط پیش‌نویس بساز و بگو کاربر در «اسناد "
-                  "انبار» آن را ثبت نهایی کند.")
+# Stock only changes after the user presses «بله، ثبت کن» on the card the app shows (QA, Part A).
+POST_RULE = ("تو فقط پیش‌نویس می‌سازی و هرگز خودت ثبت نهایی نمی‌کنی؛ برنامه خلاصه سند را با دکمه‌های "
+             "«بله، ثبت کن» و «نه» به کاربر نشان می‌دهد و فقط با تأیید او موجودی تغییر می‌کند. در پاسخ "
+             "بگو پیش‌نویس آماده است و برای ثبت، دکمه تأیید را بزنند.")
 
 
 @dataclass
@@ -95,18 +93,17 @@ class Assistant:
         self._pending.add(task)
         task.add_done_callback(self._pending.discard)
 
-    def _system(self, allow_post: bool) -> dict:
+    def _system(self) -> dict:
         return {"role": "system", "content": SYSTEM_PROMPT.format(
             today=jalali.format_long(dt.date.today()), user=self._display_name, menus=MENUS,
-            post_rule=POST_ALLOWED if allow_post else POST_FORBIDDEN)}
+            post_rule=POST_RULE)}
 
     async def send(self, text: str, timeout: float | None = None) -> AssistantReply:
         self.history.append({"role": "user", "content": text})
         self.history = self.history[-HISTORY_LIMIT:]
-        allow_post = self.actor.can(Perm.DOCUMENTS_POST) and await ai_may_post(self._db)
-        ctx = ToolContext(self._db, self.actor, [], self._messenger, allow_post=allow_post)
+        ctx = ToolContext(self._db, self.actor, [], self._messenger)
         try:
-            reply = await asyncio.wait_for(self._run(ctx, allow_post), timeout or AI_TOTAL_TIMEOUT)
+            reply = await asyncio.wait_for(self._run(ctx), timeout or AI_TOTAL_TIMEOUT)
             self._remember(text, reply)
             return reply
         except (AIUnavailable, TimeoutError) as exc:
@@ -123,9 +120,9 @@ class Assistant:
             self._remember(self.history[-2]["content"] if len(self.history) > 1 else "", reply)
             return reply
 
-    async def _run(self, ctx: ToolContext, allow_post: bool) -> AssistantReply:
-        tools = [t.schema() for t in available_tools(self.actor, allow_post)]
-        messages = [self._system(allow_post), *self.history]
+    async def _run(self, ctx: ToolContext) -> AssistantReply:
+        tools = [t.schema() for t in available_tools(self.actor)]
+        messages = [self._system(), *self.history]
         provider = ""
         for _ in range(MAX_TOOL_ROUNDS):
             result = await self._gateway.chat(messages, tools=tools)

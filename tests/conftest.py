@@ -70,12 +70,31 @@ def template_db(tmp_path_factory):
         try:
             database = Database(f"sqlite+aiosqlite:///{path}")
             await prepare(database)
+            await _location_optional(database)
             await database.dispose()
         finally:
             security._hasher = original
 
     asyncio.run(build())
     return path
+
+
+async def _location_optional(database: Database, required: bool = False) -> None:
+    """Real databases require a consumption location on every new issue voucher (setting
+    «محل مصرف برای حواله خروج الزامی است», default on). Tests written before locations existed
+    post issues without one, so the template turns the setting off; tests of the location rules
+    turn it on with the `locations_required` fixture."""
+    from caspian.db.models import AppSetting
+
+    async with database.session() as s:
+        row = await s.get(AppSetting, "locations")
+        row.value = {**row.value, "required_on_issue": required}
+
+
+@pytest.fixture
+async def locations_required(db):
+    await _location_optional(db, required=True)
+    return db
 
 
 @pytest.fixture

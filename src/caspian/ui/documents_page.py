@@ -30,7 +30,7 @@ from caspian.core.text import to_persian_digits
 from caspian.core.text import to_persian_digits as fa  # display-only digits (#19)
 from caspian.db.models import DocStatus, DocType
 from caspian.services import documents as docs
-from caspian.services import items, master
+from caspian.services import items, locations, master
 from caspian.services.documents import (
     DOC_TYPE_NAMES,
     STATUS_NAMES,
@@ -47,6 +47,7 @@ from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import request_approval
 from caspian.ui.dialogs import Cancelled, FormDialog
 from caspian.ui.document_print import document_print_menu
+from caspian.ui.location_picker import LocationPicker
 from caspian.ui.master_page import person_picker
 from caspian.ui.messages import confirm, show_error, show_info
 from caspian.ui.widgets import (
@@ -191,6 +192,15 @@ class DocumentDialog(FormDialog):
         self.description = QLineEdit(data.description)
         left.addRow("توضیحات:", self.description)
 
+        # Where the goods are consumed (spec Part 2): one entry; a plate fills its floor.
+        self.place = LocationPicker()
+        self.usage_note = QLineEdit(data.usage_note)
+        self.usage_note.setPlaceholderText("مثلاً تعویض لامپ راهرو، نظافت پله…")
+        self._place_value = (data.location_id, data.floor_id)
+        if doc_type == DocType.ISSUE:
+            self.form.addRow("محل مصرف:", self.place)
+            self.form.addRow("شرح مصرف:", self.usage_note)
+
         # Line entry: barcode scanner or typed code/name, then Enter.
         entry = QHBoxLayout()
         self.item_input = QLineEdit()
@@ -229,7 +239,8 @@ class DocumentDialog(FormDialog):
         self.print_button.setEnabled(self.saved_id is not None)
         self.buttons.insertWidget(1, self.print_button)
         self._inputs += [self.date, self.warehouse, self.dest, self.person, self.loan,
-                         self.description, self.item_input, self.draft_button]
+                         self.description, self.place, self.usage_note, self.item_input,
+                         self.draft_button]
         if self._read_only:
             for w in self._inputs:
                 w.setEnabled(False)
@@ -242,6 +253,9 @@ class DocumentDialog(FormDialog):
 
     async def load_lines(self) -> None:
         """Existing lines need each item's unit list; loaded once after construction."""
+        if self._type == DocType.ISSUE:
+            await self.place.load(self._ctx.db)
+            self.place.set_value(*self._place_value)
         for v in self._pending_lines:
             await self._ensure_units(v.item_id)
             self._add_line(v.item_id, v.item_code, v.item_name, v.unit_id, v.qty, v.unit_price,
@@ -312,7 +326,7 @@ class DocumentDialog(FormDialog):
 
         r = self.table.rowCount()
         self.table.insertRow(r)
-        for col, text in ((0, code), (1, name)):
+        for col, text in ((0, locations.fa_digits(code)), (1, name)):  # Persian digits (QA Part A #5)
             cell = QTableWidgetItem(text)
             cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(r, col, cell)
@@ -426,7 +440,20 @@ class DocumentDialog(FormDialog):
             related_document_id=self.loan.currentData() if self._type == DocType.LOAN_RETURN
             else None,
             description=self.description.text(), lines=lines,
+            **self._collect_place(),
         )
+
+    def _collect_place(self) -> dict:
+        if self._type != DocType.ISSUE:
+            return {}
+        value = self.place.value()
+        if value is None:
+            if self.place.edit.text().strip():
+                raise ValidationError("محل مصرف را از فهرست انتخاب کنید (یا کادر را خالی بگذارید).")
+            return {"usage_note": self.usage_note.text()}
+        if self.place.location.needs_floor:
+            self.place.validate()  # «طبقه را انتخاب کنید» right here, not after a server round trip
+        return {"location_id": value[0], "floor_id": value[1], "usage_note": self.usage_note.text()}
 
     async def _save(self) -> int:
         data = self.collect()
@@ -441,9 +468,42 @@ class DocumentDialog(FormDialog):
         self.print_button.setEnabled(True)
         return self.saved_id
 
+    def _field_widgets(self, field: str) -> list:
+        """The inputs a `documents.Problem.field` refers to (marked red until edited)."""
+        if field.startswith("line:"):
+            no = int(field.split(":", 1)[1])
+            if 0 < no <= len(self.lines):
+                line = self.lines[no - 1]
+                return [line.qty, line.unit]
+            return [self.item_input]
+        return {"date": [self.date], "warehouse": [self.warehouse], "dest": [self.dest],
+                "person": [self.person], "loan": [self.loan], "location": [self.place.edit],
+                "floor": [self.place.floor], "lines": [self.item_input]}.get(field, [])
+
+    async def check_all(self, for_post: bool) -> bool:
+        """Every problem at once, before any question or save (QA Part A #3). False if any."""
+        self.clear_invalid()
+        try:
+            data = self.collect()
+        except ValidationError as exc:  # unreadable input (bad date, empty quantity, …)
+            self.show_status(exc.message)
+            return False
+        problems = await docs.check(self._ctx.db, self._ctx.actor, data, self.saved_id, for_post)
+        if not problems:
+            return True
+        messages = [p.message for p in problems]
+        if for_post and not await docs.check(self._ctx.db, self._ctx.actor, data, self.saved_id, False):
+            # Only posting is blocked (recipient, place, stock…): keep the work as a draft (#15).
+            await self._save()
+            messages.append("سند به‌صورت پیش‌نویس ذخیره شد؛ پس از اصلاح موارد بالا دوباره ثبت نهایی کنید.")
+        self.show_problems(messages)
+        self.mark_invalid(w for p in problems for w in self._field_widgets(p.field))
+        return False
+
     async def submit(self) -> None:
-        # Problems first (e.g. no lines), then the question (#15).
-        await docs.validate_input(self._ctx.db, self._ctx.actor, self.collect())
+        # All problems first (recipient, place, lines, stock…), then the question (#15, QA Part A #3).
+        if not await self.check_all(for_post=True):
+            raise Cancelled
         if not await confirm(self, "سند ذخیره و ثبت نهایی شود؟ موجودی تغییر می‌کند و سند پس از آن فقط با "
                              "ابطال قابل برگشت است.", "ثبت نهایی"):
             raise Cancelled
@@ -456,6 +516,8 @@ class DocumentDialog(FormDialog):
     async def on_save_draft(self) -> None:
         self.set_busy(True)
         try:
+            if not await self.check_all(for_post=False):
+                return
             await self._save()
         except ServiceError as exc:
             self.show_status(exc.message)

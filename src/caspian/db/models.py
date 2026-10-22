@@ -199,6 +199,59 @@ class Person(IdMixin, TimestampMixin, CreatedByMixin, VersionMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+# ----- consumption locations (docs/specs/caspian_consumption_location_spec.md, Part 2) -----
+# `floors.code` and `locations.code` are the cross-system keys; internal ids never leave the
+# warehouse. Locations are never deleted, only deactivated. A later `zone_id` can be added as a
+# nullable column on locations and documents without touching history.
+
+
+class LocationType(enum.StrEnum):
+    PLATE = "plate"  # shop plate: fixed floor
+    NAMED = "named"  # café, office, booth, supermarket: fixed floor
+    VERTICAL = "vertical"  # emergency stair / elevator: the user picks the floor
+    GENERAL = "general"  # «مشاعات عمومی طبقه»: the user picks the floor
+    FLOOR_PLACE = "floor_place"  # parking level / roof: the location is the floor
+
+
+class Floor(IdMixin, Base):
+    __tablename__ = "floors"
+
+    code: Mapped[str] = mapped_column(String(16), unique=True)
+    name_fa: Mapped[str] = mapped_column(String(100))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class Location(IdMixin, TimestampMixin, Base):
+    __tablename__ = "locations"
+
+    code: Mapped[str] = mapped_column(String(32), unique=True)
+    name_fa: Mapped[str] = mapped_column(String(150))
+    type: Mapped[LocationType] = mapped_column(_enum(LocationType))
+    floor_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("floors.id"))
+    needs_floor: Mapped[bool] = mapped_column(Boolean, default=False)
+    merged_group: Mapped[str | None] = mapped_column(String(100))  # informational only
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+
+    floor: Mapped[Floor | None] = relationship(lazy="joined")
+    aliases: Mapped[list["LocationAlias"]] = relationship(
+        back_populates="location", cascade="all, delete-orphan", lazy="selectin",
+        order_by="LocationAlias.id")
+
+
+class LocationAlias(IdMixin, Base):
+    __tablename__ = "location_aliases"
+    __table_args__ = (UniqueConstraint("location_id", "alias_normalized"),)
+
+    location_id: Mapped[int] = mapped_column(
+        BigIntPK, ForeignKey("locations.id", ondelete="CASCADE"))
+    alias: Mapped[str] = mapped_column(String(150))
+    alias_normalized: Mapped[str] = mapped_column(String(150), index=True)
+
+    location: Mapped[Location] = relationship(back_populates="aliases")
+
+
 # ----- documents & stock -----
 
 
@@ -242,6 +295,11 @@ class Document(IdMixin, TimestampMixin, CreatedByMixin, VersionMixin, Base):
     print_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     last_printed_at: Mapped[dt.datetime | None]
     last_printed_by_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("users.id"))
+    # Consumption place of an issue voucher. The floor is always stored on the document, so later
+    # edits to the location list never rewrite history.
+    location_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("locations.id"))
+    consumption_floor_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("floors.id"))
+    usage_note: Mapped[str] = mapped_column(Text, default="", server_default="")
 
     lines: Mapped[list["DocumentLine"]] = relationship(
         back_populates="document",

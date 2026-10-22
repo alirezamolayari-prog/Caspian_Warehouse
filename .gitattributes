@@ -2,3 +2,4 @@
 *.ttf binary
 *.png binary
 *.msi binary
+data/seed/*.csv -text

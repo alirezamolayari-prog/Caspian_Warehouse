@@ -183,33 +183,6 @@ async def move_provider(db: Database, actor: Actor, provider_id: int, direction:
             p.priority = (i + 1) * 10
 
 
-# ----- what the assistant may do (shared, app_settings) -----
-
-AI_ALLOW_POST_KEY = "ai_allow_post"
-
-
-async def ai_may_post_in(s) -> bool:
-    """«اجازه ثبت نهایی سند توسط دستیار» (default on). Read inside the caller's transaction."""
-    from caspian.db.models import AppSetting
-
-    row = await s.get(AppSetting, AI_ALLOW_POST_KEY)
-    return True if row is None or row.value is None else bool(row.value)
-
-
-async def ai_may_post(db: Database) -> bool:
-    async with db.session() as s:
-        return await ai_may_post_in(s)
-
-
-async def set_ai_may_post(db: Database, actor: Actor, allowed: bool) -> None:
-    from caspian.db.models import AppSetting
-
-    actor.require(Perm.AI_CONFIGURE)
-    actor.require_human("تغییر اختیارات دستیار")
-    async with db.session(actor.user_id) as s:
-        row = await s.get(AppSetting, AI_ALLOW_POST_KEY)
-        if row is None:
-            s.add(AppSetting(key=AI_ALLOW_POST_KEY, value=allowed))
-        else:
-            row.value = allowed
-        audit.record(s, actor, "ai.allow_post_changed", details={"allowed": allowed})
+# The former «اجازه ثبت نهایی سند توسط دستیار» setting (app_settings key "ai_allow_post") was
+# removed: the assistant never posts; the user confirms every stock change in the chat. An old row
+# in the database is simply ignored.
