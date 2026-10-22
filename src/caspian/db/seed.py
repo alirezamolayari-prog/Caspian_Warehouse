@@ -3,6 +3,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from caspian import branding
 from caspian.core.permissions import ADDED_PERMISSIONS, DEFAULT_ROLES
 from caspian.db.models import AppSetting, Role, RolePermission, Unit, Warehouse
 
@@ -69,4 +70,4 @@ async def _seed_warehouse(session: AsyncSession) -> None:
 
 async def _seed_settings(session: AsyncSession) -> None:
     if await session.get(AppSetting, "company_name") is None:
-        session.add(AppSetting(key="company_name", value="بازار مبلمان کاسپین"))
+        session.add(AppSetting(key="company_name", value=branding.COMPANY_NAME))

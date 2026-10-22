@@ -35,6 +35,14 @@ All notable changes to Caspian Warehouse. Versions follow `pyproject.toml`; inst
 - Dates after today are refused by the database server's clock too; a warning appears when this
   PC's clock is off.
 
+### Printed document form
+- Logo and company name in the header (branding in one module: `caspian/branding.py`), also on the
+  login dialog and in the sidebar.
+- Recipient's phone number, «جمع مقدار» per unit, centred number columns with the widest «نام کالا»,
+  four signature boxes («مدیریت» added), «چاپ‌کننده» and the print date and time in the footer.
+- Right-to-left text now prints correctly on real printers (pages are painted with the screen's
+  text engine), and «ذخیره PDF» fills the page instead of a small corner.
+
 ## 1.1.0 — 2026-10-04
 - Daily automatic backup at a chosen time, with one catch-up run after a missed day.
 - Similar-item hint in the New Item dialog loads the existing item instead of closing.

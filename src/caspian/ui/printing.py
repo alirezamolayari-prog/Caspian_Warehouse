@@ -4,11 +4,20 @@ import datetime as dt
 import html
 from collections.abc import Sequence
 
-from PySide6.QtCore import QMarginsF, QSizeF, Qt
-from PySide6.QtGui import QFont, QPageLayout, QPageSize, QPdfWriter, QTextDocument, QTextOption
+from PySide6.QtCore import QMarginsF, QRectF, QSizeF, Qt, QUrl
+from PySide6.QtGui import (
+    QFont,
+    QImage,
+    QPageLayout,
+    QPageSize,
+    QPainter,
+    QPdfWriter,
+    QTextDocument,
+    QTextOption,
+)
 from PySide6.QtWidgets import QMenu, QWidget
 
-from caspian import APP_DISPLAY_NAME
+from caspian import APP_DISPLAY_NAME, branding
 from caspian.core import jalali
 from caspian.core.settings import Settings
 from caspian.core.text import to_persian_digits
@@ -62,6 +71,9 @@ td {{ border: 1px solid #555; padding: 7px 5px; }}
 </body></html>"""
 
 
+LOGO_URL = "caspian-branding:logo"  # <img src=…> in printed forms; resolved by build_document
+
+
 def build_document(html_text: str) -> QTextDocument:
     doc = QTextDocument()
     font = QFont(FONT_FAMILY)
@@ -70,7 +82,20 @@ def build_document(html_text: str) -> QTextDocument:
     option = QTextOption()
     option.setTextDirection(Qt.LayoutDirection.RightToLeft)
     doc.setDefaultTextOption(option)
+    if LOGO_URL in html_text and (logo := branding.logo_path()) is not None:
+        doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl(LOGO_URL), QImage(str(logo)))
     doc.setHtml(html_text)
+    return doc
+
+
+RASTER_DPI = 300  # printer pages are painted as images at this resolution
+
+
+def _lay_out(doc: QTextDocument, device, size: QSizeF) -> QTextDocument:
+    """Lay the document out for `device` (its resolution, so point sizes are right) on a page of
+    `size` device pixels. Without this, Qt used screen units: tiny PDFs or wide default margins."""
+    doc.documentLayout().setPaintDevice(device)
+    doc.setPageSize(size)
     return doc
 
 
@@ -82,9 +107,58 @@ def save_pdf(html_text: str, path: str,
                                      QPageLayout.Unit.Millimeter))
     writer.setResolution(300)
     writer.setTitle(APP_DISPLAY_NAME)
-    doc = build_document(html_text)
-    doc.setPageSize(QSizeF(writer.pageLayout().paintRectPixels(300).size()))
-    doc.print_(writer)
+    size = QSizeF(writer.pageLayout().paintRectPixels(writer.resolution()).size())
+    _lay_out(build_document(html_text), writer, size).print_(writer)
+
+
+def page_images(html_text: str, width: int, height: int, dpi: int = RASTER_DPI) -> list[QImage]:
+    """Every page of the document painted onto an image: the same text engine as the screen, which
+    keeps right-to-left lines intact."""
+    dots = round(dpi / 0.0254)
+
+    def blank() -> QImage:
+        image = QImage(width, height, QImage.Format.Format_RGB32)
+        image.setDotsPerMeterX(dots)
+        image.setDotsPerMeterY(dots)
+        image.fill(Qt.GlobalColor.white)
+        return image
+
+    layout_device = blank()  # kept alive while the layout refers to it
+    doc = _lay_out(build_document(html_text), layout_device, QSizeF(width, height))
+    images = []
+    for number in range(doc.pageCount()):
+        image = blank()
+        painter = QPainter(image)
+        painter.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.TextAntialiasing
+                               | QPainter.RenderHint.SmoothPixmapTransform)
+        painter.translate(0, -number * height)
+        doc.drawContents(painter, QRectF(0, number * height, width, height))
+        painter.end()
+        images.append(image)
+    return images
+
+
+def print_to(printer, html_text: str) -> None:
+    """Print on `printer` (a QPrinter, also the one a print preview paints on).
+
+    Qt's native Windows print engine draws right-to-left text in separate runs and drops spaces
+    or swaps weak characters at their edges («(نسخه۲(», «انبار:انبار مرکزی»). Pages for a real
+    printer are therefore painted as images first; PDF output stays vector."""
+    from PySide6.QtPrintSupport import QPrinter
+
+    rect = printer.pageLayout().paintRectPixels(printer.resolution())
+    if printer.outputFormat() == QPrinter.OutputFormat.PdfFormat:
+        _lay_out(build_document(html_text), printer, QSizeF(rect.size())).print_(printer)
+        return
+    scale = RASTER_DPI / printer.resolution()
+    images = page_images(html_text, round(rect.width() * scale), round(rect.height() * scale))
+    painter = QPainter(printer)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    for number, image in enumerate(images):
+        if number:
+            printer.newPage()
+        painter.drawImage(QRectF(0, 0, rect.width(), rect.height()), image)
+    painter.end()
 
 
 async def print_html(html_text: str, parent: QWidget | None = None) -> bool:
@@ -95,7 +169,7 @@ async def print_html(html_text: str, parent: QWidget | None = None) -> bool:
     printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
     if not await ask_print(printer, parent):
         return False
-    build_document(html_text).print_(printer)
+    print_to(printer, html_text)
     return True
 
 
