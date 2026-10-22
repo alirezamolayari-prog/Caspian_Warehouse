@@ -7,7 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from caspian.core.numbers import parse_decimal
-from caspian.core.text import normalize
+from caspian.core.text import normalize, to_persian_digits
 from caspian.db.models import ImportSource
 from caspian.services.errors import ValidationError
 
@@ -64,7 +64,7 @@ def _trim(headers: list[str], rows: list[list[str]]) -> tuple[list[str], list[li
     width = max([len(headers), *(len(r) for r in rows)], default=0)
     headers = headers + [""] * (width - len(headers))
     rows = [r + [""] * (width - len(r)) for r in rows]
-    return [h or f"ستون {i + 1}" for i, h in enumerate(headers)], rows[:MAX_ROWS]
+    return [h or f"ستون {to_persian_digits(i + 1)}" for i, h in enumerate(headers)], rows[:MAX_ROWS]
 
 
 def read_excel(data: bytes, file_name: str = "") -> TableData:

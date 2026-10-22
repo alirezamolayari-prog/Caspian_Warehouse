@@ -20,7 +20,7 @@ from sqlalchemy import select
 from caspian.core import jalali
 from caspian.core.cron import Cron, CronError, describe
 from caspian.core.permissions import Perm
-from caspian.core.text import normalize, to_ascii_digits
+from caspian.core.text import normalize, to_ascii_digits, to_persian_digits
 from caspian.db.database import Database
 from caspian.db.models import ScheduledTask, TaskKind, TaskStatus
 from caspian.services import audit, reports
@@ -368,7 +368,7 @@ async def send_report(db: Database, messenger: Messenger, name: str,
     caption = f"{table.title} — {jalali.format_date(dt.date.today())}\n" + " | ".join(table.meta)
     used = await messenger.send(caption, (f"{name}-{stamp}.xlsx", xlsx_bytes(table), XLSX_MIME),
                                 channels)
-    return f"ارسال شد ({'، '.join(used)}) — {len(table.rows)} ردیف"
+    return f"ارسال شد ({'، '.join(used)}) — {to_persian_digits(len(table.rows))} ردیف"
 
 
 async def run_task(db: Database, task_id: int, messenger: Messenger,

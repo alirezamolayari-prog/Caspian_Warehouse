@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from caspian.core.text import ltr
+from caspian.core.text import ltr, to_persian_digits
 from caspian.db.database import Database
 from caspian.db.models import ProviderKind
 from caspian.services.ai.config import ProviderConfig, get_key, list_providers
@@ -292,7 +292,7 @@ def _status_text(status: int | None, outcome: str) -> str:
     if status in _STATUS_TEXT:
         return _STATUS_TEXT[status]
     if outcome == "server_error" and status:
-        return f"خطای سرور سرویس‌دهنده ({status})."
+        return f"خطای سرور سرویس‌دهنده ({to_persian_digits(status)})."
     return _OUTCOME_TEXT.get(outcome, outcome)
 
 

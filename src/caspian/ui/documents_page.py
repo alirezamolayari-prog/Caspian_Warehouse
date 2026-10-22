@@ -427,9 +427,9 @@ class DocumentDialog(FormDialog):
         lines = []
         for no, line in enumerate(self.lines, start=1):
             if line.qty.value() is None:
-                raise ValidationError(f"ردیف {no}: مقدار «{line.name}» را وارد کنید.")
+                raise ValidationError(f"ردیف {to_persian_digits(no)}: مقدار «{line.name}» را وارد کنید.")
             if line.price.text().strip() and line.price.value() is None:
-                raise ValidationError(f"ردیف {no}: فی نامعتبر است.")
+                raise ValidationError(f"ردیف {to_persian_digits(no)}: فی نامعتبر است.")
             lines.append(LineInput(line.item_id, line.unit.currentData(), line.qty.value(),
                                    line.price.value(), line.notes.text()))
         return DocumentInput(

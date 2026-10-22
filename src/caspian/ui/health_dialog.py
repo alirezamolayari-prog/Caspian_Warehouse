@@ -2,6 +2,7 @@
 
 from PySide6.QtWidgets import QLabel
 
+from caspian.core.text import to_persian_digits
 from caspian.services import health
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.dialogs import FormDialog
@@ -27,7 +28,7 @@ class HealthDialog(FormDialog):
                              for i, f in enumerate(findings)])
         self.body.addWidget(self.table, 1)
         if findings:
-            self.body.addWidget(QLabel(f"{len(findings)} مورد", objectName="Muted"))
+            self.body.addWidget(QLabel(f"{to_persian_digits(len(findings))} مورد", objectName="Muted"))
 
     async def submit(self) -> None:
         pass

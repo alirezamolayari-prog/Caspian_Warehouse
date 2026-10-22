@@ -326,28 +326,29 @@ async def _collect(s: AsyncSession, data: DocumentInput) -> tuple[list[DocumentL
         field = f"line:{no}"
         item = await s.get(Item, line.item_id)
         if item is None:
-            bad(field, f"ردیف {no}: کالا پیدا نشد.")
+            bad(field, f"ردیف {to_persian_digits(no)}: کالا پیدا نشد.")
             continue
         if not item.is_active:
-            bad(field, f"ردیف {no}: کالای «{item.name}» غیرفعال است.")
+            bad(field, f"ردیف {to_persian_digits(no)}: کالای «{item.name}» غیرفعال است.")
             continue
         if data.doc_type in (DocType.LOAN_OUT, DocType.LOAN_RETURN) and not item.is_returnable:
-            bad(field, f"ردیف {no}: کالای «{item.name}» امانی/برگشتی تعریف نشده است.")
+            bad(field, f"ردیف {to_persian_digits(no)}: کالای «{item.name}» امانی/برگشتی تعریف نشده است.")
             continue
         factors = _item_factors(item)
         if line.unit_id not in factors:
-            bad(field, f"ردیف {no}: واحد انتخاب‌شده برای «{item.name}» تعریف نشده است.")
+            bad(field, f"ردیف {to_persian_digits(no)}: واحد انتخاب‌شده برای «{item.name}» تعریف نشده است.")
             continue
         qty = line.qty
         if qty is None or qty == 0 or (qty < 0 and data.doc_type != DocType.ADJUSTMENT):
-            bad(field, f"ردیف {no}: مقدار «{item.name}» باید بزرگ‌تر از صفر باشد.")
+            bad(field, f"ردیف {to_persian_digits(no)}: مقدار «{item.name}» باید بزرگ‌تر از صفر باشد.")
             continue
         unit = await s.get(Unit, line.unit_id)
         if unit is not None and not unit.allow_decimal and qty != qty.to_integral_value():
-            bad(field, f"ردیف {no}: مقدار «{item.name}» به «{unit.name}» باید عدد صحیح باشد.")
+            bad(field, f"ردیف {to_persian_digits(no)}: مقدار «{item.name}» به «{unit.name}» باید "
+                       "عدد صحیح باشد.")
             continue
         if line.unit_price is not None and line.unit_price < 0:
-            bad(field, f"ردیف {no}: فی نمی‌تواند منفی باشد.")
+            bad(field, f"ردیف {to_persian_digits(no)}: فی نمی‌تواند منفی باشد.")
             continue
         factor = factors[line.unit_id]
         lines.append(DocumentLine(

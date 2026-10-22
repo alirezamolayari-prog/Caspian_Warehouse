@@ -365,8 +365,10 @@ def format_size(size: int) -> str:
 
 def _check_password(password: str) -> None:
     if not password or len(password) < MIN_PASSWORD:
-        raise ValidationError(f"رمز پشتیبان باید حداقل {MIN_PASSWORD} کاراکتر باشد. آن را در تنظیمات "
-                              "پشتیبان‌گیری تعیین کنید و جایی امن یادداشت کنید.")
+        from caspian.core.text import to_persian_digits
+
+        raise ValidationError(f"رمز پشتیبان باید حداقل {to_persian_digits(MIN_PASSWORD)} کاراکتر باشد. آن را "
+                              "در تنظیمات پشتیبان‌گیری تعیین کنید و جایی امن یادداشت کنید.")
 
 
 async def _schema_revision(db: Database) -> str | None:

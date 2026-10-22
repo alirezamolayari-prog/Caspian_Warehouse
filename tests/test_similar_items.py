@@ -91,7 +91,7 @@ async def test_imports_cannot_create_duplicates(db, admin, u):
                                        [RawRow(code="2001", name="سطل"), RawRow(code="2002", name="جاروو")])
     for line in (await imports.get_batch(db, admin, batch)).lines:
         await imports.set_resolution(db, admin, line.id, imports.Resolution.CREATE)
-    with pytest.raises(SimilarItems, match="ردیف 2"):
+    with pytest.raises(SimilarItems, match="ردیف ۲"):
         await imports.apply_batch(db, admin, batch)
     assert await items.search_items(db, admin, "سطل") == []  # nothing written
     approval = await protected.approve(db, admin, ProtectedAction.CREATE_SIMILAR_ITEM, "admin", PIN)

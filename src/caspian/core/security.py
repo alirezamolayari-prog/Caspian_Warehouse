@@ -3,7 +3,7 @@
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 
-from caspian.core.text import to_ascii_digits
+from caspian.core.text import to_ascii_digits, to_persian_digits
 
 _hasher = PasswordHasher()
 
@@ -38,7 +38,7 @@ def normalize_pin(pin: str) -> str:
 def password_problem(password: str, username: str = "") -> str | None:
     """Persian explanation of why a new password is unacceptable, or None."""
     if len(password) < MIN_PASSWORD_LENGTH:
-        return f"رمز عبور باید حداقل {MIN_PASSWORD_LENGTH} کاراکتر باشد."
+        return f"رمز عبور باید حداقل {to_persian_digits(MIN_PASSWORD_LENGTH)} کاراکتر باشد."
     if username and password.lower() == username.lower():
         return "رمز عبور نباید با نام کاربری یکسان باشد."
     if password == DEFAULT_ADMIN_PASSWORD:

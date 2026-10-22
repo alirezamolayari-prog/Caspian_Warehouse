@@ -7,6 +7,8 @@ day fields are restricted, a day matches if either does (standard cron semantics
 
 import datetime as dt
 
+from caspian.core.text import to_persian_digits
+
 _RANGES = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))
 _NAMES = ("دقیقه", "ساعت", "روز ماه", "ماه", "روز هفته")
 
@@ -36,7 +38,7 @@ def _field(text: str, low: int, high: int, name: str) -> set[int]:
         else:
             raise CronError(f"مقدار نامعتبر در {name}: {part!r}")
         if not (low <= start <= end <= high):
-            raise CronError(f"{name} باید بین {low} و {high} باشد")
+            raise CronError(f"{name} باید بین {to_persian_digits(low)} و {to_persian_digits(high)} باشد")
         values.update(range(start, end + 1, step))
     return values
 
@@ -94,12 +96,13 @@ def describe(expression: str) -> str:
         return expression
     m, h, dom, mon, dow = expression.split()
     if m.isdigit() and h.isdigit() and dom == "*" and mon == "*":
-        at = f"ساعت {int(h):02d}:{int(m):02d}"
+        at = "ساعت " + to_persian_digits(f"{int(h):02d}:{int(m):02d}")
         if dow == "*":
             return f"هر روز {at}"
         if len(cron.dows) < 7:
-            days = "، ".join(PERSIAN_WEEKDAYS[d] for d in (6, 0, 1, 2, 3, 4, 5) if d in cron.dows)
-            return f"هر هفته {days} {at}"
+            weekdays = "، ".join(PERSIAN_WEEKDAYS[d] for d in (6, 0, 1, 2, 3, 4, 5) if d in cron.dows)
+            return f"هر هفته {weekdays} {at}"
     if m.isdigit() and h.isdigit() and dom.isdigit() and mon == "*" and dow == "*":
-        return f"روز {dom} هر ماه (میلادی) ساعت {int(h):02d}:{int(m):02d}"
+        clock = to_persian_digits(f"{int(h):02d}:{int(m):02d}")
+        return f"روز {to_persian_digits(dom)} هر ماه (میلادی) ساعت {clock}"
     return expression

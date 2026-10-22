@@ -18,6 +18,8 @@ All notable changes to Caspian Warehouse. Versions follow `pyproject.toml`; inst
   it again.
 - **Unusual dates are questioned, not refused.** Saving or posting a document dated outside the
   current fiscal year, or more than 30 days ago, asks «با همین تاریخ ادامه می‌دهید؟» first.
+- Persian digits in every message («ردیف ۱»، «ساعت ۲۰:۰۰»، years, counts, minutes…); a test guards it.
+- certifi updated to 2026.10.19 (security fix).
 
 ### Part A — consumption locations (محل مصرف)
 - Floors and consumption locations of Caspian Phase 2 (141 plates and named places), seeded

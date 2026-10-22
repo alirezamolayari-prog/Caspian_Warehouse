@@ -17,7 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from caspian.core.permissions import Perm
-from caspian.core.text import to_ascii_digits
+from caspian.core.text import to_ascii_digits, to_persian_digits
 from caspian.db.database import Database
 from caspian.db.models import (
     Category,
@@ -275,11 +275,12 @@ async def record_counts(db: Database, actor: Actor, stocktake_id: int,
             if line is None:
                 raise ValidationError("ردیف متعلق به این انبارگردانی نیست.")
             if qty is not None and qty < 0:
-                raise ValidationError(f"ردیف {line.line_no}: مقدار شمارش نمی‌تواند منفی باشد.")
+                raise ValidationError(f"ردیف {to_persian_digits(line.line_no)}: مقدار شمارش نمی‌تواند "
+                                      "منفی باشد.")
             if qty is not None and qty != qty.to_integral_value():
                 item = await s.get(Item, line.item_id)
                 if not item.base_unit.allow_decimal:
-                    raise ValidationError(f"ردیف {line.line_no}: شمارش «{item.name}» به "
+                    raise ValidationError(f"ردیف {to_persian_digits(line.line_no)}: شمارش «{item.name}» به "
                                           f"«{item.base_unit.name}» باید عدد صحیح باشد.")
             if qty != line.counted_qty or note.strip() != line.note:
                 line.counted_qty = qty
@@ -297,8 +298,8 @@ async def submit_counts(db: Database, actor: Actor, stocktake_id: int,
             raise ValidationError("این انبارگردانی قبلاً ثبت نهایی شده است.")
         missing = [ln for ln in st.lines if ln.counted_qty is None]
         if missing and not missing_as_zero:
-            raise ValidationError(f"{len(missing)} ردیف شمارش نشده است. آن‌ها را بشمارید یا "
-                                  "گزینه «صفر در نظر گرفتن شمارش‌نشده‌ها» را انتخاب کنید.")
+            raise ValidationError(f"{to_persian_digits(len(missing))} ردیف شمارش نشده است. آن‌ها را "
+                                  "بشمارید یا گزینه «صفر در نظر گرفتن شمارش‌نشده‌ها» را انتخاب کنید.")
         for ln in missing:
             ln.counted_qty = Decimal(0)
             ln.counted_by_id = actor.user_id
@@ -329,9 +330,10 @@ async def approve(db: Database, actor: Actor, stocktake_id: int) -> int | None:
                 DocType.ADJUSTMENT, dt.date.today(), st.warehouse_id,
                 [documents.LineInput(ln.item_id, base_units[ln.item_id],
                                      ln.counted_qty - ln.system_qty,
-                                     notes=f"انبارگردانی {st.number} — ردیف {ln.line_no}")
+                                     notes=f"انبارگردانی {to_persian_digits(st.number)} — "
+                                           f"ردیف {to_persian_digits(ln.line_no)}")
                  for ln in diffs],
-                description=f"اصلاحیه انبارگردانی شماره {st.number}"))
+                description=f"اصلاحیه انبارگردانی شماره {to_persian_digits(st.number)}"))
             await documents.post_document_in(s, actor, doc, stocktake_id=st.id)
             doc_id = st.adjustment_document_id = doc.id
         st.status = StocktakeStatus.APPROVED

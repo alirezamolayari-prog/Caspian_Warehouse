@@ -36,8 +36,8 @@ def test_cron_errors(bad):
 
 
 def test_describe():
-    assert describe("0 20 * * *") == "هر روز ساعت 20:00"
-    assert describe("30 9 * * 6") == "هر هفته شنبه ساعت 09:30"
+    assert describe("0 20 * * *") == "هر روز ساعت ۲۰:۰۰"  # Persian digits (test report #7)
+    assert describe("30 9 * * 6") == "هر هفته شنبه ساعت ۰۹:۳۰"
 
 
 # ----- instruction parsing -----

@@ -511,13 +511,14 @@ async def apply_batch(db: Database, actor: Actor, batch_id: int,
         _require_open(batch)
         unresolved = [ln.row_no for ln in batch.lines if ln.resolution is None]
         if unresolved:
-            rows = "، ".join(str(n) for n in unresolved[:10])
-            raise ValidationError(f"{len(unresolved)} ردیف نیاز به تصمیم دارد (ردیف‌های {rows}).")
+            row_list = to_persian_digits("، ".join(str(n) for n in unresolved[:10]))
+            raise ValidationError(f"{to_persian_digits(len(unresolved))} ردیف نیاز به تصمیم دارد "
+                                  f"(ردیف‌های {row_list}).")
         for ln in batch.lines:
             if ln.resolution == Resolution.CREATE and not ln.name:
-                raise ValidationError(f"ردیف {ln.row_no}: برای ایجاد کالا، نام لازم است.")
+                raise ValidationError(f"ردیف {to_persian_digits(ln.row_no)}: برای ایجاد کالا، نام لازم است.")
             if ln.resolution in (Resolution.MATCH, Resolution.OVERWRITE) and not ln.match_item_id:
-                raise ValidationError(f"ردیف {ln.row_no}: کالای موجود انتخاب نشده است.")
+                raise ValidationError(f"ردیف {to_persian_digits(ln.row_no)}: کالای موجود انتخاب نشده است.")
         overwrites = [ln for ln in batch.lines if ln.resolution == Resolution.OVERWRITE]
         approver_id = consume(approval, ProtectedAction.IMPORT_OVERWRITE, actor) \
             if overwrites else None
@@ -548,9 +549,10 @@ async def apply_batch(db: Database, actor: Actor, batch_id: int,
                     item = await items.create_item_in(s, actor, data,
                                                       allow_similar=similar_approver is not None)
                 except SimilarItems as exc:
-                    raise SimilarItems(f"ردیف {ln.row_no}: {exc.message}", exc.candidates) from exc
+                    raise SimilarItems(f"ردیف {to_persian_digits(ln.row_no)}: {exc.message}",
+                                       exc.candidates) from exc
                 except ValidationError as exc:
-                    raise ValidationError(f"ردیف {ln.row_no}: {exc.message}") from exc
+                    raise ValidationError(f"ردیف {to_persian_digits(ln.row_no)}: {exc.message}") from exc
                 item_for_line[ln.id] = item.id
                 created += 1
             elif ln.resolution == Resolution.OVERWRITE:
@@ -567,7 +569,8 @@ async def apply_batch(db: Database, actor: Actor, batch_id: int,
                     owner = await s.scalar(select(ItemBarcode.item_id)
                                            .where(ItemBarcode.barcode == ln.barcode))
                     if owner:
-                        raise ValidationError(f"ردیف {ln.row_no}: بارکد متعلق به کالای دیگری است.")
+                        raise ValidationError(f"ردیف {to_persian_digits(ln.row_no)}: بارکد متعلق به کالای "
+                                              "دیگری است.")
                     item.barcodes.append(ItemBarcode(barcode=ln.barcode))
                 audit.record(s, actor, "item.overwritten_by_import", "item", item.id,
                              {"before": before, "batch": batch.id}, approved_by_id=approver_id)

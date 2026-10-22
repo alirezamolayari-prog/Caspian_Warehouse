@@ -14,7 +14,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from caspian.core.numbers import format_qty
 from caspian.core.permissions import Perm
-from caspian.core.text import normalize, to_ascii_digits
+from caspian.core.text import normalize, to_ascii_digits, to_persian_digits
 from caspian.db.database import Database
 from caspian.db.models import (
     Category,
@@ -480,8 +480,8 @@ async def merge_items(db: Database, actor: Actor, target_id: int, source_ids: li
             Stocktake.status.in_([StocktakeStatus.OPEN, StocktakeStatus.COUNTED]),
             StocktakeLine.item_id.in_([target_id, *sources])))
         if busy:
-            raise ValidationError(f"این کالاها در انبارگردانی باز شماره {busy} هستند؛ پس از آن "
-                                  "ادغام کنید.")
+            raise ValidationError(f"این کالاها در انبارگردانی باز شماره {to_persian_digits(busy)} هستند؛ "
+                                  "پس از آن ادغام کنید.")
         moved = 0
         mapping = {}
         for src in items_:
