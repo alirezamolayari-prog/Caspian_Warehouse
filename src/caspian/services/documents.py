@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm.attributes import flag_modified
 
+from caspian import branding
 from caspian.core import jalali
 from caspian.core.numbers import format_qty
 from caspian.core.permissions import Perm
@@ -630,8 +631,9 @@ class PrintSheet:
     posted_by: str
     print_count: int  # copies issued so far
     last_printed_by: str
-    place: str = ""  # «پلاک ۶۸ · همکف» (issue vouchers)
+    place: str = ""  # «پلاک ۶۸ · طبقه همکف» (issue vouchers)
     usage_note: str = ""
+    person_phone: str = ""  # «شماره تماس» under the recipient
 
     @property
     def total_amount(self) -> Decimal | None:
@@ -670,9 +672,10 @@ async def print_sheet(db: Database, actor: Actor, doc_id: int) -> PrintSheet:
             doc.status, doc.doc_date, await name_of(Warehouse, doc.warehouse_id),
             await name_of(Warehouse, doc.dest_warehouse_id), await name_of(Person, doc.person_id),
             PERSON_LABELS.get(doc.doc_type, "طرف حساب"), doc.description, lines,
-            str(company.value) if company and company.value else "",
+            branding.company_name(company.value if company else None),
             await person_name(doc.created_by_id), await person_name(doc.posted_by_id),
-            doc.print_count, await person_name(doc.last_printed_by_id), place, doc.usage_note)
+            doc.print_count, await person_name(doc.last_printed_by_id), place, doc.usage_note,
+            await name_of(Person, doc.person_id, "phone"))
 
 
 async def place_text_in(s: AsyncSession, doc: Document) -> str:

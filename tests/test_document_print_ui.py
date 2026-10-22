@@ -107,7 +107,7 @@ async def test_form_fields_are_bidi_safe_and_complete(env):
     sheet = await docs.print_sheet(ctx.db, ctx.actor, env["receipt"])
     html_text = document_html(sheet, 1, "A5")
     # Plain RLM marks instead of isolates (QA Part A #2, see test_print_bidi.py).
-    assert "تعداد اقلام:‏&nbsp;<b>‏۱‏</b>" in html_text
+    assert "تعداد&nbsp;اقلام:‏&nbsp;<b>‏۱‏</b>" in html_text  # labels never split
     assert "شماره:‏&nbsp;" in html_text and "تاریخ:‏&nbsp;" in html_text
     assert ctx.actor.display_name in html_text and sheet.created_by == ctx.actor.display_name
     assert "font-size: 10pt" in html_text
