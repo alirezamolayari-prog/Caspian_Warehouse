@@ -214,7 +214,7 @@ async def add_proposals(db: Database, actor: Actor, proposals: list[TaskProposal
     if not actor.is_ai:
         actor.require(Perm.SETTINGS_EDIT)
     ids = []
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         for p in proposals:
             Cron(p.cron)
             if p.kind == TaskKind.REPORT and p.params.get("report") not in REPORT_NAMES:
@@ -240,7 +240,7 @@ async def approve(db: Database, actor: Actor, task_id: int, now: dt.datetime | N
     if actor.is_ai:
         raise PermissionDenied("تأیید کارهای زمان‌بندی‌شده فقط با کاربر است.")
     actor.require(Perm.SETTINGS_EDIT)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         task = await _load(s, task_id)
         if task.kind == TaskKind.REPORT and not task.params.get("channels"):
             raise ValidationError("برای ارسال گزارش، کانال (تلگرام یا ایمیل) را مشخص کنید.")
@@ -287,7 +287,7 @@ async def set_daily_backup(db: Database, actor: Actor, enabled: bool, at: dt.tim
     approved for this PC right away (it is the admin's own setting) and shows in the tasks tab."""
     actor.require_human("تغییر پشتیبان‌گیری خودکار")
     actor.require(Perm.SETTINGS_EDIT)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         task = await _daily_task(s)
         if not enabled:
             if task is not None:
@@ -310,7 +310,7 @@ async def update_task(db: Database, actor: Actor, task_id: int, name: str, cron:
                       params: dict) -> None:
     actor.require(Perm.SETTINGS_EDIT)
     Cron(cron)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         task = await _load(s, task_id)
         task.name, task.cron, task.params = name.strip() or task.name, cron, params
         if task.status == TaskStatus.ACTIVE:
@@ -321,7 +321,7 @@ async def update_task(db: Database, actor: Actor, task_id: int, name: str, cron:
 
 async def set_paused(db: Database, actor: Actor, task_id: int, paused: bool) -> None:
     actor.require(Perm.SETTINGS_EDIT)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         task = await _load(s, task_id)
         if task.status == TaskStatus.PROPOSED:
             raise ValidationError("ابتدا کار را تأیید کنید.")
@@ -333,7 +333,7 @@ async def set_paused(db: Database, actor: Actor, task_id: int, paused: bool) -> 
 
 async def delete_task(db: Database, actor: Actor, task_id: int) -> None:
     actor.require(Perm.SETTINGS_EDIT)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         task = await _load(s, task_id)
         audit.record(s, actor, "task.deleted", "task", task.id, {"name": task.name})
         await s.delete(task)

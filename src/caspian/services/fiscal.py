@@ -203,7 +203,7 @@ async def _close(db: Database, actor: Actor, year: int, options: CloseOptions, a
     export_dir.mkdir(parents=True, exist_ok=True)
     audit_file = export_dir / f"audit-{year}.xlsx"
 
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         # --- which documents survive: open loans (and their returns) are carried over
         open_loan_ids = {r.document_id for r in await _loan_rows(s) if r.outstanding > 0}
         old_doc_ids = set((await s.scalars(select(Document.id).where(Document.fiscal_year <= year))).all())

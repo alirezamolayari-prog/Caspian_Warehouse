@@ -9,6 +9,11 @@ All notable changes to Caspian Warehouse. Versions follow `pyproject.toml`; inst
 
 ## Unreleased — owner approval phase
 
+### Fixes from the pre-launch test report (docs/TEST_REPORT.md)
+- **A deactivated user, or one whose role changed, is stopped at once** — even in a window that was
+  already open on another PC. Every change re-checks the account in the database; the window returns
+  to the login screen with the reason (within a minute when idle).
+
 ### Part A — consumption locations (محل مصرف)
 - Floors and consumption locations of Caspian Phase 2 (141 plates and named places), seeded
   automatically from `data/seed/caspian_locations.csv`; codes are the keys shared with the future

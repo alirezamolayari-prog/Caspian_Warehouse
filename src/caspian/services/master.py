@@ -73,7 +73,7 @@ async def save_category(db: Database, actor: Actor, name: str, category_id: int 
     name = _clean(name)
     if not name:
         raise ValidationError("نام گروه الزامی است.")
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         clash = await s.scalar(select(Category.id).where(
             func.lower(Category.name) == name.lower(), Category.id != (category_id or -1)))
         if clash:
@@ -96,7 +96,7 @@ async def save_category(db: Database, actor: Actor, name: str, category_id: int 
 async def delete_category(db: Database, actor: Actor, category_id: int) -> None:
     actor.require_human("حذف گروه")
     actor.require(Perm.ITEMS_EDIT)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         cat = await _get(s, Category, category_id, "گروه")
         if await s.scalar(select(Item.id).where(Item.category_id == category_id).limit(1)):
             raise ValidationError("این گروه کالا دارد و قابل حذف نیست.")
@@ -132,7 +132,7 @@ async def save_unit(db: Database, actor: Actor, name: str, unit_id: int | None =
     name = _clean(name)
     if not name:
         raise ValidationError("نام واحد الزامی است.")
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         if await s.scalar(select(Unit.id).where(Unit.name == name, Unit.id != (unit_id or -1))):
             raise ValidationError("واحدی با این نام وجود دارد.")
         if unit_id is None:
@@ -156,7 +156,7 @@ async def save_unit(db: Database, actor: Actor, name: str, unit_id: int | None =
 async def set_unit_active(db: Database, actor: Actor, unit_id: int, active: bool) -> None:
     actor.require_human("غیرفعال کردن واحد")
     actor.require(Perm.ITEMS_EDIT)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         unit = await _get(s, Unit, unit_id, "واحد")
         if not active:
             used = await s.scalar(select(Item.id).where(Item.base_unit_id == unit_id).limit(1)) \
@@ -197,7 +197,7 @@ async def save_warehouse(db: Database, actor: Actor, code: str, name: str, notes
     code, name = to_ascii_digits(code.strip()), _clean(name)
     if not code or not name:
         raise ValidationError("کد و نام انبار الزامی است.")
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         if await s.scalar(select(Warehouse.id).where(Warehouse.code == code,
                                                      Warehouse.id != (warehouse_id or -1))):
             raise ValidationError("انباری با این کد وجود دارد.")
@@ -218,7 +218,7 @@ async def save_warehouse(db: Database, actor: Actor, code: str, name: str, notes
 async def set_warehouse_active(db: Database, actor: Actor, warehouse_id: int, active: bool) -> None:
     actor.require_human("غیرفعال کردن انبار")
     actor.require(Perm.WAREHOUSES_EDIT)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         wh = await _get(s, Warehouse, warehouse_id, "انبار")
         if not active:
             others = await s.scalar(select(func.count()).select_from(Warehouse).where(
@@ -308,7 +308,7 @@ async def save_person(
         raise ValidationError("نام شخص الزامی است.")
     code = to_ascii_digits(code.strip())
     phone = clean_phone(phone)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         if code and await s.scalar(select(Person.id).where(Person.code == code,
                                                            Person.id != (person_id or -1))):
             raise ValidationError("شخصی با این کد وجود دارد.")
@@ -334,7 +334,7 @@ async def save_person(
 async def set_person_active(db: Database, actor: Actor, person_id: int, active: bool) -> None:
     actor.require_human("غیرفعال کردن شخص")
     actor.require(Perm.PERSONS_EDIT)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         person = await _get(s, Person, person_id, "شخص")
         person.is_active = active
         audit.record(s, actor, "person.activated" if active else "person.deactivated",

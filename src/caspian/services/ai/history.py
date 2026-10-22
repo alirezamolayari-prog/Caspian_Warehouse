@@ -87,7 +87,7 @@ async def list_history(db: Database, actor: Actor, user_id: int | None = None, q
 
 async def delete_own(db: Database, actor: Actor) -> int:
     actor.require_human("حذف سوابق گفتگو")
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         count = (await s.execute(delete(AssistantMessage)
                                  .where(AssistantMessage.user_id == actor.user_id))).rowcount or 0
         audit.record(s, actor, "ai.history_deleted", details={"rows": count})
@@ -108,7 +108,7 @@ async def set_retention_days(db: Database, actor: Actor, days: int) -> None:
     actor.require_human("تغییر مدت نگهداری سوابق گفتگو")
     if not 1 <= days <= 365:
         raise ValidationError("مدت نگهداری باید بین ۱ تا ۳۶۵ روز باشد.")
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         row = await s.get(AppSetting, RETENTION_KEY)
         if row is None:
             s.add(AppSetting(key=RETENTION_KEY, value=days))

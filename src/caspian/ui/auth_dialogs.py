@@ -155,12 +155,15 @@ async def request_approval(db: Database, actor: Actor, action: ProtectedAction,
 
 
 async def run_login(db: Database, username: str = "", cancel_text: str = "خروج",
-                    parent: QWidget | None = None) -> Actor | None:
+                    parent: QWidget | None = None, message: str = "") -> Actor | None:
     """Full login: credentials, then forced password change and admin PIN setup if needed.
+    `message`: why the user is asked to sign in again (e.g. the account was deactivated).
 
     Returns None if the user cancels at any step.
     """
     dialog = LoginDialog(db, username, cancel_text, parent)
+    if message:
+        dialog.show_status(message)
     if not await exec_dialog(dialog) or dialog.result_login is None:
         return None
     result = dialog.result_login

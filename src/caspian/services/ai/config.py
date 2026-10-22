@@ -124,7 +124,7 @@ async def save_provider(db: Database, actor: Actor, name: str, kind: ProviderKin
         raise ValidationError("دستیار هوشمند نمی‌تواند تنظیمات خودش را تغییر دهد.")
     _validate(name, base_url, model, timeout_seconds)
     kind = ProviderKind(kind)  # Qt combo boxes hand back plain strings
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         if provider_id is None:
             top = await s.scalar(select(func.max(AIProvider.priority))) or 0
             provider = AIProvider(name=name.strip(), kind=kind, base_url=base_url.strip().rstrip("/"),
@@ -157,7 +157,7 @@ async def save_provider(db: Database, actor: Actor, name: str, kind: ProviderKin
 
 async def delete_provider(db: Database, actor: Actor, provider_id: int) -> None:
     actor.require(Perm.AI_CONFIGURE)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         provider = await s.get(AIProvider, provider_id)
         if provider is None:
             raise NotFound("سرویس پیدا نشد.")
@@ -170,7 +170,7 @@ async def delete_provider(db: Database, actor: Actor, provider_id: int) -> None:
 async def move_provider(db: Database, actor: Actor, provider_id: int, direction: int) -> None:
     """direction -1 = higher priority (tried earlier), +1 = lower."""
     actor.require(Perm.AI_CONFIGURE)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         rows = list((await s.scalars(select(AIProvider).order_by(AIProvider.priority,
                                                                  AIProvider.id))).all())
         index = next((i for i, p in enumerate(rows) if p.id == provider_id), None)

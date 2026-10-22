@@ -228,7 +228,7 @@ async def find_line(db: Database, stocktake_id: int, code_or_barcode: str) -> in
 async def create_stocktake(db: Database, actor: Actor, warehouse_id: int,
                            category_id: int | None = None, title: str = "") -> int:
     actor.require(Perm.STOCKTAKE_RUN)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         wh = await s.get(Warehouse, warehouse_id)
         if wh is None or not wh.is_active:
             raise ValidationError("انبار نامعتبر یا غیرفعال است.")
@@ -264,7 +264,7 @@ async def record_counts(db: Database, actor: Actor, stocktake_id: int,
                         counts: dict[int, tuple[Decimal | None, str]]) -> None:
     """counts: line_id -> (counted qty or None to clear, note)."""
     actor.require(Perm.STOCKTAKE_RUN)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         st = await _load(s, stocktake_id)
         if st.status != StocktakeStatus.OPEN:
             raise ValidationError("شمارش این انبارگردانی قفل شده است.")
@@ -291,7 +291,7 @@ async def record_counts(db: Database, actor: Actor, stocktake_id: int,
 async def submit_counts(db: Database, actor: Actor, stocktake_id: int,
                         missing_as_zero: bool = False) -> None:
     actor.require(Perm.STOCKTAKE_RUN)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         st = await _load(s, stocktake_id)
         if st.status != StocktakeStatus.OPEN:
             raise ValidationError("این انبارگردانی قبلاً ثبت نهایی شده است.")
@@ -315,7 +315,7 @@ async def approve(db: Database, actor: Actor, stocktake_id: int) -> int | None:
     actor.require_human("تأیید انبارگردانی")
     actor.require(Perm.STOCKTAKE_APPROVE)
     actor.require(Perm.DOCUMENTS_POST)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         st = await _load(s, stocktake_id)
         if st.status != StocktakeStatus.COUNTED:
             raise ValidationError("فقط انبارگردانی با شمارش ثبت‌شده قابل تأیید است.")
@@ -345,7 +345,7 @@ async def approve(db: Database, actor: Actor, stocktake_id: int) -> int | None:
 async def cancel(db: Database, actor: Actor, stocktake_id: int) -> None:
     actor.require_human("لغو انبارگردانی")
     actor.require(Perm.STOCKTAKE_APPROVE)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         st = await _load(s, stocktake_id)
         if st.status not in (StocktakeStatus.OPEN, StocktakeStatus.COUNTED):
             raise ValidationError("این انبارگردانی قابل لغو نیست.")

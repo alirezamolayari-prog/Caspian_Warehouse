@@ -123,7 +123,7 @@ async def logout(db: Database, actor: Actor) -> None:
 
 
 async def change_password(db: Database, actor: Actor, current: str, new: str) -> None:
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         user = await s.get(User, actor.user_id)
         if not security.verify_secret(user.password_hash, current):
             raise ValidationError("رمز عبور فعلی نادرست است.")
@@ -144,7 +144,7 @@ async def set_pin(db: Database, actor: Actor, password: str, pin: str) -> None:
         raise PermissionDenied("فقط مدیران سیستم PIN دارند.")
     if problem := security.pin_problem(pin):
         raise ValidationError(problem)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         user = await s.get(User, actor.user_id)
         if not security.verify_secret(user.password_hash, password):
             raise ValidationError("رمز عبور نادرست است.")

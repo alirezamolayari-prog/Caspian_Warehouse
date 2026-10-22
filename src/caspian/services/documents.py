@@ -693,7 +693,7 @@ async def place_text_in(s: AsyncSession, doc: Document) -> str:
 async def record_print(db: Database, actor: Actor, doc_id: int, kind: str) -> int:
     """Count one issued copy (kind: "printer" or "pdf"); returns its copy number."""
     actor.require(Perm.DOCUMENTS_VIEW)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         doc = await _load(s, doc_id)
         if doc.status == DocStatus.DRAFT:
             raise ValidationError("چاپ پیش‌نویس ثبت نمی‌شود؛ ابتدا سند را ثبت نهایی کنید.")
@@ -868,7 +868,7 @@ async def create_document(db: Database, actor: Actor, data: DocumentInput) -> in
     # Two PCs saving the same document type at the same moment can pick the same number;
     # the unique constraint rejects the second one, which simply retries with the next number.
     async def attempt() -> int:
-        async with db.session(actor.user_id) as s:
+        async with db.session(actor) as s:
             return (await create_document_in(s, actor, data)).id
 
     return await _with_retries(attempt, numbering=True)
@@ -921,7 +921,7 @@ async def update_document(db: Database, actor: Actor, doc_id: int, expected_vers
 
 async def _update_document(db: Database, actor: Actor, doc_id: int, expected_version: int,
                            data: DocumentInput) -> None:
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         doc = await _load(s, doc_id)
         if doc.version_id != expected_version:
             raise ConcurrencyError()
@@ -949,7 +949,7 @@ async def delete_draft(db: Database, actor: Actor, doc_id: int) -> None:
 
 
 async def _delete_draft(db: Database, actor: Actor, doc_id: int) -> None:
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         doc = await _load(s, doc_id)
         if doc.status != DocStatus.DRAFT:
             raise ValidationError("فقط سند پیش‌نویس قابل حذف است. سند ثبت‌شده را ابطال کنید.")
@@ -969,7 +969,7 @@ async def post_document(db: Database, actor: Actor, doc_id: int,
 
     `approval` (STOCKTAKE_OVERRIDE) is only needed while a stocktake freezes the items."""
     async def attempt() -> None:
-        async with db.session(actor.user_id) as s:
+        async with db.session(actor) as s:
             doc = await _load(s, doc_id)
             if expected_version is not None and doc.version_id != expected_version:
                 raise ConcurrencyError()
@@ -1067,7 +1067,7 @@ async def discard_assistant_draft(db: Database, actor: Actor, doc_id: int) -> No
     Drafts never touched stock; only the user's own, still-draft documents qualify."""
     actor.require_human("حذف پیش‌نویس دستیار")
     actor.require(Perm.DOCUMENTS_EDIT)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         doc = await _load(s, doc_id)
         if doc.status != DocStatus.DRAFT:
             raise ValidationError("این سند دیگر پیش‌نویس نیست.")
@@ -1102,7 +1102,7 @@ async def cancel_document(db: Database, actor: Actor, doc_id: int, reason: str =
 
 async def _cancel_document(db: Database, actor: Actor, doc_id: int, reason: str,
                            approval: Approval | None) -> None:
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         doc = await _load(s, doc_id)
         if doc.status != DocStatus.POSTED:
             raise ValidationError("فقط سند ثبت‌شده قابل ابطال است.")

@@ -168,7 +168,7 @@ def _bump_version(row: AppSetting) -> int:
 async def save_settings(db: Database, actor: Actor, phase1_plates: str, required_on_issue: bool) -> None:
     actor.require(Perm.LOCATIONS_MANAGE)
     actor.require_human("تغییر تنظیمات محل مصرف")
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         row = await _settings_in(s)
         value = dict(row.value or {})
         value.update(phase1_plates=phase1_plates.strip(), required_on_issue=required_on_issue)
@@ -369,7 +369,7 @@ async def save_location(db: Database, actor: Actor, data: LocationInput,
                         location_id: int | None = None) -> int:
     actor.require(Perm.LOCATIONS_MANAGE)
     actor.require_human("تغییر محل‌های مصرف")
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         if location_id is None:
             loc = Location(code="", name_fa="", type=data.type, is_active=True, note="")
             loc.aliases = []
@@ -395,7 +395,7 @@ async def save_location(db: Database, actor: Actor, data: LocationInput,
 async def set_location_active(db: Database, actor: Actor, location_id: int, active: bool) -> None:
     actor.require(Perm.LOCATIONS_MANAGE)
     actor.require_human("غیرفعال‌سازی محل مصرف")
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         loc = await s.get(Location, location_id)
         if loc is None:
             raise NotFound("محل مصرف پیدا نشد.")
@@ -500,7 +500,7 @@ async def apply_csv(db: Database, actor: Actor, text: str) -> tuple[int, int]:
         raise ValidationError(f"ردیف {to_persian_digits(first.row.line)}: {first.message} "
                               "ابتدا خطاهای فایل را برطرف کنید.")
     added = changed = 0
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         existing = {loc.code: loc for loc in await _all_locations(s)}
         floor_ids = {f.code: f.id for f in await _all_floors(s)}
         for p in preview:

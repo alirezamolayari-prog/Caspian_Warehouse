@@ -212,10 +212,15 @@ async def test_opening_stock_without_post_permission_stays_draft(db, admin):
     u = await _units(db)
     wh = (await master.list_warehouses(db))[0].id
     from caspian.core.permissions import Perm
-    from caspian.services.actor import Actor
+    from caspian.db.models import Role, RolePermission
+    from caspian.services import auth, users
 
-    clerk = Actor(admin.user_id, "admin", "ثبت‌کننده", "custom", frozenset(p.value for p in (
-        Perm.ITEMS_VIEW, Perm.ITEMS_EDIT, Perm.DOCUMENTS_VIEW, Perm.DOCUMENTS_EDIT)))
+    # A real role and user: sessions are checked against the database (test report issues 1 + 2).
+    async with db.session() as s:
+        s.add(Role(code="clerk", name="ثبت‌کننده", permissions=[RolePermission(permission=p.value) for p in (
+            Perm.ITEMS_VIEW, Perm.ITEMS_EDIT, Perm.DOCUMENTS_VIEW, Perm.DOCUMENTS_EDIT)]))
+    await users.create_user(db, admin, "clerk1", "ثبت‌کننده", "Str0ngPass1", "clerk")
+    clerk = (await auth.login(db, "clerk1", "Str0ngPass1")).actor
     result = await items.create_item_with_opening(
         db, clerk, ItemInput(code="3002", name="صندلی", base_unit_id=u["عدد"]),
         items.OpeningStock(wh, Decimal(3)))

@@ -84,7 +84,7 @@ async def save_config(db: Database, actor: Actor, config: MessagingConfig,
     for r in config.email.recipients:
         if "@" not in r:
             raise ValidationError(f"نشانی ایمیل نامعتبر: {r}")
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         row = await s.get(AppSetting, "messaging")
         value = asdict(config)
         if row is None:
