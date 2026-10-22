@@ -6,6 +6,7 @@ never supplies the factor.
 """
 
 import asyncio
+import contextlib
 import datetime as dt
 import logging
 import random
@@ -19,6 +20,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy.orm.exc import StaleDataError
 
 from caspian import branding
 from caspian.core import jalali
@@ -876,6 +878,8 @@ def _is_conflict(exc: Exception, numbering: bool) -> bool:
     """A collision with another PC/task that is solved by simply trying again (QA round 2 #1)."""
     if numbering and isinstance(exc, IntegrityError):
         return True
+    if isinstance(exc, StaleDataError):  # another PC changed the same document a moment earlier
+        return True
     if isinstance(exc, OperationalError):
         orig = getattr(exc, "orig", None)
         code = orig.args[0] if orig is not None and getattr(orig, "args", None) else None
@@ -884,11 +888,20 @@ def _is_conflict(exc: Exception, numbering: bool) -> bool:
     return False
 
 
+@contextlib.contextmanager
+def _stale_as_conflict():
+    """Optimistic-lock failure (StaleDataError) -> the usual Persian «changed by another user»."""
+    try:
+        yield
+    except StaleDataError as exc:
+        raise ConcurrencyError() from exc
+
+
 async def _with_retries(attempt, numbering: bool = False):
     for n in range(NUMBER_RETRIES):
         try:
             return await attempt()
-        except (IntegrityError, OperationalError) as exc:
+        except (IntegrityError, OperationalError, StaleDataError) as exc:
             if not _is_conflict(exc, numbering):
                 raise
             if n == NUMBER_RETRIES - 1:
@@ -902,6 +915,12 @@ async def _with_retries(attempt, numbering: bool = False):
 async def update_document(db: Database, actor: Actor, doc_id: int, expected_version: int,
                           data: DocumentInput) -> None:
     actor.require(Perm.DOCUMENTS_EDIT)
+    with _stale_as_conflict():
+        await _update_document(db, actor, doc_id, expected_version, data)
+
+
+async def _update_document(db: Database, actor: Actor, doc_id: int, expected_version: int,
+                           data: DocumentInput) -> None:
     async with db.session(actor.user_id) as s:
         doc = await _load(s, doc_id)
         if doc.version_id != expected_version:
@@ -925,6 +944,11 @@ async def update_document(db: Database, actor: Actor, doc_id: int, expected_vers
 async def delete_draft(db: Database, actor: Actor, doc_id: int) -> None:
     actor.require_human("حذف سند")
     actor.require(Perm.DOCUMENTS_EDIT)
+    with _stale_as_conflict():
+        await _delete_draft(db, actor, doc_id)
+
+
+async def _delete_draft(db: Database, actor: Actor, doc_id: int) -> None:
     async with db.session(actor.user_id) as s:
         doc = await _load(s, doc_id)
         if doc.status != DocStatus.DRAFT:
@@ -954,6 +978,8 @@ async def post_document(db: Database, actor: Actor, doc_id: int,
     if approval is not None:  # an approval is single-use: no silent second attempt
         try:
             return await attempt()
+        except StaleDataError as exc:
+            raise ConcurrencyError() from exc
         except OperationalError as exc:
             if _is_conflict(exc, numbering=False):
                 raise ValidationError(CONFLICT_MESSAGE) from exc
@@ -1068,6 +1094,14 @@ async def cancel_document(db: Database, actor: Actor, doc_id: int, reason: str =
     """Void a posted document with reversal ledger rows (history is never deleted)."""
     actor.require_human("ابطال سند")
     actor.require(Perm.DOCUMENTS_POST)
+    if approval is not None:  # an approval is single-use: no silent second attempt
+        with _stale_as_conflict():
+            return await _cancel_document(db, actor, doc_id, reason, approval)
+    await _with_retries(lambda: _cancel_document(db, actor, doc_id, reason, approval))
+
+
+async def _cancel_document(db: Database, actor: Actor, doc_id: int, reason: str,
+                           approval: Approval | None) -> None:
     async with db.session(actor.user_id) as s:
         doc = await _load(s, doc_id)
         if doc.status != DocStatus.POSTED:
