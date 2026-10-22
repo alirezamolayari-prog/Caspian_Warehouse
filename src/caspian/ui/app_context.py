@@ -27,6 +27,7 @@ class AppContext(QObject):
         self.actor = actor
         self.ai = Gateway(db)
         self.messenger = Messenger(db)
+        self.server_link = None  # ui.server_status.ServerLink, set by the app (not in tests)
 
     def set_actor(self, actor: Actor) -> None:
         self.actor = actor

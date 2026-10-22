@@ -200,12 +200,41 @@ async def preview_and_print(parent: QWidget | None, html_text: str, paper: str) 
     return await exec_dialog(dialog) == QDialog.DialogCode.Accepted
 
 
+LINKED_POST_QUESTION = ("«{title}» از درخواست تأییدشده ساخته شده است. با چاپ، حواله ثبت نهایی می‌شود و "
+                        "کالاها از موجودی کم می‌شوند (فقط با ابطال قابل برگشت است). ادامه می‌دهید؟")
+
+
+async def _ready_sheet(parent: QWidget, ctx: AppContext, doc_id: int) -> PrintSheet | None:
+    """The sheet to print. A draft made from an approved goods request is posted first — after the
+    user agrees — so the paper the requester carries is always a final voucher. None = stop."""
+    sheet = await docs.print_sheet(ctx.db, ctx.actor, doc_id)  # refuses it before approval
+    if not (sheet.linked_request and sheet.status == DocStatus.DRAFT):
+        return sheet
+    from caspian.core.permissions import Perm
+    from caspian.ui.documents_page import with_stocktake_override  # that module imports this one
+    from caspian.ui.messages import confirm
+
+    if not ctx.actor.can(Perm.DOCUMENTS_POST):
+        show_error(parent, "چاپ این حواله آن را ثبت نهایی می‌کند و مجوز «ثبت نهایی سند» لازم است.")
+        return None
+    if not await confirm(parent, LINKED_POST_QUESTION.format(title=f"{sheet.type_name} {sheet.number_text}"),
+                         "ثبت نهایی و چاپ"):
+        return None
+    await with_stocktake_override(ctx, parent, lambda approval: docs.post_document(
+        ctx.db, ctx.actor, doc_id, approval=approval, via="goods_request"))
+    if ctx.server_link is not None:
+        ctx.server_link.wake()  # tell the server «issued» now if it is reachable
+    return await docs.print_sheet(ctx.db, ctx.actor, doc_id)
+
+
 async def print_document(parent: QWidget, ctx: AppContext, doc_id: int, paper: str = "A5") -> bool:
     try:
-        sheet = await docs.print_sheet(ctx.db, ctx.actor, doc_id)
+        sheet = await _ready_sheet(parent, ctx, doc_id)
+        if sheet is None:
+            return False
         html_text = document_html(sheet, sheet.print_count + 1, paper, ctx.actor.display_name)
         if not await preview_and_print(parent, html_text, paper):
-            return False
+            return sheet.linked_request  # it may have just been posted: the caller refreshes
         if sheet.trackable:
             await docs.record_print(ctx.db, ctx.actor, doc_id, "printer")
     except ServiceError as exc:
@@ -216,7 +245,9 @@ async def print_document(parent: QWidget, ctx: AppContext, doc_id: int, paper: s
 
 async def pdf_document(parent: QWidget, ctx: AppContext, doc_id: int, paper: str = "A5") -> bool:
     try:
-        sheet = await docs.print_sheet(ctx.db, ctx.actor, doc_id)
+        sheet = await _ready_sheet(parent, ctx, doc_id)
+        if sheet is None:
+            return False
         path = await ask_save_path(parent, "ذخیره PDF", ctx.settings,
                                    f"{sheet.type_name} {sheet.number_text}.pdf", "PDF (*.pdf)")
         if not path:

@@ -300,6 +300,9 @@ class Document(IdMixin, TimestampMixin, CreatedByMixin, VersionMixin, Base):
     location_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("locations.id"))
     consumption_floor_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("floors.id"))
     usage_note: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # Caspian Server id of the approved goods request this issue voucher was made from. Such a
+    # voucher keeps the approved lines and is posted when it is printed (services.server_link).
+    server_request_id: Mapped[int | None] = mapped_column(Integer, unique=True)
 
     lines: Mapped[list["DocumentLine"]] = relationship(
         back_populates="document",
@@ -582,3 +585,106 @@ class AssistantMessage(IdMixin, Base):
     provider: Mapped[str] = mapped_column(String(100), default="")
     document_ids: Mapped[list | None] = mapped_column(JSON)
     batch_ids: Mapped[list | None] = mapped_column(JSON)
+
+
+# ----- goods requests approved by the owners through Caspian Server -----
+
+
+class RequestStatus(enum.StrEnum):
+    DRAFT = "DRAFT"  # prepared by the assistant; waits for the person's «بله»
+    QUEUED = "QUEUED"  # saved here, not yet accepted by the server («در صف ارسال»)
+    PENDING = "PENDING"  # on the server, waiting for an owner
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    ISSUED = "ISSUED"  # the issue voucher was posted (printed)
+
+
+class GoodsRequest(IdMixin, TimestampMixin, CreatedByMixin, Base):
+    """One request as this PC knows it. Texts sent to the server are kept as sent; the ids next to
+    them (person, location, items) stay local and are what the issue voucher is made from."""
+
+    __tablename__ = "goods_requests"
+
+    # Sent with every create, so a retry after a lost answer never makes a second request.
+    client_request_id: Mapped[str] = mapped_column(String(36), unique=True)
+    server_id: Mapped[int | None] = mapped_column(Integer, unique=True)
+    status: Mapped[RequestStatus] = mapped_column(_enum(RequestStatus), default=RequestStatus.QUEUED,
+                                                  index=True)
+    # "local" = registered here; "remote" = seen only on the server (shown, never issued from here).
+    origin: Mapped[str] = mapped_column(String(10), default="local")
+    person_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("persons.id"))
+    requester_name: Mapped[str] = mapped_column(String(100), default="")
+    requester_phone: Mapped[str] = mapped_column(String(30), default="")
+    warehouse_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("warehouses.id"))
+    location_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("locations.id"))
+    floor_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("floors.id"))
+    location_text: Mapped[str] = mapped_column(String(200), default="")
+    note: Mapped[str] = mapped_column(Text, default="")
+    rejection_reason: Mapped[str] = mapped_column(Text, default="")
+    decided_at: Mapped[dt.datetime | None]
+    issue_number: Mapped[str] = mapped_column(String(50), default="")
+    # A decision or an owner's message the manager hasn't opened yet (badge in the sidebar).
+    unseen: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Why sending or making the issue voucher failed (shown in the list; cleared on success).
+    last_error: Mapped[str] = mapped_column(Text, default="")
+
+    lines: Mapped[list["GoodsRequestLine"]] = relationship(
+        back_populates="request", cascade="all, delete-orphan", order_by="GoodsRequestLine.line_no",
+        lazy="selectin")
+
+
+class GoodsRequestLine(IdMixin, Base):
+    __tablename__ = "goods_request_lines"
+    __table_args__ = (UniqueConstraint("request_id", "line_no"),)
+
+    request_id: Mapped[int] = mapped_column(
+        BigIntPK, ForeignKey("goods_requests.id", ondelete="CASCADE"), index=True)
+    line_no: Mapped[int] = mapped_column(Integer)
+    item_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("items.id"))
+    unit_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("units.id"))
+    qty: Mapped[Decimal]
+    item_code: Mapped[str] = mapped_column(String(64), default="")
+    item_name: Mapped[str] = mapped_column(String(255), default="")
+    unit_name: Mapped[str] = mapped_column(String(50), default="")
+
+    request: Mapped[GoodsRequest] = relationship(back_populates="lines")
+
+
+class GoodsRequestMessage(IdMixin, Base):
+    """Chat line of a request. Owners are only ever «مالک» here (the server hides who)."""
+
+    __tablename__ = "goods_request_messages"
+
+    request_id: Mapped[int] = mapped_column(
+        BigIntPK, ForeignKey("goods_requests.id", ondelete="CASCADE"), index=True)
+    server_id: Mapped[int | None] = mapped_column(Integer, unique=True)  # None while queued
+    sender_name: Mapped[str] = mapped_column(String(150), default="")
+    sender_role: Mapped[str] = mapped_column(String(20), default="")
+    text: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
+
+
+class OutboxOp(enum.StrEnum):
+    CREATE = "CREATE"
+    RESUBMIT = "RESUBMIT"  # edited after a rejection and sent again
+    ISSUED = "ISSUED"
+    MESSAGE = "MESSAGE"
+
+
+class ServerOutbox(IdMixin, Base):
+    """What still has to reach Caspian Server, in order. Sending never blocks the UI: rows wait here
+    while the server is unreachable and are sent by the background sync."""
+
+    __tablename__ = "server_outbox"
+
+    request_id: Mapped[int] = mapped_column(
+        BigIntPK, ForeignKey("goods_requests.id", ondelete="CASCADE"), index=True)
+    op: Mapped[OutboxOp] = mapped_column(_enum(OutboxOp))
+    message_id: Mapped[int | None] = mapped_column(
+        BigIntPK, ForeignKey("goods_request_messages.id", ondelete="CASCADE"))
+    payload: Mapped[dict | None] = mapped_column(JSON)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    # Refused by the server (not a connection problem): kept, and later ops of the request wait.
+    failed: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())

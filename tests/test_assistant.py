@@ -48,7 +48,9 @@ def test_no_destructive_tools_exist():
     assert names == {"search_items", "item_stock", "reorder_analysis", "recent_documents",
                      "open_loans", "suppliers", "create_document",
                      "create_stock_draft", "send_report", "propose_tasks",
-                     "find_location", "consumption_report"}  # both read-only
+                     "find_location", "consumption_report",  # both read-only
+                     # a goods request is only a draft until the person sends it; listing is read-only
+                     "create_goods_request", "list_goods_requests"}
     # No posting either: stock changes only after the person's «بله» (QA Part A #1).
     for forbidden in ("delete", "approve", "apply", "cancel", "merge", "restore", "role", "deactivate",
                       "post"):
