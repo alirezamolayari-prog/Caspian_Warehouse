@@ -13,6 +13,9 @@ All notable changes to Caspian Warehouse. Versions follow `pyproject.toml`; inst
 - **A deactivated user, or one whose role changed, is stopped at once** — even in a window that was
   already open on another PC. Every change re-checks the account in the database; the window returns
   to the login screen with the reason (within a minute when idle).
+- **Changing a unit's factor no longer posts old drafts wrongly.** A draft saved with «1 کارتن = 24»
+  is refused after the factor became 12, with a message saying so; open the draft, check it and save
+  it again.
 
 ### Part A — consumption locations (محل مصرف)
 - Floors and consumption locations of Caspian Phase 2 (141 plates and named places), seeded

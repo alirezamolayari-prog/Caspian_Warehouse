@@ -484,6 +484,21 @@ def _set_header(doc: Document, data: DocumentInput, place: tuple[int | None, int
     doc.usage_note = data.usage_note.strip()
 
 
+async def _check_factors(s: AsyncSession, doc: Document) -> None:
+    """A unit's factor changed after the draft was saved (test report issue 3): «۲ کارتن» may have
+    meant the old or the new cartons, so neither is guessed. The person opens the draft, checks it and
+    saves it again, which recomputes the line with today's factor."""
+    for line in doc.lines:
+        item = await s.get(Item, line.item_id)
+        now = _item_factors(item).get(line.unit_id)
+        if now is not None and now != line.factor:
+            unit = await s.get(Unit, line.unit_id)
+            raise ValidationError(
+                f"ضریب واحد «{unit.name}» برای «{item.name}» از {format_qty(line.factor)} به "
+                f"{format_qty(now)} تغییر کرده است. پیش‌نویس را باز کنید، مقدار را بررسی و دوباره ذخیره "
+                "کنید.")
+
+
 async def _check_loan_return_limits(s: AsyncSession, doc: Document) -> None:
     """A return can't bring back more than is still outstanding on its loan."""
     outstanding = {
@@ -1002,6 +1017,7 @@ async def post_document_in(s: AsyncSession, actor: Actor, doc: Document, *,
         raise ValidationError("این سند قبلاً ثبت یا ابطال شده است.")
     # Re-validate: items/warehouses may have been deactivated since the draft was saved.
     await _validate(s, _input_of(doc))
+    await _check_factors(s, doc)
     if doc.doc_type == DocType.LOAN_RETURN:
         await _check_loan_return_limits(s, doc)
     if doc.doc_type == DocType.ISSUE and doc.person_id is None:
