@@ -7,6 +7,7 @@ from decimal import Decimal
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QImage
 
 from caspian import branding
 from caspian.db.models import DocStatus, DocType
@@ -103,12 +104,20 @@ def test_four_equal_signature_boxes_right_to_left(qapp):
 # ----- 7. footer -----
 
 
-def test_footer_names_the_printer_and_the_jalali_date_and_time(qapp):
+def test_footer_is_one_line_with_the_person_printing_and_the_jalali_date_and_time(qapp):
     assert printed_stamp(WHEN) == "۱۴۰۵/۰۷/۱۲ – ۱۴:۳۵"
     text = _plain(document_html(_sheet(), 1, "A5", "مریم انباردار", WHEN))
-    assert "صادرکننده: مریم" in text and "ثبت نهایی: علی" in text
-    assert "چاپ‌کننده: مریم انباردار" in text
-    assert "تاریخ و ساعت چاپ: ۱۴۰۵/۰۷/۱۲ – ۱۴:۳۵" in text
+    lines = [ln for ln in text.splitlines() if "صادرکننده" in ln]
+    assert len(lines) == 1
+    assert "صادرکننده: مریم انباردار — تاریخ و ساعت چاپ: ۱۴۰۵/۰۷/۱۲ – ۱۴:۳۵" in lines[0]
+    # The creator («مریم») and poster («علی») are not printed; they stay in the database/audit log.
+    assert "ثبت نهایی" not in text and "چاپ‌کننده" not in text and "علی" not in text
+    assert "صادرکننده: مریم —" not in text
+
+
+def test_footer_falls_back_to_the_creator_without_a_printing_person(qapp):
+    text = _plain(document_html(_sheet(), 1, "A5", "", WHEN))
+    assert "صادرکننده: مریم — تاریخ و ساعت چاپ" in text
 
 
 def test_no_owner_or_approver_name(qapp):
@@ -126,7 +135,7 @@ def test_no_reversed_colons_and_an_intact_copy_stamp(qapp):
     text = _plain(html_text)
     assert "(نسخه ۲)" in text
     for label in ("شماره", "تاریخ", "انبار", "تحویل‌گیرنده", "شماره تماس", "محل مصرف", "صادرکننده",
-                  "تعداد اقلام", "جمع مقدار", "چاپ‌کننده"):
+                  "تعداد اقلام", "جمع مقدار", "تاریخ و ساعت چاپ"):
         assert f"{label}: " in text, label
         assert f":{label}" not in text, label
     doc = printing.build_document(html_text)
@@ -141,18 +150,25 @@ def test_no_reversed_colons_and_an_intact_copy_stamp(qapp):
 # ----- 9. logo and branding -----
 
 
-def test_logo_in_the_header(qapp):
-    html_text = document_html(_sheet(), 1, "A4", printed_at=WHEN)
-    assert f'<img src="{printing.LOGO_URL}" height="56">' in html_text
-    assert 'height="48"' in document_html(_sheet(), 1, "A5", printed_at=WHEN)
+def test_larger_logo_replaces_the_company_name(qapp):
+    image = QImage(str(branding.LOGO_PATH))
+    for paper, height in (("A5", 76), ("A4", 96)):
+        html_text = document_html(_sheet(), 1, paper, printed_at=WHEN)
+        width = int(re.search(rf'<img src="{printing.LOGO_URL}" width="(\d+)" height="{height}">',
+                              html_text).group(1))
+        assert abs(width - height * image.width() / image.height()) <= 1  # proportions kept
+        assert "بازار مبلمان کاسپین" not in html_text  # the logo already shows the name
+        assert 'align="left" valign="top">\n<img' in html_text  # top-left corner
     doc = printing.build_document(html_text)
-    image = doc.resource(doc.ResourceType.ImageResource, printing.QUrl(printing.LOGO_URL))
-    assert image is not None and not image.isNull()
+    resource = doc.resource(doc.ResourceType.ImageResource, printing.QUrl(printing.LOGO_URL))
+    assert resource is not None and not resource.isNull()
 
 
-def test_no_logo_file_means_no_image(qapp, monkeypatch):
+def test_no_logo_file_prints_the_company_name(qapp, monkeypatch):
     monkeypatch.setattr(branding, "LOGO_PATH", branding.LOGO_PATH.with_name("missing.png"))
-    assert "<img" not in document_html(_sheet(), 1, printed_at=WHEN)
+    html_text = document_html(_sheet(), 1, printed_at=WHEN)
+    assert "<img" not in html_text
+    assert "<b>بازار مبلمان کاسپین</b>" in html_text
 
 
 def test_branding_default_and_database_override():

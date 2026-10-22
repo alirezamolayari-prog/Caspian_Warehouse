@@ -38,8 +38,9 @@ async def test_form_contents_and_duplicate_stamp(env):
     sheet = await docs.print_sheet(ctx.db, ctx.actor, env["receipt"])
     first = document_html(sheet, 1, "A5")
     for text in ("رسید ورود", "ر-۱", "علی رضایی", "تأمین‌کننده", "دریل بوش", "۱۰۰۱", "عدد", "نو",
-                 "۱۰٬۰۰۰", "تحویل‌دهنده", "تحویل‌گیرنده", "انباردار", "بازار مبلمان کاسپین"):
+                 "۱۰٬۰۰۰", "تحویل‌دهنده", "تحویل‌گیرنده", "انباردار", "<img src="):
         assert text in first, text
+    assert "بازار مبلمان کاسپین" not in first  # the logo shows the company name
     assert "المثنی" not in first
     assert "کپی / المثنی (نسخه ۲)" in document_html(sheet, 2, "A4")
     draft = await docs.print_sheet(ctx.db, ctx.actor, env["draft"])

@@ -5,7 +5,7 @@ import html
 from collections.abc import Callable
 from decimal import Decimal
 
-from PySide6.QtGui import QPageSize
+from PySide6.QtGui import QImageReader, QPageSize
 from PySide6.QtWidgets import QDialog, QMenu, QWidget
 
 from caspian import APP_DISPLAY_NAME, branding
@@ -48,6 +48,21 @@ def unit_totals(sheet: PrintSheet) -> str:
     return "، ".join(f"{format_qty(qty)} {unit}" for unit, qty in totals.items())
 
 
+LOGO_HEIGHTS = {"A5": 76, "A4": 96}  # about 20 / 25 mm on paper; the logo already holds the name
+
+
+def logo_size(height: int) -> tuple[int, int] | None:
+    """(width, height) of the printed logo at `height`, keeping the image's own proportions;
+    None when there is no (readable) logo file."""
+    path = branding.logo_path()
+    if path is None:
+        return None
+    size = QImageReader(str(path)).size()
+    if size.isEmpty():
+        return None
+    return round(height * size.width() / size.height()), height
+
+
 def printed_stamp(moment: dt.datetime) -> str:
     """«۱۴۰۵/۰۷/۱۲ – ۱۴:۳۵»: Jalali date and 24-hour time, Persian digits."""
     return f"{jalali.format_date(moment.date())} – {to_persian_digits(moment.strftime('%H:%M'))}"
@@ -65,10 +80,10 @@ _PRICED_COLUMNS = (("ردیف", 5, "center"), ("کد", 9, "center"), ("نام ک
 def document_html(sheet: PrintSheet, copy_no: int, paper: str = "A5", printed_by: str = "",
                   printed_at: dt.datetime | None = None) -> str:
     """The form for one copy; `copy_no` > 1 marks it as a duplicate. `printed_by`: the signed-in
-    person printing it. No owner or approver name is ever printed."""
+    person printing it, shown as «صادرکننده» (the creator and poster stay in the database and
+    audit log only). No owner or approver name is ever printed."""
     esc = html.escape
     size = 10 if paper == "A5" else 11  # 8pt was too small on A5 (#16)
-    logo_height = 48 if paper == "A5" else 56  # about 14 / 16 mm on paper
     priced = any(ln.unit_price is not None for ln in sheet.lines)
     columns = _PRICED_COLUMNS if priced else _COLUMNS
 
@@ -125,19 +140,18 @@ def document_html(sheet: PrintSheet, copy_no: int, paper: str = "A5", printed_by
     # RLM around the stamp keeps «(نسخه ۲)» intact in the centred line (it printed «(نسخه۲(»).
     stamp_html = (f'<p dir="rtl" align="center" class="stamp">{RLM}{esc(stamp)}{RLM}</p>'
                   if stamp else "")
-    footer = [field("صادرکننده", sheet.created_by)]
-    if sheet.posted_by:
-        footer.append(field("ثبت نهایی", sheet.posted_by))
-    if printed_by:
-        footer.append(field("چاپ‌کننده", printed_by))
-    printed = field("تاریخ و ساعت چاپ", printed_stamp(printed_at or dt.datetime.now()))
+    # One line: who issues the slip (the person printing it) and when.
+    footer = sep.join([field("صادرکننده", printed_by or sheet.created_by),
+                       field("تاریخ و ساعت چاپ", printed_stamp(printed_at or dt.datetime.now()))])
 
     doc_date = to_persian_digits(jalali.format_date(sheet.doc_date))
     signature_cells = rtl_cells([f'<td width="25%" align="center" valign="top" dir="rtl">{esc(s)}'
                                  f"<br><br><br><br></td>" for s in SIGNATURES])
-    company = esc(sheet.company or APP_DISPLAY_NAME)
-    logo = (f'<img src="{LOGO_URL}" height="{logo_height}">&nbsp;&nbsp;'
-            if branding.logo_path() else "")
+    # The logo already contains the company name, so it replaces the text; the name is printed
+    # only when there is no logo file.
+    logo = logo_size(LOGO_HEIGHTS[paper])
+    brand = (f'<img src="{LOGO_URL}" width="{logo[0]}" height="{logo[1]}">' if logo
+             else f"<b>{esc(sheet.company or APP_DISPLAY_NAME)}</b>")
     return f"""
 <html dir="rtl"><head><style>
 body {{ font-family: '{FONT_FAMILY}'; font-size: {size}pt; }}
@@ -149,8 +163,8 @@ h1 {{ font-size: {size + 6}pt; margin: 0; }}
 .muted {{ color: #444; }}
 </style></head><body>
 <table width="100%" style="border:none"><tr>
-<td width="45%" style="border:none; white-space: nowrap;" align="left" valign="middle">
-{logo}<b>{company}</b></td>
+<td width="45%" style="border:none; white-space: nowrap;" align="left" valign="top">
+{brand}</td>
 <td width="55%" style="border:none" dir="rtl" align="right" valign="middle"><h1>{esc(sheet.type_name)}</h1>
 {field("شماره", sheet.number_text)}{sep}{field("تاریخ", doc_date)}</td>
 </tr></table>
@@ -162,7 +176,7 @@ h1 {{ font-size: {size + 6}pt; margin: 0; }}
 <tbody>{"".join(rows)}</tbody></table>
 {para(sep.join(summary))}
 <table width="100%" cellspacing="0" cellpadding="6" border="1"><tr>{signature_cells}</tr></table>
-{para(sep.join(footer) + "<br>" + printed, ' class="muted"')}
+{para(footer, ' class="muted"')}
 </body></html>"""
 
 
