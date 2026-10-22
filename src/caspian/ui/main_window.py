@@ -33,6 +33,7 @@ from caspian.ui.documents_page import DocumentsPage
 from caspian.ui.icons import icon
 from caspian.ui.imports_page import ImportsPage
 from caspian.ui.items_page import ItemsPage
+from caspian.ui.logo import LogoLabel
 from caspian.ui.master_page import MasterDataPage
 from caspian.ui.messages import show_info
 from caspian.ui.pages import PAGES, DashboardPage, PageSpec, PlaceholderPage
@@ -102,8 +103,13 @@ class MainWindow(QMainWindow):
         col.setContentsMargins(14, 20, 14, 14)
         col.setSpacing(4)
 
+        self._logo = LogoLabel(52)  # caspian.branding; the box icon only when there is no logo
+        if self._logo.has_logo:
+            col.addWidget(self._logo)
+            col.addSpacing(10)
         brand = QHBoxLayout()
         self._brand_icon = QLabel()
+        self._brand_icon.setVisible(not self._logo.has_logo)
         brand.addWidget(self._brand_icon)
         titles = QVBoxLayout()
         titles.setSpacing(0)
@@ -357,7 +363,8 @@ class MainWindow(QMainWindow):
             name = button.property("icon_name")
             color = theme.primary if button.isChecked() else theme.text_muted
             button.setIcon(icon(name, color))
-        self._brand_icon.setPixmap(icon("boxes", theme.primary).pixmap(28, 28))
+        if not self._logo.has_logo:
+            self._brand_icon.setPixmap(icon("boxes", theme.primary).pixmap(28, 28))
         self._assistant_button.setIcon(icon("sparkles", theme.text_muted))
         self._theme_button.setIcon(icon("sun" if theme.is_dark else "moon", theme.text_muted))
         self._user_button.setIcon(icon("user", theme.text_muted))

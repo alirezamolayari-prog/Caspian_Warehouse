@@ -11,6 +11,7 @@ from caspian.services.errors import ValidationError
 from caspian.services.protected import ACTION_INFO, Approval, ProtectedAction
 from caspian.ui.app_context import exec_dialog
 from caspian.ui.dialogs import FormDialog, ltr_field, password_field
+from caspian.ui.logo import LogoLabel
 from caspian.ui.messages import show_error
 
 
@@ -23,6 +24,9 @@ class LoginDialog(FormDialog):
                          submit_text="ورود", cancel_text=cancel_text, parent=parent)
         self._db = db
         self.result_login: LoginResult | None = None
+        self.logo = LogoLabel(72)  # caspian.branding
+        if self.logo.has_logo:
+            self._layout.insertWidget(0, self.logo)
         self.username = self.add_row("نام کاربری:", ltr_field(username))
         self.password = self.add_row("رمز عبور:", password_field())
         (self.password if username else self.username).setFocus()

@@ -191,6 +191,8 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateEdit, QPlainTextEdit, QText
 }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus,
 QPlainTextEdit:focus, QTextEdit:focus {{ border: 1px solid {t.primary}; }}
+/* Branding logo on a white card (a white-background logo stays tidy in the dark theme). */
+#LogoCard {{ background: #ffffff; border-radius: 10px; padding: 8px; }}
 /* A field the user must fix before saving (all problems are shown at once). */
 QLineEdit[invalid="true"], QComboBox[invalid="true"], QSpinBox[invalid="true"],
 QDoubleSpinBox[invalid="true"], QPlainTextEdit[invalid="true"] {{ border: 2px solid {t.danger}; }}
