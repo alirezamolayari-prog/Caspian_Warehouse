@@ -130,6 +130,33 @@ async def admin(db):
     return actor
 
 
+@pytest.fixture
+def fake_server():
+    """In-memory Caspian Server (tests/fake_caspian_server.py)."""
+    from fake_caspian_server import FakeServer
+
+    return FakeServer()
+
+
+@pytest.fixture
+async def request_shop(db, admin):
+    from request_helpers import make_shop
+
+    return await make_shop(db, admin)
+
+
+@pytest.fixture
+async def linked(request_shop, admin, fake_server):
+    """A shop connected to the fake server as the `warehouse` account, with its sync engine."""
+    from caspian.services.server_link import connection
+    from caspian.services.server_link.sync import SyncEngine
+    from request_helpers import SERVER_URL
+
+    await connection.save_connection(request_shop["db"], admin, SERVER_URL, "warehouse", "warehouse123")
+    return {**request_shop, "engine": SyncEngine(request_shop["db"], fake_server.transport()),
+            "server": fake_server}
+
+
 @pytest.fixture(scope="session")
 def _session_themes(qapp):
     from caspian.ui.theme import ThemeManager

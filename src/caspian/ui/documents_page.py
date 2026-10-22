@@ -136,6 +136,8 @@ class DocumentDialog(FormDialog):
                  warehouses, persons, units, loans: list[LoanRow], parent=None) -> None:
         number = detail.number if detail else None
         self._read_only = detail is not None and detail.status != DocStatus.DRAFT
+        # Made from an approved goods request: the approved lines, recipient and place stay as they are.
+        self._linked = detail is not None and detail.input.server_request_id is not None
         super().__init__(doc_title(doc_type, number), submit_text="ذخیره و ثبت نهایی",
                          cancel_text="بستن" if self._read_only else "انصراف", parent=parent)
         self.setMinimumSize(900, 620)
@@ -246,6 +248,14 @@ class DocumentDialog(FormDialog):
                 w.setEnabled(False)
             self.submit_button.hide()
             self.draft_button.hide()
+        elif self._linked:
+            for w in (self.warehouse, self.person, self.place, self.usage_note, self.item_input):
+                w.setEnabled(False)
+                self._inputs.remove(w)  # stays disabled after a busy state too
+            note = QLabel("این حواله از درخواست کالای تأییدشده ساخته شده است؛ اقلام، تحویل‌گیرنده و محل "
+                          "مصرف قابل تغییر نیست. با «چاپ» ثبت نهایی می‌شود.", objectName="Muted")
+            note.setWordWrap(True)
+            self._layout.insertWidget(1, note)
         if not ctx.actor.can(Perm.DOCUMENTS_POST):
             self.submit_button.hide()
         self._update_totals()
@@ -261,7 +271,7 @@ class DocumentDialog(FormDialog):
             self._add_line(v.item_id, v.item_code, v.item_name, v.unit_id, v.qty, v.unit_price,
                            v.notes)
         self._pending_lines = []
-        if self._read_only:
+        if self._read_only or self._linked:
             for line in self.lines:
                 for w in (line.unit, line.qty, line.price, line.notes):
                     w.setEnabled(False)
@@ -338,7 +348,7 @@ class DocumentDialog(FormDialog):
         remove.setText("✕")
         remove.setToolTip("حذف ردیف")
         remove.clicked.connect(lambda: self._remove_line(line))
-        remove.setEnabled(not self._read_only)
+        remove.setEnabled(not (self._read_only or self._linked))
         self.table.setCellWidget(r, 6, remove)
         self._update_totals()
 

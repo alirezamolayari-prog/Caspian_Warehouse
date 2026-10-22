@@ -19,6 +19,7 @@ from caspian.db.migrate import SchemaTooNew
 from caspian.db.models import TaskKind
 from caspian.services.backup import make_scheduled_handler
 from caspian.services.scheduler import HANDLERS, SchedulerRunner
+from caspian.services.server_link.sync import SyncEngine, SyncRunner
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import run_login
 from caspian.ui.backup_settings import first_run_backup_prompt
@@ -27,6 +28,7 @@ from caspian.ui.fonts import apply_app_font
 from caspian.ui.icons import icon
 from caspian.ui.main_window import MainWindow
 from caspian.ui.messages import show_unexpected_error
+from caspian.ui.server_status import ServerLink
 from caspian.ui.tasks import spawn
 from caspian.ui.theme import LIGHT, ThemeManager
 
@@ -122,12 +124,18 @@ async def _main(settings: Settings, themes: ThemeManager) -> None:
         HANDLERS[TaskKind.BACKUP] = make_scheduled_handler(db, config, password, settings)
         runner = SchedulerRunner(db, ctx.messenger)
         runner.start()
+        # Goods requests: send the outbox and poll Caspian Server in the background (~10 s).
+        server_sync = SyncRunner(SyncEngine(db))
+        ctx.server_link = ServerLink(server_sync)
+        server_sync.set_actor(actor)
         window = MainWindow(ctx)
+        server_sync.start()
         closed = asyncio.Event()
         window.closed.connect(closed.set)
         window.show()
         spawn(first_run_backup_prompt(ctx, window))  # asked once per PC (#33)
         await closed.wait()
+        await server_sync.stop()
         await runner.stop()
     finally:
         await db.dispose()

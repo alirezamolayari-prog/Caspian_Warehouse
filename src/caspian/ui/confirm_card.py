@@ -18,11 +18,14 @@ class ConfirmCard(Card):
     rejected = Signal(object)
     open_requested = Signal(int)  # document id
 
-    def __init__(self, summary: Confirmation, can_post: bool, parent: QWidget | None = None) -> None:
+    def __init__(self, summary: Confirmation, can_post: bool, parent: QWidget | None = None, *,
+                 question: str = "", yes_text: str = "بله، ثبت کن", open_text: str = "باز کردن سند",
+                 open_id: int | None = None, denied_text: str = "") -> None:
+        """Defaults are for a document; a goods request passes its own question, texts and id."""
         super().__init__(parent)
         self.summary = summary
         self.setObjectName("ConfirmCard")
-        title = QLabel(f"آیا این {summary.title} ثبت نهایی شود؟", objectName="CardTitle")
+        title = QLabel(question or f"آیا این {summary.title} ثبت نهایی شود؟", objectName="CardTitle")
         title.setWordWrap(True)
         self.body.addWidget(title)
         lines = "\n".join(f"• {line}" for line in summary.lines)
@@ -36,7 +39,7 @@ class ConfirmCard(Card):
         self.status.hide()
         self.body.addWidget(self.status)
         row = QHBoxLayout()
-        self.yes = QPushButton("بله، ثبت کن")
+        self.yes = QPushButton(yes_text)
         self.yes.setProperty("variant", "primary")
         self.yes.setMinimumHeight(40)
         self.yes.clicked.connect(lambda: self.confirmed.emit(self))
@@ -44,16 +47,17 @@ class ConfirmCard(Card):
         self.no.setProperty("variant", "danger")
         self.no.setMinimumHeight(40)
         self.no.clicked.connect(lambda: self.rejected.emit(self))
-        self.open_button = QPushButton("باز کردن سند")
-        self.open_button.clicked.connect(lambda: self.open_requested.emit(summary.document_id))
+        self.open_button = QPushButton(open_text)
+        target = open_id if open_id is not None else summary.document_id
+        self.open_button.clicked.connect(lambda: self.open_requested.emit(target))
         row.addWidget(self.yes, 2)
         row.addWidget(self.no, 1)
         row.addWidget(self.open_button)
         self.body.addLayout(row)
         if not can_post:
             self.yes.hide()
-            self.show_message(f"ثبت نهایی نیاز به مجوز «{Perm.DOCUMENTS_POST.value}» دارد؛ پیش‌نویس در "
-                              "«اسناد انبار» می‌ماند تا کاربر مجاز آن را ثبت کند.", error=False)
+            self.show_message(denied_text or f"ثبت نهایی نیاز به مجوز «{Perm.DOCUMENTS_POST.value}» دارد؛ "
+                              "پیش‌نویس در «اسناد انبار» می‌ماند تا کاربر مجاز آن را ثبت کند.", error=False)
 
     def show_message(self, text: str, error: bool = True) -> None:
         self.status.setText(text)

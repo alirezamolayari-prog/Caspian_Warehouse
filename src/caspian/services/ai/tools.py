@@ -2,11 +2,13 @@
 
 Every tool runs as `actor.as_ai()`: the signed-in user's permissions, flagged as AI so
 protected actions and applying drafts are refused by the services themselves. Besides the
-read-only tools the assistant can prepare warehouse documents (`create_document`) — always as
-DRAFTS. Anything that changes stock is confirmed by the user on a card in the chat («بله، ثبت کن»)
-and then posted by the person, never by the assistant: `documents.post_document_in` refuses AI
-actors. There is deliberately no tool to post, cancel, delete, deactivate, merge, restore or change
-roles/settings, and the services refuse those for AI actors anyway (`Actor.require_human`).
+read-only tools the assistant can prepare warehouse documents (`create_document`) and goods requests
+for the owners (`create_goods_request`) — always as DRAFTS; a request is sent only after the person's
+«بله، بفرست», and approving, printing or posting is never the assistant's. Anything that changes
+stock is confirmed by the user on a card in the chat («بله، ثبت کن») and then posted by the person,
+never by the assistant: `documents.post_document_in` refuses AI actors. There is deliberately no
+tool to post, cancel, delete, deactivate, merge, restore or change roles/settings, and the services
+refuse those for AI actors anyway (`Actor.require_human`).
 """
 
 import datetime as dt
@@ -23,11 +25,12 @@ from caspian.core import jalali
 from caspian.core.permissions import Perm
 from caspian.core.text import normalize, normalize_location, to_ascii_digits
 from caspian.db.database import Database
-from caspian.db.models import DocType, ImportKind, ImportSource
+from caspian.db.models import DocType, ImportKind, ImportSource, RequestStatus
 from caspian.services import documents, imports, items, locations, master, reports
 from caspian.services.actor import Actor
 from caspian.services.errors import ServiceError
 from caspian.services.import_files import RawRow
+from caspian.services.server_link import goods
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +45,7 @@ class ToolContext:
     messenger: object | None = None  # caspian.services.messaging.Messenger
     created_documents: list[dict] = field(default_factory=list)
     signatures: dict[str, dict] = field(default_factory=dict)  # one create per request (#4)
+    created_requests: list[dict] = field(default_factory=list)  # goods requests (drafts) to confirm
 
 
 @dataclass(frozen=True)
@@ -438,6 +442,70 @@ async def _create_document(ctx: ToolContext, args: dict) -> dict:
     return result
 
 
+async def _create_goods_request(ctx: ToolContext, args: dict) -> dict:
+    """A goods request for the owners' approval, as a DRAFT the person sends with «بله، بفرست»."""
+    lines_in = [ln for ln in list(args.get("lines") or [])[:100] if isinstance(ln, dict)]
+    if not lines_in:
+        return {"error": "حداقل یک کالا لازم است."}
+    signature = "request\n" + _signature("REQUEST", str(args.get("person", "")),
+                                         str(args.get("location", "")), lines_in)
+    if signature in ctx.signatures:
+        return {**ctx.signatures[signature], "duplicate": True,
+                "note": "این درخواست در همین گفتگو قبلاً ساخته شده است؛ دوباره ساخته نشد."}
+    person_id, question = await _resolve_person(ctx, str(args.get("person", "")))
+    if question:
+        return question
+    if person_id is None:
+        return {"needs_choice": "person", "candidates": [],
+                "note": "درخواست‌کننده لازم است؛ نام او را از کاربر بپرس (باید در فهرست اشخاص باشد)."}
+    if not str(args.get("location", "") or "").strip():
+        return {"needs_choice": "location", "candidates": [],
+                "note": "محل مصرف لازم است؛ از کاربر بپرس کجا مصرف می‌شود (شماره پلاک یا نام محل)."}
+    place, question = await _resolve_place(ctx, args)
+    if question:
+        return question
+    units = {normalize(u.name): u.id for u in await master.list_units(ctx.db)}
+    lines = []
+    for line in lines_in:
+        item_id, question = await _resolve_item(ctx, line)
+        if question:
+            return question
+        detail = await items.get_item(ctx.db, ctx.actor, item_id)
+        allowed = {detail.input.base_unit_id, *(u for u, _f in detail.input.units)}
+        unit_id = units.get(normalize(str(line.get("unit", "") or "")))
+        try:
+            qty = Decimal(to_ascii_digits(str(line.get("qty", "")).strip()))
+        except (InvalidOperation, ValueError):
+            qty = None
+        if qty is None or not qty.is_finite() or qty <= 0:
+            return {"needs_choice": "qty", "asked": detail.input.name,
+                    "note": f"مقدار «{detail.input.name}» مشخص نیست؛ از کاربر بپرس چند تا (حدس نزن)."}
+        unit_id = unit_id if unit_id in allowed else detail.input.base_unit_id
+        lines.append(goods.RequestLineInput(item_id, unit_id, qty))
+    request_id = await goods.create_request(ctx.db, ctx.actor, goods.RequestInput(
+        person_id, place.get("location_id"), place.get("floor_id"), str(args.get("note", "") or "")[:500],
+        lines))
+    summary = await goods.confirmation(ctx.db, ctx.actor, request_id)
+    result = {"request_id": request_id, "status": "DRAFT", "needs_confirmation": True,
+              "summary": summary.text,
+              "note": "پیش‌نویس درخواست ساخته شد و هنوز برای مالکان ارسال نشده است. برنامه خلاصه را با "
+                      "دکمه‌های «بله، بفرست» / «نه» به کاربر نشان می‌دهد؛ تو نه ارسال می‌کنی، نه تأیید، "
+                      "نه چاپ."}
+    ctx.created_requests.append(result)
+    ctx.signatures[signature] = result
+    return result
+
+
+async def _list_goods_requests(ctx: ToolContext, args: dict) -> list[dict]:
+    status = str(args.get("status", "") or "").upper()
+    rows = await goods.list_requests(ctx.db, ctx.actor, RequestStatus(status) if status in RequestStatus
+                                     else None, limit=min(int(args.get("limit", 20)), MAX_ROWS))
+    # Which owner decided is never known here (the server hides it), only the status.
+    return [{"number": r.number_text, "status": r.status_name, "requester": r.requester,
+             "location": r.location, "items": r.items_text, "rejection_reason": r.rejection_reason or None,
+             "issue_number": r.issue_number or None, "waiting_to_send": r.waiting} for r in rows]
+
+
 async def _send_report(ctx: ToolContext, args: dict) -> dict:
     from caspian.services.scheduler import REPORT_NAMES, send_report
 
@@ -526,6 +594,23 @@ TOOLS: list[Tool] = [
                    "unit": {"type": "string"}})}},
              ("doc_type", "lines")),
          _create_stock_draft, Perm.IMPORT_RUN),
+    Tool("create_goods_request",
+         "ساخت «درخواست کالا» برای تأیید مالکان (از طریق سرور کاسپین). person = درخواست‌کننده (از فهرست "
+         "اشخاص)، location = محل مصرف (شماره پلاک یا نام محل)، floor = طبقه فقط برای پله/آسانسور/مشاعات، "
+         "note = توضیح. هر ردیف: code یا name، qty، unit اختیاری. فقط پیش‌نویس ساخته می‌شود و کاربر با "
+         "دکمه «بله، بفرست» آن را ارسال می‌کند. اگر needs_choice برگشت، از کاربر بپرس و دوباره بساز.",
+         _obj({"person": {"type": "string"}, "location": {"type": "string"}, "floor": {"type": "string"},
+               "note": {"type": "string"},
+               "lines": {"type": "array", "items": _obj({
+                   "name": {"type": "string"}, "code": {"type": "string"}, "qty": {"type": "number"},
+                   "unit": {"type": "string"}})}},
+              ("person", "location", "lines")),
+         _create_goods_request, Perm.REQUESTS_MANAGE),
+    Tool("list_goods_requests",
+         "فهرست درخواست‌های کالا و وضعیت آن‌ها (در صف ارسال، در انتظار تأیید مالک، تأیید شد، رد شد، حواله "
+         "صادر شد). status اختیاری: QUEUED، PENDING، APPROVED، REJECTED، ISSUED.",
+         _obj({"status": {"type": "string"}, "limit": {"type": "integer"}}),
+         _list_goods_requests, Perm.REQUESTS_MANAGE),
     Tool("send_report", "ساخت گزارش اکسل و ارسال به گیرندگان از پیش تنظیم‌شده (تلگرام/ایمیل). "
          "report یکی از stock_balance, reorder, loans.",
          _obj({"report": {"type": "string"}, "channels": {"type": "array", "items": {"type": "string"}}},
