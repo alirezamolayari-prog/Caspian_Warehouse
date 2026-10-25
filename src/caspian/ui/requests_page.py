@@ -245,7 +245,7 @@ class RequestDialog(FormDialog):
         lines = []
         for no, line in enumerate(self.lines, start=1):
             if line.qty.value() is None:
-                raise ValidationError(f"ردیف {no}: مقدار را وارد کنید.")
+                raise ValidationError(f"ردیف {to_persian_digits(no)}: مقدار را وارد کنید.")
             lines.append(goods.RequestLineInput(line.item_id, line.unit.currentData(), line.qty.value()))
         value = self.place.value()
         if value is None and self.place.edit.text().strip():
@@ -345,7 +345,7 @@ class RequestChatDialog(QDialog):
         if row.rejection_reason:
             parts.append(f"دلیل رد: {row.rejection_reason}")
         if row.issue_number:
-            parts.append(f"حواله: {row.issue_number}")
+            parts.append(f"حواله: {to_persian_digits(row.issue_number)}")
         self.details.setText("\n".join(parts))
         can_chat = row.status != RequestStatus.DRAFT
         self.input.setEnabled(can_chat)
@@ -507,7 +507,7 @@ class RequestsPage(QWidget):
         if r.status == RequestStatus.APPROVED:
             return "آماده چاپ حواله"
         if r.issue_number:
-            return f"حواله {r.issue_number}"
+            return f"حواله {to_persian_digits(r.issue_number)}"
         return r.note
 
     @asyncSlot()

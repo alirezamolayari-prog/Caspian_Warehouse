@@ -1,6 +1,7 @@
 """Errors talking to Caspian Server. Messages are short Persian; the server's own text only goes to
 the log."""
 
+from caspian.core.text import to_persian_digits
 from caspian.services.errors import ServiceError
 
 UNREACHABLE = ("سرور در دسترس نیست (اینترنت یا سرور قطع است). درخواست‌ها در صف می‌مانند و پس از "
@@ -45,6 +46,7 @@ class ServerRejected(ServerError):
     """The server answered and refused this one operation (4xx). Retrying it unchanged won't help."""
 
     def __init__(self, status: int, detail: str = "") -> None:
-        super().__init__(_STATUS_TEXT.get(status, f"سرور این کار را نپذیرفت (کد {status})."))
+        fallback = f"سرور این کار را نپذیرفت (کد {to_persian_digits(status)})."
+        super().__init__(_STATUS_TEXT.get(status, fallback))
         self.status = status
         self.detail = detail

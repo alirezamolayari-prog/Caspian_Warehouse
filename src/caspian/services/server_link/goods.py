@@ -188,22 +188,23 @@ async def _collect(s: AsyncSession, data: RequestInput) -> tuple[_Snapshot, list
         problems.append(Problem("lines", "حداقل یک کالا به درخواست اضافه کنید."))
     for no, line in enumerate(data.lines, start=1):
         field_name = f"line:{no}"
+        row = f"ردیف {to_persian_digits(no)}"
         item = await s.get(Item, line.item_id)
         if item is None or not item.is_active:
-            problems.append(Problem(field_name, f"ردیف {no}: کالا نامعتبر یا غیرفعال است."))
+            problems.append(Problem(field_name, f"{row}: کالا نامعتبر یا غیرفعال است."))
             continue
         allowed = {item.base_unit_id, *(u.unit_id for u in item.units)}
         unit = await s.get(Unit, line.unit_id)
         if unit is None or line.unit_id not in allowed:
             problems.append(Problem(field_name,
-                                    f"ردیف {no}: واحد انتخاب‌شده برای «{item.name}» تعریف نشده است."))
+                                    f"{row}: واحد انتخاب‌شده برای «{item.name}» تعریف نشده است."))
             continue
         if line.qty is None or not line.qty.is_finite() or line.qty <= 0:
-            problems.append(Problem(field_name, f"ردیف {no}: مقدار «{item.name}» باید بزرگ‌تر از صفر باشد."))
+            problems.append(Problem(field_name, f"{row}: مقدار «{item.name}» باید بزرگ‌تر از صفر باشد."))
             continue
         if not unit.allow_decimal and line.qty != line.qty.to_integral_value():
             problems.append(Problem(field_name,
-                                    f"ردیف {no}: مقدار «{item.name}» به «{unit.name}» باید عدد صحیح باشد."))
+                                    f"{row}: مقدار «{item.name}» به «{unit.name}» باید عدد صحیح باشد."))
             continue
         snap.lines.append(GoodsRequestLine(line_no=no, item_id=item.id, unit_id=unit.id, qty=line.qty,
                                            item_code=item.code, item_name=item.name, unit_name=unit.name))
