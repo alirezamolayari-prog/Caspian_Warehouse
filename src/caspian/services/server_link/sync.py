@@ -37,7 +37,7 @@ from caspian.db.models import (
 )
 from caspian.services.actor import Actor
 from caspian.services.server_link import connection, goods, issue_link
-from caspian.services.server_link.client import ServerClient
+from caspian.services.server_link.client import TIMEOUT_SECONDS, ServerClient
 from caspian.services.server_link.errors import (
     ServerAccountRejected,
     ServerError,
@@ -101,9 +101,11 @@ class _Op:
 
 
 class SyncEngine:
-    def __init__(self, db: Database, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    def __init__(self, db: Database, transport: httpx.AsyncBaseTransport | None = None,
+                 timeout: float = TIMEOUT_SECONDS) -> None:
         self._db = db
         self._transport = transport
+        self._timeout = timeout  # per request; a hanging server never holds the sync longer
         self._client: ServerClient | None = None
         self._key: tuple | None = None
         self._rejected_key: tuple | None = None
@@ -119,7 +121,8 @@ class SyncEngine:
         password = connection.get_password(conn) or ""
         key = (conn.url, conn.username, password)
         if key != self._key:
-            self._client = ServerClient(conn.url, conn.username, password, self._transport)
+            self._client = ServerClient(conn.url, conn.username, password, self._transport,
+                                        self._timeout)
             self._key = key
         return self._client
 
