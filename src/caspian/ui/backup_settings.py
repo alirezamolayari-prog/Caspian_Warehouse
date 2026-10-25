@@ -241,7 +241,7 @@ class BackupTab(QWidget):
         self.table.set_rows([(str(b.path), (
             jalali.format_date(b.created_at), to_persian_digits(b.created_at.strftime("%H:%M")),
             b.label or "—", "دارد" if b.encrypted else "بدون رمز",
-            backup.format_size(b.size), b.app_version,
+            backup.format_size(b.size), to_persian_digits(b.app_version),
             b.name)) for b in rows])
         self.status.setText(f"{to_persian_digits(len(rows))} نسخه پشتیبان در پوشه")
         self._update_buttons()
