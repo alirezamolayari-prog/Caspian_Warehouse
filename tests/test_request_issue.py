@@ -166,6 +166,33 @@ async def test_cancel_when_goods_were_not_delivered(linked, admin):
         assert (await s.get(GoodsRequest, request_id)).status == RequestStatus.ISSUED
 
 
+async def test_request_whose_item_was_deactivated(linked, admin):
+    """Report gap: the approved request's item is deactivated before its voucher is made. Nothing is
+    made, the request says why (no crash), and the voucher comes once the item is active again."""
+    from caspian.services import items, protected
+    from caspian.services.protected import ProtectedAction
+    from conftest import ADMIN_PIN
+
+    db, server, engine = linked["db"], linked["server"], linked["engine"]
+    request_id = await goods.create_request(db, admin, request_input(linked))
+    await engine.tick(admin)
+    approval = await protected.approve(db, admin, ProtectedAction.DEACTIVATE_ITEM, "admin", ADMIN_PIN)
+    await items.set_item_active(db, admin, linked["bags"], False, approval)
+    server.approve(1)
+    result = await engine.tick(admin)
+    assert result.events and result.events[0].kind == "approved"
+    async with db.session() as s:
+        assert await s.scalar(select(Document.id).where(Document.server_request_id == 1)) is None
+    row = (await goods.get_request(db, admin, request_id)).row
+    assert row.status == RequestStatus.APPROVED and row.document_id is None
+    assert "ساخت حواله خروج" in row.last_error and "غیرفعال" in row.last_error
+    await items.set_item_active(db, admin, linked["bags"], True)
+    await engine.tick(admin)
+    row = (await goods.get_request(db, admin, request_id)).row
+    assert row.document_id is not None and row.last_error == ""
+    assert await stock(db, linked["bags"]) == 50
+
+
 async def test_voucher_waits_for_someone_allowed_to_make_it(linked, admin):
     db, server, engine = linked["db"], linked["server"], linked["engine"]
     await goods.create_request(db, admin, request_input(linked))
