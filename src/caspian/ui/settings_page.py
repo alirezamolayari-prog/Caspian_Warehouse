@@ -194,7 +194,7 @@ class AITab(QWidget):
         layout.setContentsMargins(0, 12, 0, 0)
         layout.setSpacing(10)
         intro = QLabel(
-            "سرویس‌ها به ترتیب اولویت امتحان می‌شوند؛ اگر یکی محدود (429)، کند یا در دسترس نبود، "
+            "سرویس‌ها به ترتیب اولویت امتحان می‌شوند؛ اگر یکی محدود (۴۲۹)، کند یا در دسترس نبود، "
             "بی‌صدا سراغ بعدی می‌رود. بدون اینترنت فقط مدل‌های محلی (Ollama) استفاده می‌شوند و بقیه "
             "برنامه کاملاً آفلاین کار می‌کند.", objectName="Muted")
         intro.setWordWrap(True)
@@ -340,7 +340,9 @@ class ServerTab(QWidget):
         card.body.addWidget(QLabel("اتصال به سرور کاسپین (درخواست کالا)", objectName="CardTitle"))
         intro = QLabel("این برنامه با حساب «انبار» به سرور وصل می‌شود تا درخواست‌ها را برای تأیید مالکان "
                        "بفرستد و جواب‌ها را بگیرد. رمز فقط روی همین رایانه (Windows Credential Manager) "
-                       "ذخیره می‌شود.", objectName="Muted")
+                       "ذخیره می‌شود.\nاگر هنوز سرور ندارید، این بخش را خالی بگذارید: برنامه بدون سرور کامل "
+                       "کار می‌کند و درخواست‌های کالا روی همین رایانه می‌مانند تا بعداً ارسال شوند.",
+                       objectName="Muted")
         intro.setWordWrap(True)
         card.body.addWidget(intro)
         form = QFormLayout()
