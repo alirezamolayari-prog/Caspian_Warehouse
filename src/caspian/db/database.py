@@ -84,15 +84,22 @@ class Database:
     def is_sqlite(self) -> bool:
         return self.url.get_backend_name() == "sqlite"
 
+    # Set by caspian.services.access: refuses a session whose user was deactivated or changed role.
+    actor_check = None
+
     @asynccontextmanager
-    async def session(self, actor_id: int | None = None) -> AsyncIterator[AsyncSession]:
+    async def session(self, actor=None) -> AsyncIterator[AsyncSession]:
         """Unit of work: commits on success, rolls back on any exception.
 
-        `actor_id` is stamped as `created_by_id` on every new row that has one.
+        `actor` (an Actor, or just a user id) is stamped as `created_by_id` on every new row that has
+        one. Given an Actor, the user is first checked live in the database (`actor_check`).
         """
+        actor_id = actor if actor is None or isinstance(actor, int) else actor.user_id
         async with self.sessionmaker() as session:
             session.info["actor_id"] = actor_id
             try:
+                if actor_id is not None and not isinstance(actor, int) and self.actor_check is not None:
+                    await self.actor_check(session, actor)
                 yield session
                 await session.commit()
             except BaseException:

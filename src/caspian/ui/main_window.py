@@ -1,7 +1,8 @@
+import contextlib
 import datetime as dt
 import logging
 
-from PySide6.QtCore import QByteArray, QSize, Qt, Signal
+from PySide6.QtCore import QByteArray, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -24,7 +25,7 @@ from caspian.core import jalali
 from caspian.core.permissions import DEFAULT_ROLES
 from caspian.core.text import to_persian_digits
 from caspian.db.models import DocStatus
-from caspian.services import auth, documents
+from caspian.services import access, auth, documents
 from caspian.services.actor import Actor
 from caspian.services.server_link import goods
 from caspian.services.server_link.sync import SyncState
@@ -52,6 +53,7 @@ from caspian.ui.users_page import UsersPage
 from caspian.ui.widgets import Toast
 
 log = logging.getLogger(__name__)
+SESSION_CHECK_MS = 60_000  # an idle window notices a deactivation within a minute
 
 
 class ProfileDialog(FormDialog):
@@ -100,6 +102,48 @@ class MainWindow(QMainWindow):
 
         if self._settings.window_geometry:
             self.restoreGeometry(QByteArray.fromBase64(self._settings.window_geometry.encode()))
+
+        # A session refused by the live check (deactivated / role changed) goes back to the login
+        # screen; idle sessions are checked every minute too (test report issues 1 + 2).
+        self._relogin_running = False
+        access.add_listener(self._on_access_refused)
+        self._session_timer = QTimer(self, singleShot=True, interval=SESSION_CHECK_MS)
+        self._session_timer.timeout.connect(lambda: spawn(self.check_session()))
+        self._session_timer.start()
+
+    # ----- signed-in session still valid? -----
+
+    def _on_access_refused(self, error) -> None:
+        if self.isVisible() and not self._relogin_running:
+            spawn(self.force_relogin(error.message))
+
+    async def check_session(self) -> None:
+        try:
+            if self.isVisible() and not self._relogin_running:
+                problem = await access.validate(self.ctx.db, self.ctx.actor)
+                if problem is not None:
+                    await self.force_relogin(problem.message)
+        except Exception:
+            log.warning("Session check failed", exc_info=True)
+        finally:
+            with contextlib.suppress(RuntimeError):  # the window was closed meanwhile
+                self._session_timer.start()
+
+    async def force_relogin(self, message: str) -> None:
+        """The account was deactivated or its role changed: sign in again (or quit)."""
+        if self._relogin_running:
+            return
+        self._relogin_running = True
+        try:
+            self.hide()
+            actor = await run_login(self.ctx.db, message=message)
+            if actor is None:
+                self.close()
+                return
+            self.ctx.set_actor(actor)
+            self.show()
+        finally:
+            self._relogin_running = False
 
     # ----- layout -----
 
@@ -429,6 +473,8 @@ class MainWindow(QMainWindow):
         self._user_button.setIcon(icon("user", theme.text_muted))
 
     def closeEvent(self, event) -> None:
+        self._session_timer.stop()
+        access.remove_listener(self._on_access_refused)
         self._settings.window_geometry = bytes(self.saveGeometry().toBase64()).decode()
         self._settings.theme_mode = self._themes.mode
         self._settings.save()

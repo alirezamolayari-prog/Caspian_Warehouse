@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass, field
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from caspian.core.text import to_persian_digits
 from caspian.db.database import Database
 from caspian.db.models import AppSetting
 from caspian.services.errors import ValidationError
@@ -50,5 +51,5 @@ async def load_state(db: Database) -> FiscalState:
 async def ensure_open_year(s: AsyncSession, fiscal_year: int) -> None:
     closed = (await read_state(s)).closed_through
     if closed is not None and fiscal_year <= closed:
-        raise ValidationError(f"سال مالی {fiscal_year} بسته شده است؛ اسناد آن فقط در بایگانی قابل "
-                              "مشاهده‌اند.")
+        raise ValidationError(f"سال مالی {to_persian_digits(fiscal_year)} بسته شده است؛ اسناد آن فقط "
+                              "در بایگانی قابل مشاهده‌اند.")

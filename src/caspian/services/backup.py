@@ -39,7 +39,7 @@ from caspian.core.permissions import Perm
 from caspian.core.secrets import get_secret, set_secret
 from caspian.db.database import CHARSET, COLLATION, Database, DbConfig
 from caspian.db.migrate import current_revision
-from caspian.services import audit
+from caspian.services import access, audit
 from caspian.services.actor import Actor
 from caspian.services.errors import ServiceError, ValidationError
 from caspian.services.protected import Approval, ProtectedAction, consume
@@ -365,8 +365,10 @@ def format_size(size: int) -> str:
 
 def _check_password(password: str) -> None:
     if not password or len(password) < MIN_PASSWORD:
-        raise ValidationError(f"رمز پشتیبان باید حداقل {MIN_PASSWORD} کاراکتر باشد. آن را در تنظیمات "
-                              "پشتیبان‌گیری تعیین کنید و جایی امن یادداشت کنید.")
+        from caspian.core.text import to_persian_digits
+
+        raise ValidationError(f"رمز پشتیبان باید حداقل {to_persian_digits(MIN_PASSWORD)} کاراکتر باشد. آن را "
+                              "در تنظیمات پشتیبان‌گیری تعیین کنید و جایی امن یادداشت کنید.")
 
 
 async def _schema_revision(db: Database) -> str | None:
@@ -381,6 +383,7 @@ async def create_backup(db: Database, actor: Actor | None, dumper: Dumper, passw
     """`password` None/empty: an unencrypted backup (#33); otherwise it must be strong enough."""
     if actor is not None:
         actor.require(Perm.BACKUP_CREATE)
+        await access.ensure(db, actor)
     if password:
         _check_password(password)
     folder = Path(directory)
@@ -423,6 +426,7 @@ async def restore_backup(db: Database, actor: Actor, dumper: Dumper, path: str |
     current data -> drop & reload -> migrate/seed via `after_restore` -> audit.
     """
     actor.require_human("بازیابی نسخه پشتیبان")
+    await access.ensure(db, actor)
     approver_id = consume(approval, ProtectedAction.RESTORE_BACKUP, actor)
     path = Path(path)
     info = await verify_backup(path, password)

@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from caspian.core import security
+from caspian.core.text import to_persian_digits
 from caspian.db.database import Database
 from caspian.db.models import Role, User
 from caspian.services import audit
@@ -59,7 +60,7 @@ async def ensure_default_admin(session: AsyncSession) -> bool:
     return True
 
 
-LOCKED_MESSAGE = f"به‌دلیل تلاش‌های ناموفق، حساب برای {LOCK_MINUTES} دقیقه قفل شد."
+LOCKED_MESSAGE = f"به‌دلیل تلاش‌های ناموفق، حساب برای {to_persian_digits(LOCK_MINUTES)} دقیقه قفل شد."
 
 
 async def register_failure(session: AsyncSession, user: User) -> bool:
@@ -79,7 +80,8 @@ async def register_failure(session: AsyncSession, user: User) -> bool:
 def check_not_locked(user: User) -> None:
     if user.locked_until and user.locked_until > _now():
         minutes = max(1, int((user.locked_until - _now()).total_seconds() // 60) + 1)
-        raise AuthenticationError(f"حساب قفل است. حدود {minutes} دقیقه دیگر دوباره تلاش کنید.")
+        raise AuthenticationError(f"حساب قفل است. حدود {to_persian_digits(minutes)} دقیقه دیگر "
+                                  "دوباره تلاش کنید.")
 
 
 async def login(db: Database, username: str, password: str) -> LoginResult:
@@ -123,7 +125,7 @@ async def logout(db: Database, actor: Actor) -> None:
 
 
 async def change_password(db: Database, actor: Actor, current: str, new: str) -> None:
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         user = await s.get(User, actor.user_id)
         if not security.verify_secret(user.password_hash, current):
             raise ValidationError("رمز عبور فعلی نادرست است.")
@@ -144,7 +146,7 @@ async def set_pin(db: Database, actor: Actor, password: str, pin: str) -> None:
         raise PermissionDenied("فقط مدیران سیستم PIN دارند.")
     if problem := security.pin_problem(pin):
         raise ValidationError(problem)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         user = await s.get(User, actor.user_id)
         if not security.verify_secret(user.password_hash, password):
             raise ValidationError("رمز عبور نادرست است.")

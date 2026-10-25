@@ -257,7 +257,7 @@ async def create_request(db: Database, actor: Actor, data: RequestInput,
 
 
 async def _create(db: Database, actor: Actor, data: RequestInput, cid: str) -> int:
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         existing = await s.scalar(select(GoodsRequest.id).where(GoodsRequest.client_request_id == cid))
         if existing is not None:
             return existing
@@ -290,7 +290,7 @@ async def resubmit_request(db: Database, actor: Actor, request_id: int, data: Re
     """Correct a rejected request (e.g. smaller quantities) and send it to the owners again."""
     actor.require(Perm.REQUESTS_MANAGE)
     actor.require_human("ارسال دوباره درخواست کالا")
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         req = await _load(s, request_id)
         if req.status != RequestStatus.REJECTED or req.origin != "local" or await _waiting(s, req.id):
             raise ValidationError("فقط درخواست ردشده‌ای که در همین برنامه ثبت شده قابل ویرایش و "
@@ -347,7 +347,7 @@ async def confirm_assistant_request(db: Database, actor: Actor, request_id: int)
     """«بله، بفرست» on the card: the person sends the request the assistant prepared."""
     actor.require_human("ارسال درخواست کالا")
     actor.require(Perm.REQUESTS_MANAGE)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         req = await _own_draft(s, actor, request_id)
         req.status = RequestStatus.QUEUED
         s.add(ServerOutbox(request_id=req.id, op=OutboxOp.CREATE))
@@ -358,7 +358,7 @@ async def discard_assistant_request(db: Database, actor: Actor, request_id: int)
     """«نه» on the card: the draft goes away; nothing was sent."""
     actor.require_human("حذف پیش‌نویس درخواست")
     actor.require(Perm.REQUESTS_MANAGE)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         req = await _own_draft(s, actor, request_id)
         audit.record(s, actor, "goods_request.assistant_draft_discarded", "goods_request", req.id,
                      {"via": "assistant"})
@@ -447,7 +447,7 @@ async def queue_message(db: Database, actor: Actor, request_id: int, text: str) 
         raise ValidationError("متن پیام خالی است.")
     if len(text) > MAX_TEXT:
         raise ValidationError(f"پیام حداکثر {to_persian_digits(MAX_TEXT)} حرف می‌تواند باشد.")
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         req = await _load(s, request_id)
         if req.status == RequestStatus.DRAFT:
             raise ValidationError("ابتدا درخواست را ارسال کنید.")

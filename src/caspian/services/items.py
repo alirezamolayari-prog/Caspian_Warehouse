@@ -14,7 +14,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from caspian.core.numbers import format_qty
 from caspian.core.permissions import Perm
-from caspian.core.text import normalize, to_ascii_digits
+from caspian.core.text import normalize, to_ascii_digits, to_persian_digits
 from caspian.db.database import Database
 from caspian.db.models import (
     Category,
@@ -464,7 +464,7 @@ async def merge_items(db: Database, actor: Actor, target_id: int, source_ids: li
     if not reason.strip():
         raise ValidationError("علت ادغام را بنویسید.")
     approver_id = consume(approval, ProtectedAction.MERGE_ITEMS, actor)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         target = await _load(s, target_id)
         items_ = [await _load(s, i) for i in sources]
         target_units = {u.unit_id: u.factor for u in target.units}
@@ -480,8 +480,8 @@ async def merge_items(db: Database, actor: Actor, target_id: int, source_ids: li
             Stocktake.status.in_([StocktakeStatus.OPEN, StocktakeStatus.COUNTED]),
             StocktakeLine.item_id.in_([target_id, *sources])))
         if busy:
-            raise ValidationError(f"این کالاها در انبارگردانی باز شماره {busy} هستند؛ پس از آن "
-                                  "ادغام کنید.")
+            raise ValidationError(f"این کالاها در انبارگردانی باز شماره {to_persian_digits(busy)} هستند؛ "
+                                  "پس از آن ادغام کنید.")
         moved = 0
         mapping = {}
         for src in items_:
@@ -550,7 +550,7 @@ async def same_name_items(db: Database, name: str, exclude_id: int | None = None
 async def create_item(db: Database, actor: Actor, data: ItemInput,
                       similar_approval: Approval | None = None) -> int:
     approver = similar_ok(similar_approval, actor)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         item = await create_item_in(s, actor, data, allow_similar=approver is not None)
         if approver is not None:
             audit.record(s, actor, "item.similar_created", "item", item.id, {"name": item.name},
@@ -581,7 +581,7 @@ async def create_item_with_opening(db: Database, actor: Actor, data: ItemInput,
     creates an OPENING document and posts it when the user may post (else it stays a draft).
     Item and document are saved together or not at all."""
     approver = similar_ok(similar_approval, actor)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         item = await create_item_in(s, actor, data, allow_similar=approver is not None)
         if approver is not None:
             audit.record(s, actor, "item.similar_created", "item", item.id, {"name": item.name},
@@ -635,7 +635,7 @@ async def update_item(
     db: Database, actor: Actor, item_id: int, expected_version: int, data: ItemInput,
     similar_approval: Approval | None = None,
 ) -> None:
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         await _update_item_in(s, actor, item_id, expected_version, data, similar_approval)
 
 
@@ -645,7 +645,7 @@ async def update_item_with_opening(db: Database, actor: Actor, item_id: int, exp
     """Edit an existing item and, only if the user explicitly entered one, add its opening stock
     through an OPENING document — together or not at all (the New Item dialog after the user picked
     an existing similar item)."""
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         item = await _update_item_in(s, actor, item_id, expected_version, data, similar_approval)
         if opening is None:
             return CreatedItem(item.id, None, False)
@@ -657,7 +657,7 @@ async def set_reorder_points(db: Database, actor: Actor, values: dict[int, Decim
     """Bulk-update reorder points (e.g. accepting burn-rate suggestions). Returns count changed."""
     actor.require(Perm.ITEMS_EDIT)
     changed = 0
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         for item_id, value in values.items():
             if value is not None and value < 0:
                 raise ValidationError("نقطه سفارش نمی‌تواند منفی باشد.")
@@ -677,7 +677,7 @@ async def set_item_active(
     actor.require_human("فعال/غیرفعال کردن کالا")
     actor.require(Perm.ITEMS_EDIT)
     approver_id = None if active else consume(approval, ProtectedAction.DEACTIVATE_ITEM, actor)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         item = await _load(s, item_id)
         item.is_active = active
         audit.record(s, actor, "item.activated" if active else "item.deactivated", "item",
@@ -688,7 +688,7 @@ async def delete_item(db: Database, actor: Actor, item_id: int, approval: Approv
     """Only items that never appeared in a document can be deleted; others are deactivated."""
     actor.require_human("حذف کالا")
     actor.require(Perm.ITEMS_EDIT)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         item = await _load(s, item_id)
         if await _has_movements(s, item_id):
             raise ValidationError("این کالا در اسناد انبار استفاده شده و قابل حذف نیست. "

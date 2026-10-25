@@ -248,6 +248,27 @@ async def server_today(s: AsyncSession) -> dt.date | None:
     return value if isinstance(value, dt.date) else dt.date.fromisoformat(str(value))
 
 
+DATE_WARNING_DAYS = 30
+
+
+def date_warning(doc_date: dt.date, today: dt.date | None = None) -> str | None:
+    """A question before saving an unusual date (test report issue 6): outside the current fiscal year
+    or more than DATE_WARNING_DAYS from today. Never a refusal — old documents are sometimes right."""
+    today = today or dt.date.today()
+    year, current = jalali.fiscal_year_of(doc_date), jalali.fiscal_year_of(today)
+    reasons = []
+    if year != current:
+        reasons.append(f"در سال مالی {to_persian_digits(year)} است، "
+                       f"نه سال جاری ({to_persian_digits(current)})")
+    days = (today - doc_date).days
+    if abs(days) > DATE_WARNING_DAYS:
+        reasons.append(f"{to_persian_digits(abs(days))} روز {'قبل' if days > 0 else 'بعد'} از امروز است")
+    if not reasons:
+        return None
+    return (f"تاریخ سند {jalali.format_date(doc_date)} " + " و ".join(reasons)
+            + ". اگر تاریخ درست است ادامه دهید؛ وگرنه آن را اصلاح کنید.\nبا همین تاریخ ادامه می‌دهید؟")
+
+
 async def clock_skew_days(db: Database) -> int | None:
     """Days between this PC's date and the database server's (None when unknown, e.g. SQLite)."""
     async with db.session() as s:
@@ -309,28 +330,29 @@ async def _collect(s: AsyncSession, data: DocumentInput) -> tuple[list[DocumentL
         field = f"line:{no}"
         item = await s.get(Item, line.item_id)
         if item is None:
-            bad(field, f"ردیف {no}: کالا پیدا نشد.")
+            bad(field, f"ردیف {to_persian_digits(no)}: کالا پیدا نشد.")
             continue
         if not item.is_active:
-            bad(field, f"ردیف {no}: کالای «{item.name}» غیرفعال است.")
+            bad(field, f"ردیف {to_persian_digits(no)}: کالای «{item.name}» غیرفعال است.")
             continue
         if data.doc_type in (DocType.LOAN_OUT, DocType.LOAN_RETURN) and not item.is_returnable:
-            bad(field, f"ردیف {no}: کالای «{item.name}» امانی/برگشتی تعریف نشده است.")
+            bad(field, f"ردیف {to_persian_digits(no)}: کالای «{item.name}» امانی/برگشتی تعریف نشده است.")
             continue
         factors = _item_factors(item)
         if line.unit_id not in factors:
-            bad(field, f"ردیف {no}: واحد انتخاب‌شده برای «{item.name}» تعریف نشده است.")
+            bad(field, f"ردیف {to_persian_digits(no)}: واحد انتخاب‌شده برای «{item.name}» تعریف نشده است.")
             continue
         qty = line.qty
         if qty is None or qty == 0 or (qty < 0 and data.doc_type != DocType.ADJUSTMENT):
-            bad(field, f"ردیف {no}: مقدار «{item.name}» باید بزرگ‌تر از صفر باشد.")
+            bad(field, f"ردیف {to_persian_digits(no)}: مقدار «{item.name}» باید بزرگ‌تر از صفر باشد.")
             continue
         unit = await s.get(Unit, line.unit_id)
         if unit is not None and not unit.allow_decimal and qty != qty.to_integral_value():
-            bad(field, f"ردیف {no}: مقدار «{item.name}» به «{unit.name}» باید عدد صحیح باشد.")
+            bad(field, f"ردیف {to_persian_digits(no)}: مقدار «{item.name}» به «{unit.name}» باید "
+                       "عدد صحیح باشد.")
             continue
         if line.unit_price is not None and line.unit_price < 0:
-            bad(field, f"ردیف {no}: فی نمی‌تواند منفی باشد.")
+            bad(field, f"ردیف {to_persian_digits(no)}: فی نمی‌تواند منفی باشد.")
             continue
         factor = factors[line.unit_id]
         lines.append(DocumentLine(
@@ -486,6 +508,21 @@ def _set_header(doc: Document, data: DocumentInput, place: tuple[int | None, int
     doc.description = data.description.strip()
     doc.location_id, doc.consumption_floor_id = place
     doc.usage_note = data.usage_note.strip()
+
+
+async def _check_factors(s: AsyncSession, doc: Document) -> None:
+    """A unit's factor changed after the draft was saved (test report issue 3): «۲ کارتن» may have
+    meant the old or the new cartons, so neither is guessed. The person opens the draft, checks it and
+    saves it again, which recomputes the line with today's factor."""
+    for line in doc.lines:
+        item = await s.get(Item, line.item_id)
+        now = _item_factors(item).get(line.unit_id)
+        if now is not None and now != line.factor:
+            unit = await s.get(Unit, line.unit_id)
+            raise ValidationError(
+                f"ضریب واحد «{unit.name}» برای «{item.name}» از {format_qty(line.factor)} به "
+                f"{format_qty(now)} تغییر کرده است. پیش‌نویس را باز کنید، مقدار را بررسی و دوباره ذخیره "
+                "کنید.")
 
 
 async def _check_loan_return_limits(s: AsyncSession, doc: Document) -> None:
@@ -706,7 +743,7 @@ async def place_text_in(s: AsyncSession, doc: Document) -> str:
 async def record_print(db: Database, actor: Actor, doc_id: int, kind: str) -> int:
     """Count one issued copy (kind: "printer" or "pdf"); returns its copy number."""
     actor.require(Perm.DOCUMENTS_VIEW)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         doc = await _load(s, doc_id)
         if doc.status == DocStatus.DRAFT:
             raise ValidationError("چاپ پیش‌نویس ثبت نمی‌شود؛ ابتدا سند را ثبت نهایی کنید.")
@@ -881,7 +918,7 @@ async def create_document(db: Database, actor: Actor, data: DocumentInput) -> in
     # Two PCs saving the same document type at the same moment can pick the same number;
     # the unique constraint rejects the second one, which simply retries with the next number.
     async def attempt() -> int:
-        async with db.session(actor.user_id) as s:
+        async with db.session(actor) as s:
             return (await create_document_in(s, actor, data)).id
 
     return await _with_retries(attempt, numbering=True)
@@ -934,7 +971,7 @@ async def update_document(db: Database, actor: Actor, doc_id: int, expected_vers
 
 async def _update_document(db: Database, actor: Actor, doc_id: int, expected_version: int,
                            data: DocumentInput) -> None:
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         doc = await _load(s, doc_id)
         if doc.version_id != expected_version:
             raise ConcurrencyError()
@@ -972,7 +1009,7 @@ async def delete_draft(db: Database, actor: Actor, doc_id: int) -> None:
 
 
 async def _delete_draft(db: Database, actor: Actor, doc_id: int) -> None:
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         doc = await _load(s, doc_id)
         if doc.status != DocStatus.DRAFT:
             raise ValidationError("فقط سند پیش‌نویس قابل حذف است. سند ثبت‌شده را ابطال کنید.")
@@ -996,7 +1033,7 @@ async def post_document(db: Database, actor: Actor, doc_id: int,
 
     `approval` (STOCKTAKE_OVERRIDE) is only needed while a stocktake freezes the items."""
     async def attempt() -> None:
-        async with db.session(actor.user_id) as s:
+        async with db.session(actor) as s:
             doc = await _load(s, doc_id)
             if expected_version is not None and doc.version_id != expected_version:
                 raise ConcurrencyError()
@@ -1037,6 +1074,7 @@ async def post_document_in(s: AsyncSession, actor: Actor, doc: Document, *,
             doc.doc_date = today  # the goods leave on the day it is printed
     # Re-validate: items/warehouses may have been deactivated since the draft was saved.
     await _validate(s, _input_of(doc))
+    await _check_factors(s, doc)
     if doc.doc_type == DocType.LOAN_RETURN:
         await _check_loan_return_limits(s, doc)
     if doc.doc_type == DocType.ISSUE and doc.person_id is None:
@@ -1104,7 +1142,7 @@ async def discard_assistant_draft(db: Database, actor: Actor, doc_id: int) -> No
     Drafts never touched stock; only the user's own, still-draft documents qualify."""
     actor.require_human("حذف پیش‌نویس دستیار")
     actor.require(Perm.DOCUMENTS_EDIT)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         doc = await _load(s, doc_id)
         if doc.status != DocStatus.DRAFT:
             raise ValidationError("این سند دیگر پیش‌نویس نیست.")
@@ -1140,7 +1178,7 @@ async def cancel_document(db: Database, actor: Actor, doc_id: int, reason: str =
 
 async def _cancel_document(db: Database, actor: Actor, doc_id: int, reason: str,
                            approval: Approval | None) -> None:
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         doc = await _load(s, doc_id)
         if doc.status != DocStatus.POSTED:
             raise ValidationError("فقط سند ثبت‌شده قابل ابطال است.")

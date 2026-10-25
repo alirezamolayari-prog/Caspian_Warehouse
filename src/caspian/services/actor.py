@@ -56,3 +56,6 @@ class Actor:
 
 
 SYSTEM = Actor(None, "system", "سیستم", "system", frozenset())
+
+# Every service imports this module, so the live check of `db.session(actor)` is always installed.
+from caspian.services import access  # noqa: E402, F401

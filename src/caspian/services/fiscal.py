@@ -26,6 +26,7 @@ from sqlalchemy import delete, func, select, text, update
 
 from caspian.core import jalali
 from caspian.core.permissions import Perm
+from caspian.core.text import to_persian_digits
 from caspian.db.database import Database, DbConfig
 from caspian.db.models import (
     AuditLog,
@@ -84,11 +85,12 @@ class PreCheck:
     def blocking(self) -> list[str]:
         problems = []
         if self.already_closed:
-            problems.append(f"سال {self.year} قبلاً بسته شده است.")
+            problems.append(f"سال {to_persian_digits(self.year)} قبلاً بسته شده است.")
         if self.not_ended:
-            problems.append(f"سال مالی {self.year} هنوز به پایان نرسیده است.")
+            problems.append(f"سال مالی {to_persian_digits(self.year)} هنوز به پایان نرسیده است.")
         if self.drafts:
-            problems.append(f"{self.drafts} سند پیش‌نویس در این سال وجود دارد؛ ثبت نهایی یا حذف کنید.")
+            problems.append(f"{to_persian_digits(self.drafts)} سند پیش‌نویس در این سال وجود دارد؛ "
+                            "ثبت نهایی یا حذف کنید.")
         if self.open_stocktakes:
             problems.append("انبارگردانی باز وجود دارد؛ آن را تأیید یا لغو کنید.")
         return problems
@@ -203,7 +205,7 @@ async def _close(db: Database, actor: Actor, year: int, options: CloseOptions, a
     export_dir.mkdir(parents=True, exist_ok=True)
     audit_file = export_dir / f"audit-{year}.xlsx"
 
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         # --- which documents survive: open loans (and their returns) are carried over
         open_loan_ids = {r.document_id for r in await _loan_rows(s) if r.outstanding > 0}
         old_doc_ids = set((await s.scalars(select(Document.id).where(Document.fiscal_year <= year))).all())
@@ -248,7 +250,8 @@ async def _close(db: Database, actor: Actor, year: int, options: CloseOptions, a
                 Document.doc_type == DocType.OPENING, Document.fiscal_year == year + 1)) or 0) + 1
             doc = Document(doc_type=DocType.OPENING, fiscal_year=year + 1, number=number,
                            doc_date=start_next, status=DocStatus.POSTED, warehouse_id=wh_id,
-                           description=f"مانده انتقالی از سال {year}", posted_at=dt.datetime.now(),
+                           description=f"مانده انتقالی از سال {to_persian_digits(year)}",
+                           posted_at=dt.datetime.now(),
                            posted_by_id=actor.user_id)
             base_units = dict((await s.execute(select(Item.id, Item.base_unit_id)
                                                .where(Item.id.in_(list(lines))))).all())
@@ -330,7 +333,7 @@ async def get_archive(db: Database, year: int) -> ArchiveInfo:
     for archive in (await load_state(db)).archive_list():
         if archive.year == year:
             return archive
-    raise NotFound(f"بایگانی سال {year} پیدا نشد.")
+    raise NotFound(f"بایگانی سال {to_persian_digits(year)} پیدا نشد.")
 
 
 async def run_year_end(db: Database, actor: Actor, year: int, options: CloseOptions,

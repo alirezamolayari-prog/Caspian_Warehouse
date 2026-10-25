@@ -100,7 +100,8 @@ class YearEndWizard(QDialog):
         self.carry_items = QCheckBox("تعریف کالاها")
         self.carry_stock = QCheckBox("موجودی کالا (به‌صورت سند «موجودی اول دوره»)")
         self.purge_stale = QCheckBox(
-            f"حذف کالاهای راکد (بدون موجودی و بدون گردش در {fiscal.STALE_MONTHS} ماه اخیر)")
+            f"حذف کالاهای راکد (بدون موجودی و بدون گردش در {to_persian_digits(fiscal.STALE_MONTHS)} "
+            "ماه اخیر)")
         for box in (self.carry_persons, self.carry_items, self.carry_stock):
             box.setChecked(True)
             col.addWidget(box)
@@ -177,15 +178,16 @@ class YearEndWizard(QDialog):
             carry = "شروع خالی" if self.fresh_mode.isChecked() else "، ".join(
                 n for n, on in (("اشخاص", o.carry_persons), ("کالاها", o.carry_items),
                                 ("موجودی", o.carry_stock)) if on) or "هیچ‌کدام"
-            y = to_persian_digits(self.year.value())
+            year_text = to_persian_digits(self.year.value())
             self.summary.setText(
-                f"سال مالی {y} بسته می‌شود:\n"
+                f"سال مالی {year_text} بسته می‌شود:\n"
                 f"• ابتدا یک نسخه پشتیبان رمزنگاری‌شده در «{self.backup_dir.text()}» ساخته می‌شود.\n"
-                f"• همه اطلاعات سال {y} در بایگانی فقط‌خواندنی نگه داشته می‌شود.\n"
+                f"• همه اطلاعات سال {year_text} در بایگانی فقط‌خواندنی نگه داشته می‌شود.\n"
                 f"• منتقل‌شونده‌ها: {carry}"
                 + ("؛ کالاهای راکد حذف می‌شوند." if o.purge_stale_items else ".") + "\n"
-                f"• رویدادهای سیستم تا پایان سال {y} به فایل اکسل منتقل و از پایگاه فعال پاک می‌شوند.\n"
-                f"• پس از بستن، سندی با تاریخ سال {y} قابل ثبت یا تغییر نیست.\n\n"
+                f"• رویدادهای سیستم تا پایان سال {year_text} به فایل اکسل منتقل و از پایگاه فعال پاک "
+                "می‌شوند.\n"
+                f"• پس از بستن، سندی با تاریخ سال {year_text} قابل ثبت یا تغییر نیست.\n\n"
                 "این عملیات نیاز به PIN مدیر دارد.")
 
     @asyncSlot()
@@ -268,8 +270,8 @@ class FiscalTab(QWidget):
     async def refresh(self) -> None:
         state = await load_state(self._ctx.db)
         current = jalali.fiscal_year_of(dt.date.today())
-        closed = to_persian_digits(state.closed_through) if state.closed_through else "هیچ سالی"
-        self.state_label.setText(f"سال مالی جاری: {to_persian_digits(current)} — بسته‌شده تا: {closed}. "
+        closed_text = to_persian_digits(state.closed_through) if state.closed_through else "هیچ سالی"
+        self.state_label.setText(f"سال مالی جاری: {to_persian_digits(current)} — بسته‌شده تا: {closed_text}. "
                                  "اطلاعات سال‌های بسته‌شده فقط‌خواندنی است و از بخش گزارش‌ها قابل مشاهده است.")
         self.table.set_rows([(a.year, (to_persian_digits(a.year), a.database,
                                        jalali.format_date(dt.datetime.fromisoformat(a.closed_at)),

@@ -9,6 +9,18 @@ All notable changes to Caspian Warehouse. Versions follow `pyproject.toml`; inst
 
 ## Unreleased — owner approval phase
 
+### Fixes from the pre-launch test report (docs/TEST_REPORT.md)
+- **A deactivated user, or one whose role changed, is stopped at once** — even in a window that was
+  already open on another PC. Every change re-checks the account in the database; the window returns
+  to the login screen with the reason (within a minute when idle).
+- **Changing a unit's factor no longer posts old drafts wrongly.** A draft saved with «1 کارتن = 24»
+  is refused after the factor became 12, with a message saying so; open the draft, check it and save
+  it again.
+- **Unusual dates are questioned, not refused.** Saving or posting a document dated outside the
+  current fiscal year, or more than 30 days ago, asks «با همین تاریخ ادامه می‌دهید؟» first.
+- Persian digits in every message («ردیف ۱»، «ساعت ۲۰:۰۰»، years, counts, minutes…); a test guards it.
+- Security updates: certifi 2026.10.23, opentelemetry-api 1.45.1, setuptools 84.2.1.
+
 ### Goods requests approved by the owners (درخواست کالا, Caspian Server)
 - New page «درخواست کالا» (permission `requests.manage`, given to admin and manager): requester picked
   from persons (quick «new person» with name and phone), place from the location picker, items from

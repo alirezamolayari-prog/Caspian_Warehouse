@@ -59,9 +59,9 @@ async def check(db: Database, actor: Actor, today: dt.date | None = None) -> lis
                 findings.append(Finding("future_date", label, f"تاریخ {date} بعد از امروز است.",
                                         FIX_DOCUMENT))
             else:
-                year = to_persian_digits(current_year)
+                year_text = to_persian_digits(current_year)
                 findings.append(Finding("outside_year", label,
-                                        f"تاریخ {date} در سال مالی باز ({year}) نیست.", FIX_DOCUMENT))
+                                        f"تاریخ {date} در سال مالی باز ({year_text}) نیست.", FIX_DOCUMENT))
         balances = (await s.execute(
             select(Item.code, Item.name, Unit.name, Warehouse.name, StockBalance.qty)
             .join(Item, Item.id == StockBalance.item_id)

@@ -351,7 +351,7 @@ async def create_batch(
             raise ValidationError("نوع سند و انبار را برای ورود اقلام مشخص کنید.")
         if doc_type in (DocType.TRANSFER, DocType.LOAN_RETURN):
             raise ValidationError("این نوع سند از طریق ورود اطلاعات پشتیبانی نمی‌شود.")
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         if warehouse_id is not None and await s.get(Warehouse, warehouse_id) is None:
             raise ValidationError("انبار نامعتبر است.")
         if person_id is not None and await s.get(Person, person_id) is None:
@@ -384,7 +384,7 @@ async def update_line(db: Database, actor: Actor, line_id: int, **values) -> Non
     actor.require(Perm.IMPORT_RUN)
     if unknown := set(values) - EDITABLE:
         raise ValidationError(f"فیلد نامعتبر: {', '.join(unknown)}")
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         line = await s.get(ImportLine, line_id)
         if line is None:
             raise NotFound("ردیف پیدا نشد.")
@@ -404,7 +404,7 @@ async def update_line(db: Database, actor: Actor, line_id: int, **values) -> Non
 async def set_resolution(db: Database, actor: Actor, line_id: int, resolution: Resolution,
                          item_id: int | None = None) -> None:
     actor.require(Perm.IMPORT_RUN)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         line = await s.get(ImportLine, line_id)
         if line is None:
             raise NotFound("ردیف پیدا نشد.")
@@ -432,7 +432,7 @@ async def create_variant(db: Database, actor: Actor, line_id: int, name: str) ->
     name = " ".join(name.split())[:255]
     if not name:
         raise ValidationError("نام کالای جدید را بنویسید.")
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         line = await s.get(ImportLine, line_id)
         if line is None:
             raise NotFound("ردیف پیدا نشد.")
@@ -448,7 +448,7 @@ async def create_variant(db: Database, actor: Actor, line_id: int, name: str) ->
 async def discard_batch(db: Database, actor: Actor, batch_id: int) -> None:
     actor.require_human("حذف پیش‌نویس ورود اطلاعات")
     actor.require(Perm.IMPORT_RUN)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         batch = await _load(s, batch_id)
         _require_open(batch)
         batch.status = BatchStatus.DISCARDED
@@ -506,18 +506,19 @@ async def apply_batch(db: Database, actor: Actor, batch_id: int,
     if actor.is_ai:
         raise PermissionDenied("دستیار هوشمند فقط پیش‌نویس می‌سازد؛ اعمال آن با کاربر است.")
     actor.require(Perm.IMPORT_RUN)
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         batch = await _load(s, batch_id)
         _require_open(batch)
         unresolved = [ln.row_no for ln in batch.lines if ln.resolution is None]
         if unresolved:
-            rows = "، ".join(str(n) for n in unresolved[:10])
-            raise ValidationError(f"{len(unresolved)} ردیف نیاز به تصمیم دارد (ردیف‌های {rows}).")
+            row_list = to_persian_digits("، ".join(str(n) for n in unresolved[:10]))
+            raise ValidationError(f"{to_persian_digits(len(unresolved))} ردیف نیاز به تصمیم دارد "
+                                  f"(ردیف‌های {row_list}).")
         for ln in batch.lines:
             if ln.resolution == Resolution.CREATE and not ln.name:
-                raise ValidationError(f"ردیف {ln.row_no}: برای ایجاد کالا، نام لازم است.")
+                raise ValidationError(f"ردیف {to_persian_digits(ln.row_no)}: برای ایجاد کالا، نام لازم است.")
             if ln.resolution in (Resolution.MATCH, Resolution.OVERWRITE) and not ln.match_item_id:
-                raise ValidationError(f"ردیف {ln.row_no}: کالای موجود انتخاب نشده است.")
+                raise ValidationError(f"ردیف {to_persian_digits(ln.row_no)}: کالای موجود انتخاب نشده است.")
         overwrites = [ln for ln in batch.lines if ln.resolution == Resolution.OVERWRITE]
         approver_id = consume(approval, ProtectedAction.IMPORT_OVERWRITE, actor) \
             if overwrites else None
@@ -548,9 +549,10 @@ async def apply_batch(db: Database, actor: Actor, batch_id: int,
                     item = await items.create_item_in(s, actor, data,
                                                       allow_similar=similar_approver is not None)
                 except SimilarItems as exc:
-                    raise SimilarItems(f"ردیف {ln.row_no}: {exc.message}", exc.candidates) from exc
+                    raise SimilarItems(f"ردیف {to_persian_digits(ln.row_no)}: {exc.message}",
+                                       exc.candidates) from exc
                 except ValidationError as exc:
-                    raise ValidationError(f"ردیف {ln.row_no}: {exc.message}") from exc
+                    raise ValidationError(f"ردیف {to_persian_digits(ln.row_no)}: {exc.message}") from exc
                 item_for_line[ln.id] = item.id
                 created += 1
             elif ln.resolution == Resolution.OVERWRITE:
@@ -567,7 +569,8 @@ async def apply_batch(db: Database, actor: Actor, batch_id: int,
                     owner = await s.scalar(select(ItemBarcode.item_id)
                                            .where(ItemBarcode.barcode == ln.barcode))
                     if owner:
-                        raise ValidationError(f"ردیف {ln.row_no}: بارکد متعلق به کالای دیگری است.")
+                        raise ValidationError(f"ردیف {to_persian_digits(ln.row_no)}: بارکد متعلق به کالای "
+                                              "دیگری است.")
                     item.barcodes.append(ItemBarcode(barcode=ln.barcode))
                 audit.record(s, actor, "item.overwritten_by_import", "item", item.id,
                              {"before": before, "batch": batch.id}, approved_by_id=approver_id)

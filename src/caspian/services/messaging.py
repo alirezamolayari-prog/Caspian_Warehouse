@@ -16,6 +16,7 @@ import httpx
 
 from caspian.core.permissions import Perm
 from caspian.core.secrets import get_secret, set_secret
+from caspian.core.text import to_persian_digits
 from caspian.db.database import Database
 from caspian.db.models import AppSetting
 from caspian.services import audit
@@ -84,7 +85,7 @@ async def save_config(db: Database, actor: Actor, config: MessagingConfig,
     for r in config.email.recipients:
         if "@" not in r:
             raise ValidationError(f"نشانی ایمیل نامعتبر: {r}")
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         row = await s.get(AppSetting, "messaging")
         value = asdict(config)
         if row is None:
@@ -150,7 +151,7 @@ class Messenger:
                 except httpx.HTTPError as exc:
                     raise SendError(f"ارسال تلگرام ممکن نشد: {type(exc).__name__}") from exc
                 if response.status_code != 200:
-                    raise SendError(f"تلگرام خطا داد ({response.status_code}).")
+                    raise SendError(f"تلگرام خطا داد ({to_persian_digits(response.status_code)}).")
 
     async def _email(self, config: EmailConfig, text: str,
                      attachment: tuple[str, bytes, str] | None) -> None:
