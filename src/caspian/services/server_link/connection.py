@@ -15,7 +15,7 @@ from caspian.db.models import AppSetting
 from caspian.services import audit
 from caspian.services.actor import Actor
 from caspian.services.errors import PermissionDenied, ValidationError
-from caspian.services.server_link.client import ServerClient
+from caspian.services.server_link.client import TIMEOUT_SECONDS, ServerClient
 
 KEY = "server.connection"
 SECRET_KIND = "server"
@@ -90,9 +90,10 @@ async def save_connection(db: Database, actor: Actor, url: str, username: str,
 
 
 async def test_connection(url: str, username: str, password: str,
-                          transport: httpx.AsyncBaseTransport | None = None) -> str:
+                          transport: httpx.AsyncBaseTransport | None = None,
+                          timeout: float = TIMEOUT_SECONDS) -> str:
     """Log in and ask «who am I»; returns a Persian confirmation or raises a ServerError."""
-    client = ServerClient(clean_url(url), username.strip(), password, transport)
+    client = ServerClient(clean_url(url), username.strip(), password, transport, timeout)
     await client.health()
     me = await client.call("GET", "/auth/me")
     if me.get("role") not in ("warehouse", "admin"):

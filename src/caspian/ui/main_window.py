@@ -291,6 +291,7 @@ class MainWindow(QMainWindow):
         self.server_status.setToolTip("برای تلاش دوباره کلیک کنید")
         self.server_status.clicked.connect(self._retry_server)
         self.server_status.setVisible(False)
+        self._server_state: SyncState | None = None  # until the first sync tick reports
         bar.addPermanentWidget(self.server_status)
         if self.ctx.server_link is not None:
             self.ctx.server_link.result.connect(self._on_server_result)
@@ -302,7 +303,14 @@ class MainWindow(QMainWindow):
         if self.ctx.server_link is not None:
             self.ctx.server_link.retry()
 
+    def _server_indicator_visible(self) -> bool:
+        """Hidden while no server is set: working without Caspian Server is normal, not an alarm."""
+        return (self.ctx.server_link is not None and self.is_allowed("requests")
+                and self._server_state != SyncState.NOT_CONFIGURED)
+
     def _on_server_result(self, result) -> None:
+        self._server_state = result.state
+        self.server_status.setVisible(self._server_indicator_visible())
         connected = result.state == SyncState.CONNECTED
         self.server_status.setText(STATE_TEXT[result.state])
         self.server_status.setToolTip((result.message + "\n" if result.message else "")
@@ -406,7 +414,7 @@ class MainWindow(QMainWindow):
         for key, button in self._nav_buttons.items():
             button.setVisible(self.is_allowed(key))
         self._assistant_button.setVisible(self.is_allowed("assistant"))
-        self.server_status.setVisible(self.ctx.server_link is not None and self.is_allowed("requests"))
+        self.server_status.setVisible(self._server_indicator_visible())
         if self.ctx.server_link is not None:
             self.ctx.server_link.set_actor(actor)  # approved requests become vouchers as this person
         spawn(self.update_requests_badge())
