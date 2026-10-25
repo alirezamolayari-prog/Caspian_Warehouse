@@ -26,6 +26,14 @@ from caspian.services.errors import ValidationError
 
 log = logging.getLogger(__name__)
 
+LOCAL_HELP = ("تک‌کاربره: برنامه و پایگاه داده هر دو روی همین رایانه‌اند. اگر هنگام نصب گزینه‌ی نصب "
+              "پایگاه داده (MariaDB) را زده‌اید، فقط کافی است تیک «نصب جدید» را بزنید و رمز مدیر MariaDB "
+              "را که هنگام نصب انتخاب کردید وارد کنید.")
+NETWORK_HELP = ("شبکه: پایگاه داده روی رایانه‌ی اصلی انبار است. نشانی آن رایانه "
+                "(IP، مثلاً 192.168.1.10) را در «آدرس سرور» بنویسید و نام کاربری و رمز برنامه را "
+                "که روی رایانه‌ی اصلی ساخته شده وارد کنید. "
+                "روی رایانه‌ی اصلی باید «اجازه اتصال سایر رایانه‌های شبکه» فعال شده باشد (راهنمای نصب).")
+
 
 class DbSetupDialog(QDialog):
     """Collects connection details, verifies them and opens the database.
@@ -65,6 +73,17 @@ class DbSetupDialog(QDialog):
         mode_row.addWidget(self.network_radio)
         mode_row.addStretch(1)
         layout.addLayout(mode_row)
+        # What the chosen mode means, in plain Persian (first run on a new PC).
+        self.mode_help = QLabel(objectName="Muted")
+        self.mode_help.setWordWrap(True)
+        layout.addWidget(self.mode_help)
+        self.mariadb_link = QLabel(
+            'MariaDB نصب نیست؟ برنامه را دوباره نصب کنید و گزینه «Install the database server» را بزنید، '
+            'یا از <a href="https://mariadb.org/download/">سایت MariaDB</a> دانلود کنید.',
+            objectName="Muted")
+        self.mariadb_link.setWordWrap(True)
+        self.mariadb_link.setOpenExternalLinks(True)
+        layout.addWidget(self.mariadb_link)
 
         form = QFormLayout()
         form.setSpacing(10)
@@ -140,6 +159,7 @@ class DbSetupDialog(QDialog):
 
     def _on_mode_changed(self) -> None:
         local = self.local_radio.isChecked()
+        self.mode_help.setText(LOCAL_HELP if local else NETWORK_HELP)
         if local:
             self.host_edit.setText("localhost")
         elif self.host_edit.text() == "localhost":
