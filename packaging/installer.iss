@@ -71,6 +71,7 @@ Type: filesandordirs; Name: "{app}\_internal"
 Source: "{#DistDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\docs\USER_GUIDE.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 Source: "..\docs\LAN_SETUP.md"; DestDir: "{app}\docs"; Flags: ignoreversion
+Source: "..\docs\INSTALL_FA.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion
@@ -81,6 +82,7 @@ Source: "{#MariaDbMsi}"; DestName: "mariadb.msi"; Flags: dontcopy
 [Icons]
 Name: "{group}\Caspian Warehouse"; Filename: "{app}\CaspianWarehouse.exe"
 Name: "{group}\User guide"; Filename: "{app}\docs\USER_GUIDE.md"
+Name: "{group}\Install guide (Persian)"; Filename: "{app}\docs\INSTALL_FA.md"
 Name: "{group}\{cm:UninstallProgram,Caspian Warehouse}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\Caspian Warehouse"; Filename: "{app}\CaspianWarehouse.exe"; Tasks: desktopicon
 
