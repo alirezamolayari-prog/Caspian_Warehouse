@@ -178,6 +178,7 @@ class DataTable(QTableWidget):
         for r, (_, cells) in enumerate(rows):
             for c, text in enumerate(cells):
                 item = _SortItem(text)
+                item.setToolTip(text)  # the full text of a cell cut short with «…» (bug list #4)
                 item.setData(Qt.ItemDataRole.UserRole, r)
                 if muted and muted[r]:
                     item.setForeground(muted_color)
