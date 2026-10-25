@@ -582,7 +582,8 @@ async def list_documents(
              .group_by(DocumentLine.document_id).subquery())
     stmt = (
         select(Document, Warehouse.name, dest.name, Person.name, func.coalesce(lines.c.n, 0),
-               User.username)
+               # the full name people know, the login name only as a fallback (bug list #5)
+               func.coalesce(func.nullif(User.full_name, ""), User.username))
         .join(Warehouse, Document.warehouse_id == Warehouse.id)
         .outerjoin(dest, Document.dest_warehouse_id == dest.id)
         .outerjoin(Person, Document.person_id == Person.id)

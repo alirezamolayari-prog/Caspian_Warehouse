@@ -178,6 +178,7 @@ class DataTable(QTableWidget):
         for r, (_, cells) in enumerate(rows):
             for c, text in enumerate(cells):
                 item = _SortItem(text)
+                item.setToolTip(text)  # the full text of a cell cut short with «…» (bug list #4)
                 item.setData(Qt.ItemDataRole.UserRole, r)
                 if muted and muted[r]:
                     item.setForeground(muted_color)
@@ -218,6 +219,17 @@ class DataTable(QTableWidget):
             if item is not None and item.data(Qt.ItemDataRole.UserRole) == data_row:
                 self.selectRow(view_row)
                 return
+
+
+def persian_row_numbers(table: QTableWidget) -> None:
+    """Row numbers beside an editable line table in Persian digits («۱»، «۲»…, like the «ردیف ۱» of
+    the error messages), renumbered whenever a line is added or removed."""
+
+    def relabel(*_args) -> None:
+        table.setVerticalHeaderLabels([to_persian_digits(n + 1) for n in range(table.rowCount())])
+
+    table.model().rowsInserted.connect(relabel)
+    table.model().rowsRemoved.connect(relabel)
 
 
 class SearchBox(QLineEdit):
