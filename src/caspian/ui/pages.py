@@ -36,6 +36,7 @@ PAGES: tuple[PageSpec, ...] = (
     PageSpec("items", "کالاها", "package", perm=Perm.ITEMS_VIEW),
     PageSpec("master", "اطلاعات پایه", "database", perm=Perm.ITEMS_VIEW),
     PageSpec("documents", "اسناد انبار", "arrow-left-right", perm=Perm.DOCUMENTS_VIEW),
+    PageSpec("requests", "درخواست کالا", "clipboard-list", perm=Perm.REQUESTS_MANAGE),
     PageSpec("imports", "ورود اطلاعات", "file-input", perm=Perm.IMPORT_RUN),
     PageSpec("stocktake", "انبارگردانی", "clipboard-check", perm=Perm.STOCKTAKE_RUN),
     PageSpec("reports", "گزارش‌ها", "chart-column", perm=Perm.REPORTS_VIEW),

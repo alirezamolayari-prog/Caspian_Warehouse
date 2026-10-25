@@ -30,6 +30,8 @@ class Perm(enum.StrEnum):
     SETTINGS_EDIT = "settings.edit"
     # Consumption locations (محل‌های مصرف): add/edit/deactivate and CSV re-import. Admin only.
     LOCATIONS_MANAGE = "locations.manage"
+    # Goods requests sent to Caspian Server for the owners' approval («درخواست کالا»).
+    REQUESTS_MANAGE = "requests.manage"
 
 
 # code -> (display name, permissions)
@@ -60,4 +62,5 @@ DEFAULT_ROLES: dict[str, tuple[str, frozenset[Perm]]] = {
 # (roles created earlier don't pick up new defaults otherwise).
 ADDED_PERMISSIONS: dict[Perm, tuple[str, ...]] = {
     Perm.STOCK_VIEW: ("manager", "storekeeper", "viewer"),
+    Perm.REQUESTS_MANAGE: ("manager",),
 }

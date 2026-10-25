@@ -9,6 +9,20 @@ All notable changes to Caspian Warehouse. Versions follow `pyproject.toml`; inst
 
 ## Unreleased — owner approval phase
 
+### Goods requests approved by the owners (درخواست کالا, Caspian Server)
+- New page «درخواست کالا» (permission `requests.manage`, given to admin and manager): requester picked
+  from persons (quick «new person» with name and phone), place from the location picker, items from
+  the item list. Requests are saved at once and sent in the background; offline they wait «در صف
+  ارسال» and go out automatically, never twice (`client_request_id`).
+- Statuses, chat per request, notification and a badge when an owner decides; who decided is never
+  shown. Rejected requests can be corrected and sent again.
+- Approval creates a draft issue voucher with exactly the approved lines; it can't be edited, deleted,
+  printed or posted before approval. Printing posts it (after a question) and reports «issued» with the
+  voucher number to the server.
+- Settings → «اتصال به سرور» (admin): URL and account; the password stays in Windows Credential
+  Manager. Status bar «سرور: متصل / قطع».
+- The assistant can prepare a request (sent only after «بله، بفرست») and list statuses.
+
 ### Part A — consumption locations (محل مصرف)
 - Floors and consumption locations of Caspian Phase 2 (141 plates and named places), seeded
   automatically from `data/seed/caspian_locations.csv`; codes are the keys shared with the future
