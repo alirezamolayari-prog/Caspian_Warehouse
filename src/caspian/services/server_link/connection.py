@@ -75,7 +75,7 @@ async def save_connection(db: Database, actor: Actor, url: str, username: str,
         raise ValidationError("نام کاربری سرور را وارد کنید.")
     if password is None and not get_password(connection):
         raise ValidationError("رمز عبور حساب سرور را وارد کنید.")
-    async with db.session(actor.user_id) as s:
+    async with db.session(actor) as s:
         row = await s.get(AppSetting, KEY)
         value = {"url": connection.url, "username": connection.username}
         if row is None:

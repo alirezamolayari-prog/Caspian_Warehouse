@@ -16,6 +16,7 @@ from caspian.core.text import to_persian_digits
 from caspian.db.database import Database
 from caspian.db.models import DocType, Document, GoodsRequest, RequestStatus
 from caspian.services import documents
+from caspian.services.access import ReloginRequired
 from caspian.services.actor import Actor
 from caspian.services.errors import ServiceError
 
@@ -44,6 +45,10 @@ async def ensure_issue_drafts(db: Database, actor: Actor | None) -> list[int]:
     for req in waiting:
         try:
             doc_id = await _make(db, actor, req)
+        except ReloginRequired:
+            # The signed-in user was deactivated or changed role: not the request's fault. Stop; the
+            # window sends the user to the login screen and the next signed-in person makes it.
+            return created
         except ServiceError as exc:
             log.warning("Issue voucher for request %s not made: %s", req.server_id, exc.message)
             await _set_error(db, req.id, f"ساخت حواله خروج: {exc.message}")
@@ -57,7 +62,7 @@ async def _make(db: Database, actor: Actor, req: GoodsRequest) -> int | None:
     data = _input_of(req)
 
     async def attempt() -> int | None:
-        async with db.session(actor.user_id) as s:
+        async with db.session(actor) as s:
             # Another PC (or an earlier attempt) may have made it meanwhile.
             if await s.scalar(select(Document.id).where(Document.server_request_id == req.server_id)):
                 return None
