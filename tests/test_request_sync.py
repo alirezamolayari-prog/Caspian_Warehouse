@@ -132,10 +132,12 @@ async def test_runner_keeps_running_in_the_background(linked, admin):
         await asyncio.sleep(0.1)
         assert not results  # the tick is still waiting for the server
         gate.set()
-        for _ in range(200):
-            if server.requests:  # picked up by the tick running then or the next one
+        # The request is sent by the tick running then or the next one; that tick reports a moment
+        # later (after polling), so wait for both instead of racing the reporter (CI flake).
+        for _ in range(500):
+            if server.requests and results:
                 break
             await asyncio.sleep(0.02)
-        assert results[0].state == SyncState.CONNECTED and len(server.requests) == 1
+        assert results and results[0].state == SyncState.CONNECTED and len(server.requests) == 1
     finally:
         await runner.stop()
