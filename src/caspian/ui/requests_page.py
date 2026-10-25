@@ -37,6 +37,7 @@ from caspian.services import items, locations, master
 from caspian.services.errors import ServiceError, ValidationError
 from caspian.services.server_link import goods
 from caspian.services.server_link.goods import STATUS_NAMES, RequestDetail, RequestRow
+from caspian.services.server_link.sync import SyncState
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.dialogs import Cancelled, FormDialog, ltr_field
 from caspian.ui.document_print import document_print_menu
@@ -44,6 +45,14 @@ from caspian.ui.location_picker import LocationPicker
 from caspian.ui.messages import show_error
 from caspian.ui.widgets import Card, DataTable, QtyEdit, SearchableCombo
 
+SAVED_HERE = ("درخواست‌ها روی همین رایانه ذخیره می‌شوند و بعداً خودکار ارسال می‌شوند؛ "
+              "کارهای انبار (رسید، حواله، چاپ، پشتیبان) مثل همیشه انجام می‌شود.")
+OFFLINE_TEXT = {
+    SyncState.NOT_CONFIGURED: "اتصال به سرور کاسپین هنوز تنظیم نشده است (تنظیمات ← اتصال به سرور). "
+                              + SAVED_HERE,
+    SyncState.DISCONNECTED: "سرور کاسپین الان در دسترس نیست. " + SAVED_HERE,
+    SyncState.ACCOUNT_REJECTED: "سرور حساب انبار را نپذیرفت. " + SAVED_HERE,
+}
 COLUMNS = ("شماره", "درخواست‌کننده", "محل مصرف", "اقلام", "وضعیت", "تاریخ", "توضیح")
 LINE_COLUMNS = ("کد", "نام کالا", "واحد", "مقدار", "")
 
@@ -442,6 +451,11 @@ class RequestsPage(QWidget):
         self.new_button.clicked.connect(self.on_new)
         toolbar.addWidget(self.new_button)
         layout.addLayout(toolbar)
+        # Working without Caspian Server is normal (go-live before the server is ready): say so plainly.
+        self.offline_banner = QLabel(objectName="StatusText")
+        self.offline_banner.setWordWrap(True)
+        self.offline_banner.hide()
+        layout.addWidget(self.offline_banner)
 
         actions = QHBoxLayout()
         actions.addStretch(1)
@@ -488,8 +502,16 @@ class RequestsPage(QWidget):
         self.print_button.setEnabled(printable and self._ctx.actor.can(Perm.DOCUMENTS_VIEW))
 
     def _on_sync(self, result) -> None:
+        self._show_server_state(result)
         if (result.changed or result.events) and self.isVisible():
             self.refresh()
+
+    def _show_server_state(self, result) -> None:
+        text = OFFLINE_TEXT.get(result.state, "")
+        if result.state == SyncState.ACCOUNT_REJECTED and result.message:
+            text = f"{result.message} {SAVED_HERE}"
+        self.offline_banner.setText(text)
+        self.offline_banner.setVisible(bool(text))
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
