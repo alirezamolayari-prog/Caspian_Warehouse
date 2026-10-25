@@ -57,6 +57,7 @@ from caspian.ui.widgets import (
     QtyEdit,
     SearchableCombo,
     SearchBox,
+    persian_row_numbers,
     popup_inside,
 )
 
@@ -216,6 +217,7 @@ class DocumentDialog(FormDialog):
         self.body.addLayout(entry)
 
         self.table = QTableWidget(0, len(LINE_COLUMNS))
+        persian_row_numbers(self.table)
         self.table.setHorizontalHeaderLabels(LINE_COLUMNS)
         self.table.verticalHeader().setDefaultSectionSize(40)
         self.table.setShowGrid(False)

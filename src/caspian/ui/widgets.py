@@ -220,6 +220,17 @@ class DataTable(QTableWidget):
                 return
 
 
+def persian_row_numbers(table: QTableWidget) -> None:
+    """Row numbers beside an editable line table in Persian digits («۱»، «۲»…, like the «ردیف ۱» of
+    the error messages), renumbered whenever a line is added or removed."""
+
+    def relabel(*_args) -> None:
+        table.setVerticalHeaderLabels([to_persian_digits(n + 1) for n in range(table.rowCount())])
+
+    table.model().rowsInserted.connect(relabel)
+    table.model().rowsRemoved.connect(relabel)
+
+
 class SearchBox(QLineEdit):
     """Emits `search(text)` shortly after the user stops typing (or on Enter)."""
 

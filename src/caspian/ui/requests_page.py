@@ -43,7 +43,7 @@ from caspian.ui.dialogs import Cancelled, FormDialog, ltr_field
 from caspian.ui.document_print import document_print_menu
 from caspian.ui.location_picker import LocationPicker
 from caspian.ui.messages import show_error
-from caspian.ui.widgets import Card, DataTable, QtyEdit, SearchableCombo
+from caspian.ui.widgets import Card, DataTable, QtyEdit, SearchableCombo, persian_row_numbers
 
 SAVED_HERE = ("درخواست‌ها روی همین رایانه ذخیره می‌شوند و بعداً خودکار ارسال می‌شوند؛ "
               "کارهای انبار (رسید، حواله، چاپ، پشتیبان) مثل همیشه انجام می‌شود.")
@@ -141,6 +141,7 @@ class RequestDialog(FormDialog):
         self.item_input.returnPressed.connect(self.on_item_entered)
         self.body.addWidget(self.item_input)
         self.table = QTableWidget(0, len(LINE_COLUMNS))
+        persian_row_numbers(self.table)
         self.table.setHorizontalHeaderLabels(LINE_COLUMNS)
         self.table.verticalHeader().setDefaultSectionSize(40)
         self.table.setShowGrid(False)
