@@ -278,7 +278,7 @@ class MainWindow(QMainWindow):
         config = self.ctx.db_config
         bar.addWidget(QLabel(f"پایگاه داده: {config.name} @ {config.host}"))
         bar.addPermanentWidget(QLabel(jalali.format_date(dt.date.today())))
-        bar.addPermanentWidget(QLabel(f"نسخه {__version__}"))
+        bar.addPermanentWidget(QLabel(f"نسخه {to_persian_digits(__version__)}"))
         self.clock_warning = QLabel(objectName="StatusText")
         self.clock_warning.setProperty("error", True)
         self.clock_warning.hide()

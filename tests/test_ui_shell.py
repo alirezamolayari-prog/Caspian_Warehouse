@@ -139,12 +139,14 @@ def test_about_dialog(qtbot):
     from PySide6.QtWidgets import QLabel
 
     from caspian import __version__
+    from caspian.core.text import to_persian_digits
     from caspian.ui.about import AboutDialog
 
     dialog = AboutDialog()
     qtbot.addWidget(dialog)
     text = " ".join(label.text() for label in dialog.findChildren(QLabel))
-    assert __version__ in text and "Vazirmatn" in text and "MariaDB" in text
+    # Persian digits (bug list round 1 #3)
+    assert to_persian_digits(__version__) in text and "Vazirmatn" in text and "MariaDB" in text
 
 
 async def test_admin_menu_offers_user_management(make_window, db, admin):

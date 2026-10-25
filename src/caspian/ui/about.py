@@ -6,6 +6,7 @@ from PySide6 import __version__ as pyside_version
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from caspian import APP_DISPLAY_NAME, __version__
+from caspian.core.text import to_persian_digits
 
 LICENSES = (
     ("Vazirmatn", "فونت فارسی — Saber Rastikerdar", "SIL Open Font License 1.1"),
@@ -28,7 +29,8 @@ class AboutDialog(QDialog):
         layout.setContentsMargins(24, 22, 24, 22)
         layout.setSpacing(10)
         layout.addWidget(QLabel(APP_DISPLAY_NAME, objectName="PageTitle"))
-        layout.addWidget(QLabel(f"نسخه {__version__} — سامانه هوشمند مدیریت انبار، آفلاین‌محور",
+        version = to_persian_digits(__version__)
+        layout.addWidget(QLabel(f"نسخه {version} — سامانه هوشمند مدیریت انبار، آفلاین‌محور",
                                 objectName="Muted"))
         layout.addWidget(QLabel(f"Python {platform.python_version()} — PySide6 {pyside_version}",
                                 objectName="Muted"))
