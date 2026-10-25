@@ -24,6 +24,7 @@ from caspian.services.ai import config
 from caspian.services.ai import history as chat_history
 from caspian.services.ai.config import PRESETS, ProviderConfig
 from caspian.services.errors import ServiceError
+from caspian.services.server_link import connection as server_connection
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.automation_settings import McpSection, MessagingTab, TasksTab
 from caspian.ui.backup_settings import BackupTab
@@ -326,6 +327,111 @@ class AITab(QWidget):
         (show_info if ok else show_error)(self, text)
 
 
+class ServerTab(QWidget):
+    """Caspian Server connection (admin only). The password is kept only in this PC's Windows
+    Credential Manager."""
+
+    def __init__(self, ctx: AppContext, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._ctx = ctx
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 12, 0, 0)
+        card = Card()
+        card.body.addWidget(QLabel("اتصال به سرور کاسپین (درخواست کالا)", objectName="CardTitle"))
+        intro = QLabel("این برنامه با حساب «انبار» به سرور وصل می‌شود تا درخواست‌ها را برای تأیید مالکان "
+                       "بفرستد و جواب‌ها را بگیرد. رمز فقط روی همین رایانه (Windows Credential Manager) "
+                       "ذخیره می‌شود.", objectName="Muted")
+        intro.setWordWrap(True)
+        card.body.addWidget(intro)
+        form = QFormLayout()
+        form.setSpacing(10)
+        self.url = ltr_field()
+        self.url.setPlaceholderText("https://caspian.example.ir")
+        self.url.textChanged.connect(self._update_warning)
+        form.addRow("نشانی سرور:", self.url)
+        self.username = ltr_field("warehouse")
+        form.addRow("نام کاربری:", self.username)
+        self.password = password_field()
+        form.addRow("رمز عبور:", self.password)
+        card.body.addLayout(form)
+        self.warning = QLabel("هشدار: با http رمز بدون رمزنگاری از شبکه عبور می‌کند؛ برای سرور اینترنتی "
+                              "از https استفاده کنید.", objectName="StatusText")
+        self.warning.setProperty("error", True)
+        self.warning.setWordWrap(True)
+        self.warning.hide()
+        card.body.addWidget(self.warning)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        self.test_button = QPushButton("آزمایش اتصال")
+        self.test_button.clicked.connect(self.on_test)
+        self.save_button = QPushButton("ذخیره")
+        self.save_button.setProperty("variant", "primary")
+        self.save_button.clicked.connect(self.on_save)
+        buttons.addWidget(self.test_button)
+        buttons.addWidget(self.save_button)
+        card.body.addLayout(buttons)
+        layout.addWidget(card)
+        layout.addStretch(1)
+        self._saved: server_connection.ServerConnection | None = None
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.load()
+
+    @asyncSlot()
+    async def load(self) -> None:
+        self._saved = await server_connection.get_connection(self._ctx.db)
+        if self._saved is not None:
+            self.url.setText(self._saved.url)
+            self.username.setText(self._saved.username)
+            stored = bool(server_connection.get_password(self._saved))
+            self.password.setPlaceholderText(
+                "ذخیره شده — برای تغییر، رمز جدید را وارد کنید" if stored else "")
+
+    def _update_warning(self, *_args) -> None:
+        try:
+            url = server_connection.clean_url(self.url.text())
+        except ServiceError:
+            self.warning.hide()
+            return
+        self.warning.setVisible(server_connection.ServerConnection(url, "").insecure)
+
+    def _password(self) -> str:
+        typed = self.password.text()
+        if typed:
+            return typed
+        same = self._saved is not None and self._saved.url == self.url.text().strip().rstrip("/") \
+            and self._saved.username == self.username.text().strip()
+        return (server_connection.get_password(self._saved) or "") if same else ""
+
+    @asyncSlot()
+    async def on_test(self) -> None:
+        self.test_button.setEnabled(False)
+        try:
+            text = await server_connection.test_connection(self.url.text(), self.username.text(),
+                                                           self._password())
+        except ServiceError as exc:
+            show_error(self, exc.message)
+            return
+        finally:
+            self.test_button.setEnabled(True)
+        show_info(self, text)
+
+    @asyncSlot()
+    async def on_save(self) -> None:
+        try:
+            await server_connection.save_connection(self._ctx.db, self._ctx.actor, self.url.text(),
+                                                    self.username.text(), self.password.text() or None)
+        except ServiceError as exc:
+            show_error(self, exc.message)
+            return
+        self.password.clear()
+        await self.load()
+        if self._ctx.server_link is not None:
+            self._ctx.server_link.retry()
+        show_info(self, "اتصال به سرور ذخیره شد.")
+
+
 class SettingsPage(QWidget):
     def __init__(self, ctx: AppContext, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -346,6 +452,8 @@ class SettingsPage(QWidget):
         self.tasks_index = self.tabs.addTab(self.tasks, "کارهای زمان‌بندی‌شده")
         self.backup_index = self.tabs.addTab(self.backup, "پشتیبان‌گیری")
         self.fiscal_index = self.tabs.addTab(self.fiscal, "سال مالی")
+        self.server = ServerTab(ctx)
+        self.server_index = self.tabs.addTab(self.server, "اتصال به سرور")
         layout.addWidget(self.tabs)
         ctx.user_changed.connect(self._apply_permissions)
         self._apply_permissions()
@@ -357,3 +465,4 @@ class SettingsPage(QWidget):
         self.tabs.setTabVisible(self.tasks_index, admin)
         self.tabs.setTabVisible(self.backup_index, self._ctx.actor.can(Perm.BACKUP_CREATE))
         self.tabs.setTabVisible(self.fiscal_index, self._ctx.actor.can(Perm.YEAR_CLOSE))
+        self.tabs.setTabVisible(self.server_index, self._ctx.actor.is_admin)

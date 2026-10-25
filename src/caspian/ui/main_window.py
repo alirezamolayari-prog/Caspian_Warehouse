@@ -5,6 +5,7 @@ import logging
 from PySide6.QtCore import QByteArray, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QFrame,
     QHBoxLayout,
@@ -22,9 +23,12 @@ from qasync import asyncSlot
 from caspian import APP_DISPLAY_NAME, __version__
 from caspian.core import jalali
 from caspian.core.permissions import DEFAULT_ROLES
+from caspian.core.text import to_persian_digits
 from caspian.db.models import DocStatus
 from caspian.services import access, auth, documents
 from caspian.services.actor import Actor
+from caspian.services.server_link import goods
+from caspian.services.server_link.sync import SyncState
 from caspian.ui.about import AboutDialog
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.assistant_page import AssistantPage
@@ -39,11 +43,14 @@ from caspian.ui.master_page import MasterDataPage
 from caspian.ui.messages import show_info
 from caspian.ui.pages import PAGES, DashboardPage, PageSpec, PlaceholderPage
 from caspian.ui.reports_page import ReportsPage
+from caspian.ui.requests_page import RequestsPage
+from caspian.ui.server_status import STATE_TEXT
 from caspian.ui.settings_page import SettingsPage
 from caspian.ui.stocktake_page import StocktakePage
 from caspian.ui.tasks import spawn
 from caspian.ui.theme import Theme
 from caspian.ui.users_page import UsersPage
+from caspian.ui.widgets import Toast
 
 log = logging.getLogger(__name__)
 SESSION_CHECK_MS = 60_000  # an idle window notices a deactivation within a minute
@@ -248,9 +255,12 @@ class MainWindow(QMainWindow):
                 page = StocktakePage(self.ctx)
             elif spec.key == "reports":
                 page = ReportsPage(self.ctx)
+            elif spec.key == "requests":
+                page = RequestsPage(self.ctx, open_document=self.open_document)
+                page.refreshed.connect(lambda: spawn(self.update_requests_badge()))
             elif spec.key == "assistant":
                 page = AssistantPage(self.ctx, open_batch=self.open_import_batch,
-                                     open_document=self.open_document)
+                                     open_document=self.open_document, open_request=self.open_requests)
             elif spec.key == "settings":
                 page = SettingsPage(self.ctx)
             elif spec.key == "users":
@@ -273,7 +283,52 @@ class MainWindow(QMainWindow):
         self.clock_warning.setProperty("error", True)
         self.clock_warning.hide()
         bar.addWidget(self.clock_warning)
+        # Caspian Server: «متصل / قطع»; a click retries at once (also a refused account).
+        self.server_status = QToolButton(objectName="IconButton")
+        self.server_status.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.server_status.setIconSize(QSize(14, 14))
+        self.server_status.setText("سرور: در حال اتصال…")
+        self.server_status.setToolTip("برای تلاش دوباره کلیک کنید")
+        self.server_status.clicked.connect(self._retry_server)
+        self.server_status.setVisible(False)
+        bar.addPermanentWidget(self.server_status)
+        if self.ctx.server_link is not None:
+            self.ctx.server_link.result.connect(self._on_server_result)
         spawn(self.check_clock())
+
+    # ----- Caspian Server -----
+
+    def _retry_server(self) -> None:
+        if self.ctx.server_link is not None:
+            self.ctx.server_link.retry()
+
+    def _on_server_result(self, result) -> None:
+        connected = result.state == SyncState.CONNECTED
+        self.server_status.setText(STATE_TEXT[result.state])
+        self.server_status.setToolTip((result.message + "\n" if result.message else "")
+                                      + "برای تلاش دوباره کلیک کنید")
+        theme = self._themes.current
+        self.server_status.setIcon(icon("wifi" if connected else "wifi-off",
+                                        theme.success if connected else theme.danger))
+        for event in result.events:
+            Toast(self.centralWidget(), event.text, 5000)
+        if result.events:
+            QApplication.alert(self)  # flashes the taskbar button when the window is in the background
+        if result.events or result.changed:
+            spawn(self.update_requests_badge())
+
+    async def update_requests_badge(self) -> None:
+        """«درخواست کالا (۲)»: decisions and owners' messages not opened yet."""
+        try:
+            count = await goods.unseen_count(self.ctx.db)
+        except Exception:
+            log.warning("Counting unseen requests failed", exc_info=True)
+            return
+        title = next(p.title for p in PAGES if p.key == "requests")
+        self._nav_buttons["requests"].setText(f"{title} ({to_persian_digits(count)})" if count else title)
+
+    async def open_requests(self) -> None:
+        self.navigate("requests")
 
     async def check_clock(self) -> None:
         """A PC whose clock differs from the server would date documents wrongly (QA Part A #6)."""
@@ -351,6 +406,10 @@ class MainWindow(QMainWindow):
         for key, button in self._nav_buttons.items():
             button.setVisible(self.is_allowed(key))
         self._assistant_button.setVisible(self.is_allowed("assistant"))
+        self.server_status.setVisible(self.ctx.server_link is not None and self.is_allowed("requests"))
+        if self.ctx.server_link is not None:
+            self.ctx.server_link.set_actor(actor)  # approved requests become vouchers as this person
+        spawn(self.update_requests_badge())
         current = self._stack.currentWidget()
         self.navigate(self.current_page if current is not None else "dashboard")
 

@@ -22,7 +22,7 @@ MAX_TOOL_ROUNDS = 6
 HISTORY_LIMIT = 30
 AI_TOTAL_TIMEOUT = 60  # seconds for one whole request, all tool rounds included (#8)
 
-MENUS = ("داشبورد، کالاها، اطلاعات پایه، اسناد انبار، ورود اطلاعات، انبارگردانی، گزارش‌ها، "
+MENUS = ("داشبورد، کالاها، اطلاعات پایه، اسناد انبار، درخواست کالا، ورود اطلاعات، انبارگردانی، گزارش‌ها، "
          "دستیار هوشمند، کاربران، تنظیمات")
 
 SYSTEM_PROMPT = """تو دستیار هوشمند نرم‌افزار انبارداری «انبار کاسپین» هستی. امروز {today} است.
@@ -35,6 +35,10 @@ SYSTEM_PROMPT = """تو دستیار هوشمند نرم‌افزار انبار
 - هر سند را فقط یک بار بساز. اگر ابزار needs_choice برگرداند (چند کالا یا شخص مشابه، مقدار نامشخص،
   محل یا طبقه، یا پیدا نشد) هرگز حدس نزن: گزینه‌ها را با کد نشان بده و از کاربر بپرس، بعد دوباره بساز.
 - برای فهرست‌های طولانی که کاربر باید بررسی کند، create_stock_draft (بخش «ورود اطلاعات») مناسب است.
+- برای «درخواست کالا» که مالکان باید تأیید کنند، create_goods_request را صدا بزن (درخواست‌کننده، محل مصرف،
+  کالاها) و برای وضعیت درخواست‌ها list_goods_requests. تو فقط پیش‌نویس درخواست می‌سازی؛ کاربر با «بله، بفرست»
+  آن را ارسال می‌کند. تو هرگز درخواستی را تأیید یا رد نمی‌کنی، حواله را چاپ یا ثبت نهایی نمی‌کنی، و نمی‌دانی
+  کدام مالک تصمیم گرفته است (فقط وضعیت را بگو).
 - تو هرگز سندی را ابطال یا حذف نمی‌کنی، کالا/شخص/کاربر را غیرفعال یا ادغام نمی‌کنی، نسخه پشتیبان را
   بازیابی نمی‌کنی، نقش تغییر نمی‌دهی، سال مالی نمی‌بندی و PIN مدیر را دور نمی‌زنی. اگر خواستند،
   بگو باید خودشان از بخش مربوط انجام دهند.
@@ -56,6 +60,8 @@ class AssistantReply:
     offline: bool = False
     # [{document_id, number, type, status}] — shown as links so nothing done goes unnoticed (#4)
     created_documents: list[dict] = field(default_factory=list)
+    # [{request_id, status: "DRAFT", needs_confirmation}] — goods requests waiting for «بله، بفرست»
+    created_requests: list[dict] = field(default_factory=list)
 
 
 class Assistant:
@@ -109,14 +115,15 @@ class Assistant:
         except (AIUnavailable, TimeoutError) as exc:
             reason = exc.message if isinstance(exc, AIUnavailable) else \
                 "پاسخ دستیار بیش از حد طول کشید و متوقف شد."
-            if not (ctx.created_documents or ctx.created_batches):
+            if not (ctx.created_documents or ctx.created_batches or ctx.created_requests):
                 if isinstance(exc, AIUnavailable):
                     raise
                 raise AIUnavailable(reason) from exc
             # Something was already created: say so instead of only showing an error (#4).
             text = f"{reason}\n\nپیش از این خطا این موارد انجام شد:\n" + _created_summary(ctx)
             self.history.append({"role": "assistant", "content": text})
-            reply = AssistantReply(text, "", ctx.created_batches, created_documents=ctx.created_documents)
+            reply = AssistantReply(text, "", ctx.created_batches, created_documents=ctx.created_documents,
+                                   created_requests=ctx.created_requests)
             self._remember(self.history[-2]["content"] if len(self.history) > 1 else "", reply)
             return reply
 
@@ -130,7 +137,8 @@ class Assistant:
             if not result.tool_calls:
                 self.history.append({"role": "assistant", "content": result.content})
                 return AssistantReply(result.content, provider, ctx.created_batches,
-                                      created_documents=ctx.created_documents)
+                                      created_documents=ctx.created_documents,
+                                      created_requests=ctx.created_requests)
             messages.append({"role": "assistant", "content": result.content or None,
                              "tool_calls": result.tool_calls})
             for call in result.tool_calls:
@@ -138,16 +146,18 @@ class Assistant:
                 output = await run_tool(ctx, function.get("name", ""), function.get("arguments", "{}"))
                 messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": output})
         text = "پاسخ کامل آماده نشد. لطفاً سؤال را ساده‌تر بپرسید."
-        if ctx.created_documents or ctx.created_batches:
+        if ctx.created_documents or ctx.created_batches or ctx.created_requests:
             text += "\n" + _created_summary(ctx)
         self.history.append({"role": "assistant", "content": text})
-        return AssistantReply(text, provider, ctx.created_batches, created_documents=ctx.created_documents)
+        return AssistantReply(text, provider, ctx.created_batches, created_documents=ctx.created_documents,
+                              created_requests=ctx.created_requests)
 
 
 def _created_summary(ctx: ToolContext) -> str:
     lines = [f"• {d['type']} {d['number']} — {'ثبت نهایی' if d.get('status') == 'POSTED' else 'پیش‌نویس'}"
              for d in ctx.created_documents]
     lines += [f"• پیش‌نویس ورود اطلاعات شماره {to_persian_digits(b)}" for b in ctx.created_batches]
+    lines += ["• پیش‌نویس درخواست کالا (هنوز ارسال نشده)" for _r in ctx.created_requests]
     return "\n".join(lines)
 
 

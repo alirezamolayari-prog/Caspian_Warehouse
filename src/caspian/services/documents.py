@@ -38,6 +38,7 @@ from caspian.db.models import (
     Item,
     Location,
     Person,
+    RequestStatus,
     StockBalance,
     StockLedger,
     Stocktake,
@@ -127,6 +128,9 @@ class DocumentInput:
     location_id: int | None = None
     floor_id: int | None = None
     usage_note: str = ""
+    # Set only when an issue voucher is made from an approved goods request (server_link.issue_link);
+    # editing never changes it.
+    server_request_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -630,6 +634,7 @@ async def get_document(db: Database, actor: Actor, doc_id: int) -> DocumentDetai
             related_document_id=doc.related_document_id, description=doc.description,
             lines=[LineInput(v.item_id, v.unit_id, v.qty, v.unit_price, v.notes) for v in views],
             location_id=doc.location_id, floor_id=doc.consumption_floor_id, usage_note=doc.usage_note,
+            server_request_id=doc.server_request_id,
         )
         return DocumentDetail(doc.id, doc.version_id, doc.number, doc.fiscal_year, doc.status,
                               data, views)
@@ -673,6 +678,8 @@ class PrintSheet:
     place: str = ""  # «پلاک ۶۸ · طبقه همکف» (issue vouchers)
     usage_note: str = ""
     person_phone: str = ""  # «شماره تماس» under the recipient
+    # Made from an approved goods request: printing the draft posts it first (server_link).
+    linked_request: bool = False
 
     @property
     def total_amount(self) -> Decimal | None:
@@ -689,6 +696,12 @@ async def print_sheet(db: Database, actor: Actor, doc_id: int) -> PrintSheet:
     actor.require(Perm.DOCUMENTS_VIEW)
     async with db.session() as s:
         doc = await _load(s, doc_id)
+        if doc.server_request_id is not None and doc.status == DocStatus.DRAFT:
+            from caspian.services.server_link import linked
+
+            req = await linked.linked_request_in(s, doc)
+            if req is None or req.status != RequestStatus.APPROVED:
+                raise ValidationError(linked.NOT_APPROVED)
 
         async def name_of(model, pk, attr="name") -> str:
             row = await s.get(model, pk) if pk else None
@@ -714,7 +727,7 @@ async def print_sheet(db: Database, actor: Actor, doc_id: int) -> PrintSheet:
             branding.company_name(company.value if company else None),
             await person_name(doc.created_by_id), await person_name(doc.posted_by_id),
             doc.print_count, await person_name(doc.last_printed_by_id), place, doc.usage_note,
-            await name_of(Person, doc.person_id, "phone"))
+            await name_of(Person, doc.person_id, "phone"), doc.server_request_id is not None)
 
 
 async def place_text_in(s: AsyncSession, doc: Document) -> str:
@@ -891,7 +904,7 @@ async def create_document_in(s: AsyncSession, actor: Actor, data: DocumentInput)
     doc = Document(doc_type=data.doc_type, fiscal_year=year,
                    number=await _next_number(s, data.doc_type, year),
                    status=DocStatus.DRAFT, doc_date=data.doc_date,
-                   warehouse_id=data.warehouse_id)
+                   warehouse_id=data.warehouse_id, server_request_id=data.server_request_id)
     _set_header(doc, data, await _place(s, data))
     doc.lines = lines
     s.add(doc)
@@ -968,6 +981,10 @@ async def _update_document(db: Database, actor: Actor, doc_id: int, expected_ver
             raise ValidationError("نوع سند قابل تغییر نیست.")
         if jalali.fiscal_year_of(data.doc_date) != doc.fiscal_year:
             raise ValidationError("تاریخ سند باید در همان سال مالی بماند.")
+        if doc.server_request_id is not None and _locked(data) != _locked(_input_of(doc)):
+            from caspian.services.server_link import linked
+
+            raise ValidationError(linked.LOCKED)
         lines = await _validate(s, data)
         _set_header(doc, data, await _place(s, data))
         doc.lines.clear()
@@ -976,6 +993,12 @@ async def _update_document(db: Database, actor: Actor, doc_id: int, expected_ver
         flag_modified(doc, "description")  # line-only edits must still bump the version
         await s.flush()
         audit.record(s, actor, "document.updated", "document", doc.id, {"lines": len(lines)})
+
+
+def _locked(data: DocumentInput) -> tuple:
+    """What an issue voucher made from an approved request keeps (only date and description change)."""
+    return (data.warehouse_id, data.person_id, data.location_id, data.floor_id, data.usage_note.strip(),
+            sorted((ln.item_id, ln.unit_id, ln.qty) for ln in data.lines))
 
 
 async def delete_draft(db: Database, actor: Actor, doc_id: int) -> None:
@@ -990,6 +1013,10 @@ async def _delete_draft(db: Database, actor: Actor, doc_id: int) -> None:
         doc = await _load(s, doc_id)
         if doc.status != DocStatus.DRAFT:
             raise ValidationError("فقط سند پیش‌نویس قابل حذف است. سند ثبت‌شده را ابطال کنید.")
+        if doc.server_request_id is not None:
+            from caspian.services.server_link import linked
+
+            raise ValidationError(linked.NO_DELETE)
         await ensure_open_year(s, doc.fiscal_year)
         from caspian.services import imports  # imports depends on this module
 
@@ -1037,6 +1064,14 @@ async def post_document_in(s: AsyncSession, actor: Actor, doc: Document, *,
     actor.require(Perm.DOCUMENTS_POST)
     if doc.status != DocStatus.DRAFT:
         raise ValidationError("این سند قبلاً ثبت یا ابطال شده است.")
+    request = None
+    if doc.server_request_id is not None:  # made from a goods request: only once it is approved
+        from caspian.services.server_link import linked
+
+        request = linked.check_postable(await linked.linked_request_in(s, doc), doc)
+        today = dt.date.today()
+        if doc.doc_date < today and jalali.fiscal_year_of(today) == doc.fiscal_year:
+            doc.doc_date = today  # the goods leave on the day it is printed
     # Re-validate: items/warehouses may have been deactivated since the draft was saved.
     await _validate(s, _input_of(doc))
     await _check_factors(s, doc)
@@ -1059,6 +1094,8 @@ async def post_document_in(s: AsyncSession, actor: Actor, doc: Document, *,
                  {"type": doc.doc_type.value, "number": doc.number, **override,
                   **({"via": via} if via else {})},
                  approved_by_id=approver_id)
+    if request is not None:
+        linked.mark_issued_in(s, actor, request, number_text(doc.doc_type, doc.number))
 
 
 @dataclass(frozen=True)
@@ -1124,6 +1161,7 @@ def _input_of(doc: Document) -> DocumentInput:
         lines=[LineInput(ln.item_id, ln.unit_id, ln.qty, ln.unit_price, ln.notes)
                for ln in doc.lines],
         location_id=doc.location_id, floor_id=doc.consumption_floor_id, usage_note=doc.usage_note,
+        server_request_id=doc.server_request_id,
     )
 
 

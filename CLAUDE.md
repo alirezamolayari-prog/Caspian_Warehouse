@@ -26,6 +26,14 @@ license — see LICENSE). Current release: **v1.1.0** (installer on GitHub Relea
   (perm `locations.manage`); report `reports.consumption(_table)`; AI `find_location`/`consumption_report`,
   MCP `locations`/`consumption_report`. Setting `app_settings.locations.required_on_issue` (default on;
   the test template sets it off, fixture `locations_required` turns it on).
+- **Goods requests via Caspian Server** (`services/server_link/`, page `ui/requests_page.py`, perm
+  `requests.manage`; server repo `E:\My App\Caspian-Server`, role `warehouse`): local-first outbox
+  (`ServerOutbox`, ops CREATE/RESUBMIT/ISSUED/MESSAGE) + `/changes` polling by `sync.SyncRunner` (~10 s,
+  started in `app.py`, Qt bridge `ui/server_status.ServerLink`); upsert by server id, `client_request_id`
+  makes retries safe. Approved → draft ISSUE with `documents.server_request_id` (`issue_link`), locked to
+  the approved lines (`linked.py` guards in `documents`), printing posts it (`document_print._ready_sheet`)
+  and queues «issued». Owners are only «مالک». Password in keyring kind `server`. Tests use
+  `tests/fake_caspian_server.py`; real-server check: `tests/test_server_e2e.py` (opt-in env).
 - Documents: receipt, issue, transfer, adjustment, opening, loan out/return; draft → post
   (stock ledger + balances, row locks) → cancel (reversal rows; history never deleted).
 - **Draft-first imports** (Excel/CSV/Word, barcode scan, typed text) with row statuses

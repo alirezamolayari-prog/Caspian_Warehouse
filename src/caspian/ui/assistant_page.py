@@ -24,6 +24,7 @@ from caspian.services import documents
 from caspian.services.ai.assistant import Assistant
 from caspian.services.ai.gateway import AIUnavailable
 from caspian.services.errors import ServiceError
+from caspian.services.server_link import goods
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.chat_history import HistoryDialog
 from caspian.ui.confirm_card import ConfirmCard
@@ -51,11 +52,12 @@ def _to_html(text: str) -> str:
 
 class AssistantPage(QWidget):
     def __init__(self, ctx: AppContext, open_batch=None, parent: QWidget | None = None,
-                 open_document=None) -> None:
+                 open_document=None, open_request=None) -> None:
         super().__init__(parent)
         self._ctx = ctx
         self._open_batch = open_batch  # callable(batch_id) supplied by the main window
         self._open_document = open_document  # async (doc_id) -> None
+        self._open_request = open_request  # async () -> None: show «درخواست کالا»
         self._assistant = Assistant(ctx.db, ctx.ai, ctx.actor, ctx.messenger)
         self._recorder = Recorder()
         self._busy = False
@@ -219,6 +221,9 @@ class AssistantPage(QWidget):
         for d in reply.created_documents:
             if d.get("status") == "DRAFT" and d.get("needs_confirmation"):
                 await self.add_card(d["document_id"])
+        for r in reply.created_requests:
+            if r.get("status") == "DRAFT" and r.get("needs_confirmation"):
+                await self.add_request_card(r["request_id"])
 
     # ----- confirmation cards -----
 
@@ -284,6 +289,51 @@ class AssistantPage(QWidget):
             card.show_message(exc.message)
             return
         self._append("assistant", f"{s.title} ثبت نشد و پیش‌نویس آن حذف شد.")
+        self._close_card(card)
+
+    # ----- goods requests the assistant prepared -----
+
+    async def add_request_card(self, request_id: int) -> ConfirmCard | None:
+        try:
+            summary = await goods.confirmation(self._ctx.db, self._ctx.actor, request_id)
+        except ServiceError as exc:
+            self._append("error", exc.message)
+            return None
+        card = ConfirmCard(summary, self._ctx.actor.can(Perm.REQUESTS_MANAGE), self,
+                           question="این درخواست کالا برای تأیید مالکان ارسال شود؟", yes_text="بله، بفرست",
+                           open_text="درخواست‌های کالا", open_id=request_id,
+                           denied_text="ارسال درخواست نیاز به مجوز «درخواست کالا» دارد.")
+        card.confirmed.connect(lambda c: spawn(self.on_confirm_request(c)))
+        card.rejected.connect(lambda c: spawn(self.on_reject_request(c)))
+        card.open_requested.connect(lambda _id: self._open_request and spawn(self._open_request()))
+        self.cards.addWidget(card)
+        card.show()
+        (card.yes if not card.yes.isHidden() else card.no).setFocus()
+        return card
+
+    async def on_confirm_request(self, card: ConfirmCard) -> None:
+        """«بله، بفرست»: the person sends it (it goes to the queue; the sync delivers it)."""
+        card.set_busy(True)
+        try:
+            await goods.confirm_assistant_request(self._ctx.db, self._ctx.actor, card.summary.request_id)
+        except ServiceError as exc:
+            card.set_busy(False)
+            card.show_message(exc.message)
+            return
+        if (link := getattr(self._ctx, "server_link", None)) is not None:
+            link.wake()
+        self._append("assistant", "✓ درخواست کالا در صف ارسال قرار گرفت و برای تأیید مالکان فرستاده می‌شود.")
+        self._close_card(card)
+
+    async def on_reject_request(self, card: ConfirmCard) -> None:
+        card.set_busy(True)
+        try:
+            await goods.discard_assistant_request(self._ctx.db, self._ctx.actor, card.summary.request_id)
+        except ServiceError as exc:
+            card.set_busy(False)
+            card.show_message(exc.message)
+            return
+        self._append("assistant", "درخواست کالا ارسال نشد و پیش‌نویس آن حذف شد.")
         self._close_card(card)
 
     @asyncSlot()
