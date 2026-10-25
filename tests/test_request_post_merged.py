@@ -95,6 +95,20 @@ async def test_unapproved_request_blocks_posting(cartons, admin):
     assert await stock(db, cartons["bags"]) == 50
 
 
+async def test_deactivated_user_cannot_register_or_send_requests(cartons, admin):
+    db = cartons["db"]
+    await users.create_user(db, admin, "manager3", "مدیر", PW, "manager")
+    manager = (await auth.login(db, "manager3", PW)).actor
+    await users.set_active(db, admin, manager.user_id, False)
+    data = (await goods.get_request(db, admin, cartons["request_id"])).input
+    for action in (lambda: goods.create_request(db, manager, data),
+                   lambda: goods.queue_message(db, manager, cartons["request_id"], "سلام")):
+        with pytest.raises(ServiceError) as exc:
+            await action()
+        assert "غیرفعال" in exc.value.message
+    assert len(await goods.list_requests(db, admin)) == 1
+
+
 async def test_deactivated_user_in_background_sync_leaves_no_false_error(cartons, admin):
     db = cartons["db"]
     await users.create_user(db, admin, "manager2", "مدیر", PW, "manager")
