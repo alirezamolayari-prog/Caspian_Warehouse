@@ -140,7 +140,7 @@ class DocumentDialog(FormDialog):
         self._linked = detail is not None and detail.input.server_request_id is not None
         super().__init__(doc_title(doc_type, number), submit_text="ذخیره و ثبت نهایی",
                          cancel_text="بستن" if self._read_only else "انصراف", parent=parent)
-        self.setMinimumSize(900, 620)
+        self.setMinimumWidth(900)  # the height follows the contents (a fixed 620 squeezed them)
         self._ctx, self._type, self._detail = ctx, doc_type, detail
         self._unit_names = {u.id: u.name for u in units}
         self._loans = loans
