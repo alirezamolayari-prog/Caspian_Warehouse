@@ -7,7 +7,21 @@ All notable changes to Caspian Warehouse. Versions follow `pyproject.toml`; inst
 > Database changes run automatically on the first start of the new version and can't be undone
 > from inside the app.
 
-## Unreleased — owner approval phase
+## 1.2.0rc1 — release candidate (2026-10-25)
+
+First installer for go-live **without Caspian Server**: everything works with the server address
+empty or the server unreachable; goods requests wait on the PC and are sent later.
+
+### Pre-launch bug hunt (docs/BUG_LIST.md)
+- Dialogs always open at least as large as their contents (the document editor was squeezed).
+- Persian digits beside line tables, in the version, the backup list and the AI tab.
+- Full cell text on hover in every list; «ثبت‌کننده» shows the full name.
+- The server tab and the first-run database dialog explain, in Persian, that the server may stay empty
+  and what single-PC and network mode mean.
+
+### Works without the server
+- A hanging or missing Caspian Server never holds up the app (timeouts; receipts post at once).
+- The requests page says plainly that requests are kept on this PC; no red status while no server is set.
 
 ### Fixes from the pre-launch test report (docs/TEST_REPORT.md)
 - **A deactivated user, or one whose role changed, is stopped at once** — even in a window that was
