@@ -98,10 +98,10 @@ async def test_refused_request_is_marked_and_does_not_block_others(linked, admin
     good = await goods.create_request(db, admin, request_input(linked, qty=3))
     original = server._create
 
-    def create(body):
+    def create(body, user):
         if body.get("note") == "رد کن":
             return server._error(422, "items: field required")
-        return original(body)
+        return original(body, user)
 
     monkeypatch.setattr(server, "_create", create)
     assert (await engine.tick(admin)).state == SyncState.CONNECTED

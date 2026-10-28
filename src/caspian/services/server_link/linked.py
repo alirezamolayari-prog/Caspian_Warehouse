@@ -48,6 +48,7 @@ def mark_issued_in(s: AsyncSession, actor: Actor, req: GoodsRequest, issue_numbe
     req.status = RequestStatus.ISSUED
     req.issue_number = issue_number
     req.last_error = ""
-    s.add(ServerOutbox(request_id=req.id, op=OutboxOp.ISSUED, payload={"issue_number": issue_number}))
+    s.add(ServerOutbox(request_id=req.id, op=OutboxOp.ISSUED, payload={"issue_number": issue_number},
+                       user_id=actor.user_id))
     audit.record(s, actor, "goods_request.issued", "goods_request", req.id,
                  {"server_id": req.server_id, "issue_number": issue_number})

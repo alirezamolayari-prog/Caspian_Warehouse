@@ -40,15 +40,17 @@ from caspian.db.models import (
     RequestStatus,
     ServerOutbox,
     Unit,
+    User,
 )
 from caspian.db.retry import with_retries
 from caspian.services.actor import Actor
-from caspian.services.server_link import connection, goods, issue_link
+from caspian.services.server_link import connection, goods, issue_link, session
 from caspian.services.server_link.client import TIMEOUT_SECONDS, ServerClient
 from caspian.services.server_link.errors import (
     ServerAccountProblem,
     ServerError,
     ServerRejected,
+    account_message,
 )
 
 log = logging.getLogger(__name__)
@@ -63,7 +65,9 @@ _STATE_OPS = (OutboxOp.CREATE, OutboxOp.RESUBMIT, OutboxOp.ISSUED)
 # How long a refused account is left alone before trying again by itself (a wrong password must not
 # reach the server's 5-tries lock). A saved connection, a login or the status button retries at once.
 _BLOCK_SECONDS = {"invalid_credentials": 600, "account_pending": 300, "account_rejected": 900,
-                  "account_disabled": 900, "forbidden": 300, "password_change_required": 0}
+                  "account_disabled": 900, "forbidden": 300, "password_change_required": 0,
+                  "session_expired": 3600}
+WAITING_FOR = "در صف: با حساب «{name}» فرستاده می‌شود؛ منتظر ورود دوبارهٔ او به برنامه."
 ACCOUNT_STATUSES = (401, 403)
 # What older versions stored for a 403 (they marked such rows failed for good): repaired at startup.
 _OLD_ACCOUNT_ERRORS = ("حساب انبار در سرور اجازه این کار را ندارد.",)
@@ -114,51 +118,92 @@ class _Op:
     message_id: int | None = None
 
 
+@dataclass(frozen=True)
+class _Sender:
+    """One account that sends rows: ("legacy", …) = the shared account, ("user", id, …) = a person."""
+
+    key: tuple
+    client: ServerClient | None  # None: the person has no saved login on this PC (must sign in)
+    name: str  # the person's Persian name ("" for the shared account)
+
+
 class SyncEngine:
     def __init__(self, db: Database, transport: httpx.AsyncBaseTransport | None = None,
                  timeout: float = TIMEOUT_SECONDS) -> None:
         self._db = db
         self._transport = transport
         self._timeout = timeout  # per request; a hanging server never holds the sync longer
-        self._client: ServerClient | None = None
-        self._key: tuple | None = None
-        self._blocked: tuple[tuple | None, float, str] | None = None  # (key, until, message)
+        self._clients: dict[tuple, ServerClient] = {}
+        self._blocked: dict[tuple, tuple[float, str]] = {}  # sender key -> (until, message)
         self.clock = time.monotonic
         self._unfail = True  # first tick: repair rows an older version failed for an account problem
 
     def reset_rejection(self) -> None:
-        """Try a refused account again now (password fixed, account approved, connection saved), and
-        put requests refused only because of the account back in the queue."""
-        self._blocked = None
+        """Try refused accounts again now (password fixed, account approved, connection saved, someone
+        signed in), and put requests refused only because of the account back in the queue."""
+        self._blocked.clear()
         self._unfail = True
 
-    def _block(self, exc: ServerAccountProblem) -> None:
+    def _block(self, key: tuple, exc: ServerAccountProblem) -> None:
         if exc.code == "login_rate_limited":
             seconds = exc.retry_after or 900
         else:
             seconds = _BLOCK_SECONDS.get(exc.code, 300)
-        self._blocked = (self._key, self.clock() + seconds, exc.message) if seconds else None
+        if seconds:
+            self._blocked[key] = (self.clock() + seconds, exc.message)
+        else:
+            self._blocked.pop(key, None)
 
-    def _blocked_message(self) -> str | None:
-        if self._blocked is None:
-            return None
-        key, until, message = self._blocked
-        if key != self._key or self.clock() >= until:
-            self._blocked = None
+    def _blocked_message(self, key: tuple) -> str | None:
+        until, message = self._blocked.get(key, (0.0, ""))
+        if self.clock() >= until:
+            self._blocked.pop(key, None)
             return None
         return message
 
-    async def _get_client(self) -> ServerClient | None:
+    def _client(self, key: tuple, factory: Callable[[], ServerClient]) -> ServerClient:
+        if key not in self._clients:
+            self._clients = {k: c for k, c in self._clients.items() if k[:2] != key[:2]}
+            self._clients[key] = factory()
+        return self._clients[key]
+
+    async def _legacy(self) -> _Sender | None:
+        """The old shared account (Settings ← اتصال به سرور), for rows of people without their own."""
         conn = await connection.get_connection(self._db)
         if conn is None:
             return None
         password = connection.get_password(conn) or ""
-        key = (conn.url, conn.username, password)
-        if key != self._key:
-            self._client = ServerClient(conn.url, conn.username, password, self._transport,
-                                        self._timeout)
-            self._key = key
-        return self._client
+        key = ("legacy", "", conn.url, conn.username, password)
+        return _Sender(key, self._client(key, lambda: ServerClient(
+            conn.url, conn.username, password, self._transport, self._timeout)), "")
+
+    async def _sender_for(self, user_id: int | None, senders: dict) -> _Sender | None:
+        """Whose account sends a row: its author's own (never anyone else's), or the shared account
+        for rows of local-only users and of older versions. None: nobody can send it yet."""
+        if user_id in senders:
+            return senders[user_id]
+        user = None
+        if user_id is not None:
+            async with self._db.session() as s:
+                user = await s.get(User, user_id)
+        if user is None or user.server_user_id is None:
+            sender = senders.setdefault("legacy", await self._legacy())
+        else:
+            url = await session.server_url(self._db)
+            token = session.get_token(user.server_user_id, url) or ""
+            password = (session.remembered_password(user.mobile, url) or "") if user.mobile else ""
+            key = ("user", user.id, url, token, password)
+            name = user.full_name or user.username
+
+            def save(new_token: str, server_user_id: int = user.server_user_id) -> None:
+                session.save_token(server_user_id, url, new_token)
+
+            client = self._client(key, lambda: ServerClient(
+                url, user.mobile or "", password, self._transport, self._timeout, token or None,
+                save)) if token or password else None
+            sender = _Sender(key, client, name)
+        senders[user_id] = sender
+        return sender
 
     async def tick(self, actor: Actor | None) -> TickResult:
         result = TickResult(SyncState.CONNECTED)
@@ -168,20 +213,21 @@ class SyncEngine:
                 result.changed |= bool(await unfail_account_rows(self._db))
             except Exception:
                 log.exception("Putting account-refused requests back in the queue failed")
+        senders: dict = {}
+        problems: dict[tuple, str] = {}
         try:
-            client = await self._get_client()
-            if client is None:
-                result.state = SyncState.NOT_CONFIGURED
-            elif (blocked := self._blocked_message()) is not None:
-                result.state, result.message = SyncState.ACCOUNT_PROBLEM, blocked
-            else:
-                result.changed |= await self.flush(client)
-                events, changed = await self.poll(client)
-                result.events, result.changed = events, result.changed or changed
-        except ServerAccountProblem as exc:  # nothing is marked failed: the queue waits for the account
-            self._block(exc)
-            result.state, result.message = SyncState.ACCOUNT_PROBLEM, exc.message
-        except ServerError as exc:
+            me = await self._sender_for(actor.user_id if actor and not actor.is_ai else None, senders)
+            result.changed |= await self.flush(senders, problems)
+            poller = self._poller(me, senders, problems)
+            if poller is not None:
+                try:
+                    events, changed = await self.poll(poller.client)
+                    result.events, result.changed = events, result.changed or changed
+                except ServerAccountProblem as exc:
+                    self._block(poller.key, exc)
+                    problems[poller.key] = exc.message
+            result.state, result.message = self._state(me, poller, senders, problems)
+        except ServerError as exc:  # unreachable: everything stays queued
             result.state, result.message = SyncState.DISCONNECTED, exc.message
         try:  # approvals already here become vouchers even while the server is unreachable
             result.changed |= bool(await issue_link.ensure_issue_drafts(self._db, actor))
@@ -189,12 +235,40 @@ class SyncEngine:
             log.exception("Making issue vouchers for approved requests failed")
         return result
 
+    def _usable(self, sender: _Sender | None, problems: dict) -> bool:
+        return (sender is not None and sender.client is not None and sender.key not in problems
+                and self._blocked_message(sender.key) is None)
+
+    def _poller(self, me: _Sender | None, senders: dict, problems: dict) -> _Sender | None:
+        """`/changes` is the same for every warehouse account: ask with the signed-in person's own
+        account, else the shared one, else anyone's saved login on this PC."""
+        for sender in (me, senders.get("legacy"), *senders.values()):
+            if self._usable(sender, problems):
+                return sender
+        return None
+
+    def _state(self, me: _Sender | None, poller: _Sender | None, senders: dict,
+               problems: dict) -> tuple[SyncState, str]:
+        if me is not None and (message := problems.get(me.key) or self._blocked_message(me.key)):
+            return SyncState.ACCOUNT_PROBLEM, message
+        if poller is not None and poller.key not in problems:
+            return SyncState.CONNECTED, ""
+        if me is not None and me.client is None and me.name:
+            return SyncState.ACCOUNT_PROBLEM, account_message("session_expired")
+        known = [x for x in senders.values() if x is not None]
+        if not known or all(x.client is None for x in known):
+            return SyncState.NOT_CONFIGURED, ""
+        message = next((m for m in problems.values()), "") or next(
+            (m for x in known if (m := self._blocked_message(x.key))), "")
+        return SyncState.ACCOUNT_PROBLEM, message
+
     # ----- outbox -----
 
-    async def flush(self, client: ServerClient) -> bool:
-        """Send waiting rows in order. Stops at a connection or account problem (rows stay for the next
-        tick); a row the server refuses (400/404/409/422) is marked failed and later rows of that
-        request wait until someone presses «ارسال مجدد»."""
+    async def flush(self, senders: dict, problems: dict) -> bool:
+        """Send waiting rows in order, each with its author's account. Stops at a connection problem
+        (rows stay for the next tick). An account problem holds back only that account's rows; a row
+        the server refuses (400/404/409/422) is marked failed and later rows of that request wait
+        until someone presses «ارسال مجدد»."""
         async with self._db.session() as s:
             rows = list((await s.scalars(select(ServerOutbox).order_by(ServerOutbox.id))).all())
         blocked = {r.request_id for r in rows if r.failed}
@@ -202,13 +276,27 @@ class SyncEngine:
         for row in rows:
             if row.failed or row.request_id in blocked:
                 continue
+            sender = await self._sender_for(row.user_id, senders)
+            if not self._usable(sender, problems):
+                blocked.add(row.request_id)
+                if sender is not None and sender.client is None and sender.name:
+                    problems[sender.key] = account_message("session_expired")
+                    changed |= await self._wait_for(row.request_id, sender.name)
+                continue
             op = await self._claim(row.id)
             if op is None:
                 continue
             try:
-                answer = await self._perform(client, op)
+                answer = await self._perform(sender.client, op)
+            except ServerAccountProblem as exc:  # nothing fails: the rows wait for this account
+                self._block(sender.key, exc)
+                problems[sender.key] = exc.message
+                blocked.add(op.request_id)
+                if sender.name:
+                    changed |= await self._wait_for(op.request_id, sender.name)
+                continue
             except ServerRejected as exc:
-                answer = await self._resolve(client, op, exc)
+                answer = await self._resolve(sender.client, op, exc)
                 if answer is None:
                     await self._fail(op, exc)
                     blocked.add(op.request_id)
@@ -217,6 +305,18 @@ class SyncEngine:
             await self._done(op, answer)
             changed = True
         return changed
+
+    async def _wait_for(self, request_id: int, name: str) -> bool:
+        """«در صف»: shown on the request while its author has to sign in again."""
+        text = WAITING_FOR.format(name=name)
+
+        async def attempt() -> bool:
+            async with self._db.session() as s:
+                done = await s.execute(update(GoodsRequest).where(
+                    GoodsRequest.id == request_id, GoodsRequest.last_error != text).values(last_error=text))
+                return bool(done.rowcount)
+
+        return await with_retries(attempt)
 
     async def _claim(self, op_id: int) -> _Op | None:
         """Count the attempt *before* sending, so a retry knows an answer may have been lost."""
@@ -384,6 +484,9 @@ async def _apply_request(s: AsyncSession, req: GoodsRequest, row: dict, initial:
     """Server row → local request. While this PC still has a create/resubmit/«issued» waiting, the
     local status wins (the server hasn't heard it yet); an issued request never goes back."""
     req.server_id = row["id"]
+    if row.get("created_by_name"):
+        req.created_by_server_id = row.get("created_by_id")
+        req.created_by_name = str(row["created_by_name"])[:150]
     req.rejection_reason = row.get("rejection_reason") or ""
     req.decided_at = parse_time(row.get("decided_at"))
     if row.get("issue_number") and not req.issue_number:
@@ -412,10 +515,10 @@ async def _upsert_request(s: AsyncSession, row: dict, initial: bool) -> tuple[Sy
     if req is None:
         s.add(await _remote_request(s, row))
         return None, True
-    before = (req.status, req.rejection_reason, req.issue_number, req.decided_at)
+    before = (req.status, req.rejection_reason, req.issue_number, req.decided_at, req.created_by_name)
     event = await _apply_request(s, req, row, initial)
     return event, event is not None or before != (req.status, req.rejection_reason, req.issue_number,
-                                                  req.decided_at)
+                                                  req.decided_at, req.created_by_name)
 
 
 async def _remote_request(s: AsyncSession, row: dict) -> GoodsRequest:
@@ -427,7 +530,8 @@ async def _remote_request(s: AsyncSession, row: dict) -> GoodsRequest:
         requester_phone=(row.get("requester_phone") or "")[:30],
         location_text=(row.get("consumption_location") or "")[:200], note=row.get("note") or "",
         rejection_reason=row.get("rejection_reason") or "", decided_at=parse_time(row.get("decided_at")),
-        issue_number=row.get("issue_number") or "")
+        issue_number=row.get("issue_number") or "", created_by_server_id=row.get("created_by_id"),
+        created_by_name=str(row.get("created_by_name") or "")[:150])
     for no, item in enumerate(row.get("items", []), start=1):
         code = item.get("item_code") or ""
         local = await s.scalar(select(Item).where(Item.code == code)) if code else None

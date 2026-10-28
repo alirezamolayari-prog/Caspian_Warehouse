@@ -27,6 +27,7 @@ class UserRow:
     is_active: bool
     has_pin: bool
     last_login_at: dt.datetime | None
+    mobile: str | None = None  # set for people with a personal Caspian Server account
 
 
 @dataclass(frozen=True)
@@ -37,7 +38,7 @@ class RoleRow:
 
 def _row(u: User) -> UserRow:
     return UserRow(u.id, u.username, u.full_name, u.role.code, u.role.name, u.is_active,
-                   bool(u.pin_hash), u.last_login_at)
+                   bool(u.pin_hash), u.last_login_at, u.mobile)
 
 
 async def list_users(db: Database, actor: Actor) -> list[UserRow]:

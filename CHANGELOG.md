@@ -28,6 +28,27 @@ All notable changes to Caspian Warehouse. Versions follow `pyproject.toml`; inst
 - Clicking «سرور: …» in the status bar retries at once and opens the connection settings (admins);
   its tooltip shows the last problem in Persian.
 
+### Personal accounts (register with an SMS code, log in with your own password)
+- New sign-in window: «شماره موبایل» + «رمز عبور» (optional «مرا روی این کامپیوتر به خاطر بسپار»),
+  «ثبت‌نام» in three steps (Persian name + mobile → 6-digit SMS code with countdown and «ارسال
+  دوباره» → password with the rules ticked live) and «رمز را فراموش کرده‌ام». A new account waits for
+  the admin's approval in the server panel; «تغییر رمز» works without SSH, also when the server
+  requires it.
+- Names are cleaned and checked exactly like the server (ي/ى→ی, ك→ک, no kashida or vowel marks,
+  ZWNJ kept inside names such as «اسماعیل‌زاده»); mobile numbers are accepted with Persian/Arabic
+  digits, spaces, dashes, +98 or 0098. Every server answer is shown as one Persian sentence.
+- The first server sign-in on a PC makes a local user with the minimal role «کاربر تازه»; the admin
+  gives permissions on «کاربران» (which now shows each person's mobile).
+- Every request and chat message is sent under the account of the person who registered it — also
+  after they log out (their login is kept in the Windows credential store). If it has expired, the
+  request shows «منتظر ورود …» until they sign in again; it is never sent under someone else's name.
+  Requests of people without a personal account (and older ones) still go through the shared account.
+- Offline: someone who signed in on this PC before can sign in with the same password while the
+  server is unreachable (strong hash, same lockout rules); requests queue as usual.
+- Once a server is set up, a local username works only for admins (emergency fallback).
+- Settings ← اتصال به سرور: the shared account is now «حساب مشترک (قدیمی)» and may stay empty; the
+  server address is under «تنظیمات پیشرفته», prefilled with https://api.caspianmoblserver.ir.
+
 ### Error messages
 - The unexpected-error window is Persian only: one sentence, the log path, and «کپی جزئیات برای
   پشتیبانی» (copies the technical details). No English, SQL or «Show Details…». The same error

@@ -270,7 +270,7 @@ async def _create(db: Database, actor: Actor, data: RequestInput, cid: str) -> i
         s.add(req)
         await s.flush()
         if status == RequestStatus.QUEUED:
-            s.add(ServerOutbox(request_id=req.id, op=OutboxOp.CREATE))
+            s.add(ServerOutbox(request_id=req.id, op=OutboxOp.CREATE, user_id=actor.user_id))
         audit.record(s, actor, "goods_request.created", "goods_request", req.id,
                      {"lines": len(snap.lines), "status": status.value})
         return req.id
@@ -304,7 +304,7 @@ async def resubmit_request(db: Database, actor: Actor, request_id: int, data: Re
             req.status = RequestStatus.QUEUED
             req.unseen = False
             req.last_error = ""
-            s.add(ServerOutbox(request_id=req.id, op=OutboxOp.RESUBMIT))
+            s.add(ServerOutbox(request_id=req.id, op=OutboxOp.RESUBMIT, user_id=actor.user_id))
             audit.record(s, actor, "goods_request.resubmitted", "goods_request", req.id,
                          {"server_id": req.server_id, "lines": len(snap.lines)})
 
@@ -377,7 +377,7 @@ async def confirm_assistant_request(db: Database, actor: Actor, request_id: int)
     async with db.session(actor) as s:
         req = await _own_draft(s, actor, request_id)
         req.status = RequestStatus.QUEUED
-        s.add(ServerOutbox(request_id=req.id, op=OutboxOp.CREATE))
+        s.add(ServerOutbox(request_id=req.id, op=OutboxOp.CREATE, user_id=actor.user_id))
         audit.record(s, actor, "goods_request.confirmed", "goods_request", req.id, {"via": "assistant"})
 
 
@@ -488,10 +488,12 @@ async def queue_message(db: Database, actor: Actor, request_id: int, text: str) 
         if req.status == RequestStatus.DRAFT:
             raise ValidationError("ابتدا درخواست را ارسال کنید.")
         message = GoodsRequestMessage(request_id=req.id, sender_name=actor.display_name,
-                                      sender_role="warehouse", text=text)
+                                      sender_role="warehouse", text=text,
+                                      user_id=actor.user_id)
         s.add(message)
         await s.flush()
-        s.add(ServerOutbox(request_id=req.id, op=OutboxOp.MESSAGE, message_id=message.id))
+        s.add(ServerOutbox(request_id=req.id, op=OutboxOp.MESSAGE, message_id=message.id,
+                           user_id=actor.user_id))
         return message.id
 
 

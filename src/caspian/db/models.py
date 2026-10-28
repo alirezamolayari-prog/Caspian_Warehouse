@@ -73,6 +73,10 @@ class User(IdMixin, TimestampMixin, VersionMixin, Base):
     failed_logins: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     locked_until: Mapped[dt.datetime | None]
     created_by_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("users.id"))
+    # Personal Caspian Server account (services.server_link.session); None for local-only users.
+    server_user_id: Mapped[int | None] = mapped_column(Integer, unique=True)
+    mobile: Mapped[str | None] = mapped_column(String(11), unique=True)
+    server_full_name: Mapped[str] = mapped_column(String(150), default="", server_default="")
 
     role: Mapped[Role] = relationship(lazy="joined", foreign_keys=[role_id])
 
@@ -627,6 +631,9 @@ class GoodsRequest(IdMixin, TimestampMixin, CreatedByMixin, Base):
     unseen: Mapped[bool] = mapped_column(Boolean, default=False)
     # Why sending or making the issue voucher failed (shown in the list; cleared on success).
     last_error: Mapped[str] = mapped_column(Text, default="")
+    # Who registered it, as the server says (`created_by_id` / `created_by_name`, «ثبت‌کننده»).
+    created_by_server_id: Mapped[int | None] = mapped_column(Integer)
+    created_by_name: Mapped[str] = mapped_column(String(150), default="", server_default="")
 
     lines: Mapped[list["GoodsRequestLine"]] = relationship(
         back_populates="request", cascade="all, delete-orphan", order_by="GoodsRequestLine.line_no",
@@ -662,6 +669,7 @@ class GoodsRequestMessage(IdMixin, Base):
     sender_role: Mapped[str] = mapped_column(String(20), default="")
     text: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
+    user_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("users.id"))  # our sender
 
 
 class OutboxOp(enum.StrEnum):
@@ -689,4 +697,7 @@ class ServerOutbox(IdMixin, Base):
     last_error: Mapped[str] = mapped_column(Text, default="")
     # HTTP status of the last refusal; 401/403 (an account problem) are never left failed.
     last_status: Mapped[int | None] = mapped_column(Integer)
+    # Whose account sends it: a person with a server account only ever under their own token;
+    # None / a local-only user through the old shared account.
+    user_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("users.id"))
     created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())

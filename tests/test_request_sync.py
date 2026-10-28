@@ -103,7 +103,8 @@ async def test_message_queued_while_offline(linked, admin):
 async def test_request_registered_elsewhere_is_shown_read_only(linked, admin):
     db, server, engine = linked["db"], linked["server"], linked["engine"]
     server._create({"client_request_id": None, "requester_name": "مهمان", "consumption_location": "دفتر",
-                    "items": [{"item_code": "1024", "name": "کیسه زباله", "quantity": 2, "unit": "عدد"}]})
+                    "items": [{"item_code": "1024", "name": "کیسه زباله", "quantity": 2, "unit": "عدد"}]},
+                   server.users["warehouse"])
     await engine.tick(admin)
     [row] = await goods.list_requests(db, admin)
     assert row.origin == "remote" and row.requester == "مهمان" and row.lines[0].item_id == linked["bags"]

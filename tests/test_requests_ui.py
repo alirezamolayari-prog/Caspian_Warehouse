@@ -111,7 +111,7 @@ async def test_decision_notifies_and_badges(qtbot, themes, linked, admin):
     assert await wait_until(lambda: window._nav_buttons["requests"].text() == "درخواست کالا (۱)")
     assert any("تأیید شد" in toast.text() for toast in window.findChildren(Toast))
     ctx.server_link._on_result(TickResult(SyncState.DISCONNECTED, "سرور در دسترس نیست"))
-    assert window.server_status.text() == "سرور: قطع"
+    assert window.server_status.text() == "سرور: قطع (آفلاین)"
     # Opening the request clears the badge.
     window.navigate("requests")
     page = window._pages["requests"]

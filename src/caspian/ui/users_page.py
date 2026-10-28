@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 from qasync import asyncSlot
 
 from caspian.core import jalali
-from caspian.core.text import ltr
+from caspian.core.text import ltr, to_persian_digits
 from caspian.services import users
 from caspian.services.errors import ServiceError, ValidationError
 from caspian.services.protected import ProtectedAction
@@ -31,7 +31,8 @@ from caspian.ui.widgets import Card
 
 log = logging.getLogger(__name__)
 
-COLUMNS = ("نام کاربری", "نام و نام خانوادگی", "نقش", "وضعیت", "کد PIN", "آخرین ورود")
+COLUMNS = ("نام کاربری", "نام و نام خانوادگی", "موبایل (حساب سرور)", "نقش", "وضعیت", "کد PIN",
+           "آخرین ورود")
 
 
 def _role_combo(roles: list[RoleRow], current: str = "") -> QComboBox:
@@ -199,6 +200,7 @@ class UsersPage(QWidget):
             values = (
                 row.username,
                 row.full_name,
+                to_persian_digits(row.mobile) if row.mobile else "— (فقط محلی)",
                 row.role_name,
                 "فعال" if row.is_active else "غیرفعال",
                 "تنظیم شده" if row.has_pin else ("—" if row.role_code != "admin" else "ندارد"),

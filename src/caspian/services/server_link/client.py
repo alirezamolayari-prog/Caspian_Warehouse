@@ -7,6 +7,7 @@ account (`X-Error-Code`: pending, rejected, disabled, password_change_required â
 """
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -25,13 +26,18 @@ TIMEOUT_SECONDS = 10.0
 class ServerClient:
     def __init__(self, base_url: str, username: str, password: str,
                  transport: httpx.AsyncBaseTransport | None = None,
-                 timeout: float = TIMEOUT_SECONDS) -> None:
+                 timeout: float = TIMEOUT_SECONDS, token: str | None = None,
+                 on_token: Callable[[str], None] | None = None) -> None:
+        """`token`: a personal account's saved token. Without a `password` an expired token can't be
+        renewed here (`session_expired`: the person has to sign in to the app again). `on_token` is
+        told every new token (to keep it in the credential store)."""
         self.base_url = base_url.rstrip("/")
         self.username = username
         self._password = password
         self._transport = transport
         self._timeout = timeout
-        self._token: str | None = None
+        self._token: str | None = token
+        self._on_token = on_token
         self.must_change_password = False
 
     def _http(self) -> httpx.AsyncClient:
@@ -52,6 +58,8 @@ class ServerClient:
 
     async def _login(self, http: httpx.AsyncClient) -> None:
         self._token = None
+        if not self._password:
+            raise ServerAccountProblem("session_expired", status=401)
         response = await self._send(http, "POST", "/auth/login",
                                     data={"username": self.username, "password": self._password})
         if response.status_code in (401, 403, 429):
@@ -63,6 +71,8 @@ class ServerClient:
         body = _json(response)
         self._token = body["access_token"]
         self.must_change_password = bool(body.get("must_change_password"))
+        if self._on_token is not None:
+            self._on_token(self._token)
 
     async def call(self, method: str, path: str, *, json: Any = None, params: dict | None = None,
                    ok: tuple[int, ...] = (200, 201)) -> Any:
