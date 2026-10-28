@@ -5,18 +5,16 @@ item's base unit (`base_qty`) using the item's own conversion factors; the clien
 never supplies the factor.
 """
 
-import asyncio
 import contextlib
 import datetime as dt
 import logging
-import random
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
 
 from sqlalchemy import and_, func, or_, select
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm.attributes import flag_modified
@@ -27,6 +25,7 @@ from caspian.core import jalali
 from caspian.core.numbers import format_qty
 from caspian.core.permissions import Perm
 from caspian.core.text import normalize, to_ascii_digits, to_persian_digits
+from caspian.db import retry
 from caspian.db.database import Database
 from caspian.db.models import (
     AppSetting,
@@ -926,17 +925,7 @@ async def create_document(db: Database, actor: Actor, data: DocumentInput) -> in
 
 
 def _is_conflict(exc: Exception, numbering: bool) -> bool:
-    """A collision with another PC/task that is solved by simply trying again (QA round 2 #1)."""
-    if numbering and isinstance(exc, IntegrityError):
-        return True
-    if isinstance(exc, StaleDataError):  # another PC changed the same document a moment earlier
-        return True
-    if isinstance(exc, OperationalError):
-        orig = getattr(exc, "orig", None)
-        code = orig.args[0] if orig is not None and getattr(orig, "args", None) else None
-        # MariaDB: deadlock, lock wait timeout, "record has changed since last read"; SQLite: locked.
-        return code in (1213, 1205, 1020) or "database is locked" in str(exc)
-    return False
+    return retry.is_conflict(exc, numbering)
 
 
 @contextlib.contextmanager
@@ -949,18 +938,7 @@ def _stale_as_conflict():
 
 
 async def _with_retries(attempt, numbering: bool = False):
-    for n in range(NUMBER_RETRIES):
-        try:
-            return await attempt()
-        except (IntegrityError, OperationalError, StaleDataError) as exc:
-            if not _is_conflict(exc, numbering):
-                raise
-            if n == NUMBER_RETRIES - 1:
-                log.warning("Giving up after %d conflicts: %s", NUMBER_RETRIES, exc)
-                raise ValidationError(CONFLICT_MESSAGE) from exc
-            log.info("Concurrent save; retrying (%d)", n + 1)
-            await asyncio.sleep(random.uniform(0.01, 0.05) * (n + 1))
-    raise AssertionError("unreachable")
+    return await retry.with_retries(attempt, numbering, NUMBER_RETRIES, CONFLICT_MESSAGE)
 
 
 async def update_document(db: Database, actor: Actor, doc_id: int, expected_version: int,

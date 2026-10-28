@@ -8,7 +8,7 @@ from caspian.services.server_link.sync import SyncRunner, SyncState, TickResult
 STATE_TEXT = {
     SyncState.CONNECTED: "سرور: متصل",
     SyncState.DISCONNECTED: "سرور: قطع",
-    SyncState.ACCOUNT_REJECTED: "سرور: حساب پذیرفته نشد",
+    SyncState.ACCOUNT_PROBLEM: "سرور: مشکل حساب",
     SyncState.NOT_CONFIGURED: "سرور: تنظیم نشده",
 }
 
@@ -31,7 +31,8 @@ class ServerLink(QObject):
         self.runner.wake()
 
     def retry(self) -> None:
-        """Also try an account the server refused before (e.g. reactivated meanwhile)."""
+        """Also try an account the server refused before (password fixed, approved meanwhile); requests
+        held back only by that account go back to the queue."""
         self.runner.engine.reset_rejection()
         self.runner.wake()
 

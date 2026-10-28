@@ -1,4 +1,5 @@
 import asyncio
+import time
 import traceback
 from collections.abc import Sequence
 
@@ -66,24 +67,38 @@ def show_info(parent: QWidget | None, text: str) -> None:
     _show(box)
 
 
+UNEXPECTED_TEXT = "خطایی رخ داد و این کار انجام نشد. دوباره امتحان کنید."
+REPEAT_SECONDS = 5.0  # the same error again within this time (or while its box is open): no new box
+_recent: dict[tuple[str, str], float] = {}
+
+
+def _error_key(exc_type, exc) -> tuple[str, str]:
+    return (getattr(exc_type, "__qualname__", str(exc_type)), str(exc)[:500])
+
+
 def show_unexpected_error(exc_type, exc, tb) -> QMessageBox | None:
-    """What the global exception hook shows: a Persian explanation, the log path, details."""
-    if sum(b.objectName() == "UnexpectedError" for b in _live_boxes()) >= MAX_ERROR_DIALOGS:
+    """What the global exception hook shows: one short Persian sentence and the log path. The
+    technical text (exception, SQL, traceback) never appears in the window — it is in the log, and
+    «کپی جزئیات برای پشتیبانی» copies it. The same error twice shows one box."""
+    key = _error_key(exc_type, exc)
+    now = time.monotonic()
+    boxes = [b for b in _live_boxes() if b.objectName() == "UnexpectedError"]
+    if any(b.property("errorKey") == "|".join(key) for b in boxes):
         return None
+    if now - _recent.get(key, -REPEAT_SECONDS) < REPEAT_SECONDS or len(boxes) >= MAX_ERROR_DIALOGS:
+        return None
+    _recent[key] = now
     path = log_file()
-    summary = f"{exc_type.__name__}: {exc}"[:300]
     box = QMessageBox(
-        QMessageBox.Icon.Critical, "خطای غیرمنتظره",
-        "خطای غیرمنتظره‌ای رخ داد و این کار انجام نشد.\n"
-        f"{summary}\n\n"
-        f"جزئیات در فایل گزارش ثبت شد:\n{path}\n\n"
-        "اگر تکرار شد، این فایل را برای پشتیبانی بفرستید.",
+        QMessageBox.Icon.Critical, "خطا",
+        f"{UNEXPECTED_TEXT}\n\n"
+        "اگر دوباره پیش آمد، دکمهٔ «کپی جزئیات برای پشتیبانی» را بزنید و متن را برای پشتیبانی "
+        f"بفرستید. گزارش کامل در این فایل است:\n{path}",
         QMessageBox.StandardButton.Ok, QApplication.activeWindow())
     box.setObjectName("UnexpectedError")
-    box.button(QMessageBox.StandardButton.Ok).setText("باشه")
+    box.setProperty("errorKey", "|".join(key))
+    box.button(QMessageBox.StandardButton.Ok).setText("بستن")
     details = "".join(traceback.format_exception(exc_type, exc, tb))
-    box.setDetailedText(details)
-    copy = box.addButton("کپی جزئیات", QMessageBox.ButtonRole.ActionRole)
-    copy.clicked.connect(
-        lambda: QApplication.clipboard().setText(f"{details}\nLog: {path}"))
+    copy = box.addButton("کپی جزئیات برای پشتیبانی", QMessageBox.ButtonRole.ActionRole)
+    copy.clicked.connect(lambda: QApplication.clipboard().setText(f"{details}\nLog: {path}"))
     return _show(box)

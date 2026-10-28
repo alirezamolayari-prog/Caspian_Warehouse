@@ -7,6 +7,11 @@ every row is matched by its id, never appended twice. Sending is safe to repeat:
 - «issued» with the same number is accepted again (200);
 - a resubmit or «issued» answered 409 is checked against the server's current state;
 - a chat message sent before is recognised when it comes back from `/changes`.
+
+A refused *account* (401/403: wrong password, not approved, disabled, must change its password)
+stops the tick and leaves every row waiting — it is never a reason to give up on a request. Every
+local write is a short transaction, retried on a MariaDB conflict (`db.retry`), because the UI may
+write the same rows at the same moment.
 """
 
 import asyncio
@@ -14,13 +19,14 @@ import contextlib
 import datetime as dt
 import enum
 import logging
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from decimal import Decimal
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from caspian.db.database import Database
@@ -35,11 +41,12 @@ from caspian.db.models import (
     ServerOutbox,
     Unit,
 )
+from caspian.db.retry import with_retries
 from caspian.services.actor import Actor
 from caspian.services.server_link import connection, goods, issue_link
 from caspian.services.server_link.client import TIMEOUT_SECONDS, ServerClient
 from caspian.services.server_link.errors import (
-    ServerAccountRejected,
+    ServerAccountProblem,
     ServerError,
     ServerRejected,
 )
@@ -53,13 +60,20 @@ MAX_INTERVAL_SECONDS = 60.0
 _STATUS = {"pending": RequestStatus.PENDING, "approved": RequestStatus.APPROVED,
            "rejected": RequestStatus.REJECTED, "issued": RequestStatus.ISSUED}
 _STATE_OPS = (OutboxOp.CREATE, OutboxOp.RESUBMIT, OutboxOp.ISSUED)
+# How long a refused account is left alone before trying again by itself (a wrong password must not
+# reach the server's 5-tries lock). A saved connection, a login or the status button retries at once.
+_BLOCK_SECONDS = {"invalid_credentials": 600, "account_pending": 300, "account_rejected": 900,
+                  "account_disabled": 900, "forbidden": 300, "password_change_required": 0}
+ACCOUNT_STATUSES = (401, 403)
+# What older versions stored for a 403 (they marked such rows failed for good): repaired at startup.
+_OLD_ACCOUNT_ERRORS = ("حساب انبار در سرور اجازه این کار را ندارد.",)
 
 
 class SyncState(enum.StrEnum):
     NOT_CONFIGURED = "not_configured"
     CONNECTED = "connected"
     DISCONNECTED = "disconnected"
-    ACCOUNT_REJECTED = "account_rejected"
+    ACCOUNT_PROBLEM = "account_problem"
 
 
 @dataclass(frozen=True)
@@ -108,11 +122,31 @@ class SyncEngine:
         self._timeout = timeout  # per request; a hanging server never holds the sync longer
         self._client: ServerClient | None = None
         self._key: tuple | None = None
-        self._rejected_key: tuple | None = None
+        self._blocked: tuple[tuple | None, float, str] | None = None  # (key, until, message)
+        self.clock = time.monotonic
+        self._unfail = True  # first tick: repair rows an older version failed for an account problem
 
     def reset_rejection(self) -> None:
-        """Try a refused account again (e.g. the server admin reactivated it)."""
-        self._rejected_key = None
+        """Try a refused account again now (password fixed, account approved, connection saved), and
+        put requests refused only because of the account back in the queue."""
+        self._blocked = None
+        self._unfail = True
+
+    def _block(self, exc: ServerAccountProblem) -> None:
+        if exc.code == "login_rate_limited":
+            seconds = exc.retry_after or 900
+        else:
+            seconds = _BLOCK_SECONDS.get(exc.code, 300)
+        self._blocked = (self._key, self.clock() + seconds, exc.message) if seconds else None
+
+    def _blocked_message(self) -> str | None:
+        if self._blocked is None:
+            return None
+        key, until, message = self._blocked
+        if key != self._key or self.clock() >= until:
+            self._blocked = None
+            return None
+        return message
 
     async def _get_client(self) -> ServerClient | None:
         conn = await connection.get_connection(self._db)
@@ -128,19 +162,25 @@ class SyncEngine:
 
     async def tick(self, actor: Actor | None) -> TickResult:
         result = TickResult(SyncState.CONNECTED)
+        if self._unfail:
+            self._unfail = False
+            try:
+                result.changed |= bool(await unfail_account_rows(self._db))
+            except Exception:
+                log.exception("Putting account-refused requests back in the queue failed")
         try:
             client = await self._get_client()
             if client is None:
                 result.state = SyncState.NOT_CONFIGURED
-            elif self._rejected_key == self._key:
-                result.state, result.message = SyncState.ACCOUNT_REJECTED, ServerAccountRejected().message
+            elif (blocked := self._blocked_message()) is not None:
+                result.state, result.message = SyncState.ACCOUNT_PROBLEM, blocked
             else:
                 result.changed |= await self.flush(client)
                 events, changed = await self.poll(client)
                 result.events, result.changed = events, result.changed or changed
-        except ServerAccountRejected as exc:
-            self._rejected_key = self._key
-            result.state, result.message = SyncState.ACCOUNT_REJECTED, exc.message
+        except ServerAccountProblem as exc:  # nothing is marked failed: the queue waits for the account
+            self._block(exc)
+            result.state, result.message = SyncState.ACCOUNT_PROBLEM, exc.message
         except ServerError as exc:
             result.state, result.message = SyncState.DISCONNECTED, exc.message
         try:  # approvals already here become vouchers even while the server is unreachable
@@ -152,8 +192,9 @@ class SyncEngine:
     # ----- outbox -----
 
     async def flush(self, client: ServerClient) -> bool:
-        """Send waiting rows in order. Stops at a connection problem (they stay for the next tick);
-        a row the server refuses is marked failed and later rows of that request wait."""
+        """Send waiting rows in order. Stops at a connection or account problem (rows stay for the next
+        tick); a row the server refuses (400/404/409/422) is marked failed and later rows of that
+        request wait until someone presses «ارسال مجدد»."""
         async with self._db.session() as s:
             rows = list((await s.scalars(select(ServerOutbox).order_by(ServerOutbox.id))).all())
         blocked = {r.request_id for r in rows if r.failed}
@@ -179,19 +220,23 @@ class SyncEngine:
 
     async def _claim(self, op_id: int) -> _Op | None:
         """Count the attempt *before* sending, so a retry knows an answer may have been lost."""
-        async with self._db.session() as s:
-            row = await s.get(ServerOutbox, op_id)
-            if row is None:
-                return None
-            req = await s.get(GoodsRequest, row.request_id)
-            row.attempts += 1
-            payload = dict(row.payload or {})
-            if row.op in (OutboxOp.CREATE, OutboxOp.RESUBMIT):
-                payload = goods.payload_of(req)
-            elif row.op == OutboxOp.MESSAGE:
-                message = await s.get(GoodsRequestMessage, row.message_id)
-                payload = {"text": message.text if message else ""}
-            return _Op(row.id, row.request_id, row.op, row.attempts, req.server_id, payload, row.message_id)
+        async def attempt() -> _Op | None:
+            async with self._db.session() as s:
+                row = await s.get(ServerOutbox, op_id)
+                if row is None or row.failed:
+                    return None
+                req = await s.get(GoodsRequest, row.request_id)
+                row.attempts += 1
+                payload = dict(row.payload or {})
+                if row.op in (OutboxOp.CREATE, OutboxOp.RESUBMIT):
+                    payload = goods.payload_of(req)
+                elif row.op == OutboxOp.MESSAGE:
+                    message = await s.get(GoodsRequestMessage, row.message_id)
+                    payload = {"text": message.text if message else ""}
+                return _Op(row.id, row.request_id, row.op, row.attempts, req.server_id, payload,
+                           row.message_id)
+
+        return await with_retries(attempt)
 
     async def _perform(self, client: ServerClient, op: _Op):
         if op.op == OutboxOp.CREATE:
@@ -232,32 +277,39 @@ class SyncEngine:
         return None
 
     async def _fail(self, op: _Op, exc: ServerRejected) -> None:
-        log.warning("Outbox %s (%s) refused: %s %s", op.id, op.op, exc.status, exc.detail)
-        async with self._db.session() as s:
-            row = await s.get(ServerOutbox, op.id)
-            if row is not None:
-                row.failed, row.last_error = True, exc.message
-            req = await s.get(GoodsRequest, op.request_id)
-            if req is not None:
-                req.last_error = f"ارسال نشد: {exc.message}"
+        log.warning("Outbox %s (%s) refused: %s %s %s", op.id, op.op, exc.status, exc.code, exc.detail)
+
+        async def attempt() -> None:
+            async with self._db.session() as s:
+                row = await s.get(ServerOutbox, op.id)
+                if row is not None:
+                    row.failed, row.last_error, row.last_status = True, exc.message, exc.status
+                req = await s.get(GoodsRequest, op.request_id)
+                if req is not None:
+                    req.last_error = f"ارسال نشد: {exc.message}"
+
+        await with_retries(attempt)
 
     async def _done(self, op: _Op, answer: dict) -> None:
-        async with self._db.session() as s:
-            row = await s.get(ServerOutbox, op.id)
-            if row is not None:
-                await s.delete(row)
-                await s.flush()
-            req = await s.get(GoodsRequest, op.request_id)
-            if req is None:
-                return
-            req.last_error = ""
-            if op.op == OutboxOp.MESSAGE:
-                message = await s.get(GoodsRequestMessage, op.message_id)
-                if message is not None:
-                    message.server_id = answer["id"]
-                    message.created_at = parse_time(answer.get("created_at")) or message.created_at
-                return
-            await _apply_request(s, req, answer, initial=True)
+        async def attempt() -> None:
+            async with self._db.session() as s:
+                row = await s.get(ServerOutbox, op.id)
+                if row is not None:
+                    await s.delete(row)
+                    await s.flush()
+                req = await s.get(GoodsRequest, op.request_id)
+                if req is None:
+                    return
+                req.last_error = ""
+                if op.op == OutboxOp.MESSAGE:
+                    message = await s.get(GoodsRequestMessage, op.message_id)
+                    if message is not None:
+                        message.server_id = answer["id"]
+                        message.created_at = parse_time(answer.get("created_at")) or message.created_at
+                    return
+                await _apply_request(s, req, answer, initial=True)
+
+        await with_retries(attempt)
 
     # ----- changes -----
 
@@ -275,27 +327,52 @@ class SyncEngine:
         listed = {r["id"] for r in requests}
         for request_id in sorted({m["request_id"] for m in messages} - known - listed):
             requests.append(await client.call("GET", f"/requests/{request_id}"))
-        events: list[SyncEvent] = []
         initial = since is None  # the first sync brings history: no notifications for it
-        async with self._db.session() as s:
+
+        async def attempt() -> tuple[list[SyncEvent], bool]:
+            events: list[SyncEvent] = []
             changed = False
-            for row in requests:
-                event, row_changed = await _upsert_request(s, row, initial)
-                changed |= row_changed
-                if event:
-                    events.append(event)
-            for row in messages:
-                event, row_changed = await _upsert_message(s, row, initial)
-                changed |= row_changed
-                if event:
-                    events.append(event)
-            setting = await s.get(AppSetting, SYNC_KEY)
-            value = {"next_since": data.get("next_since")}
-            if setting is None:
-                s.add(AppSetting(key=SYNC_KEY, value=value))
-            else:
-                setting.value = value
-        return events, changed
+            async with self._db.session() as s:
+                for row in requests:
+                    event, row_changed = await _upsert_request(s, row, initial)
+                    changed |= row_changed
+                    if event:
+                        events.append(event)
+                for row in messages:
+                    event, row_changed = await _upsert_message(s, row, initial)
+                    changed |= row_changed
+                    if event:
+                        events.append(event)
+                setting = await s.get(AppSetting, SYNC_KEY)
+                value = {"next_since": data.get("next_since")}
+                if setting is None:
+                    s.add(AppSetting(key=SYNC_KEY, value=value))
+                else:
+                    setting.value = value
+            return events, changed
+
+        return await with_retries(attempt)
+
+
+async def unfail_account_rows(db: Database) -> int:
+    """Rows an older version marked failed only because the *account* was refused (e.g. 403 while the
+    password had to be changed) go back to the queue. Run at startup and after the account is fixed."""
+    async def attempt() -> int:
+        async with db.session() as s:
+            ids = set((await s.scalars(select(ServerOutbox.request_id).where(
+                ServerOutbox.failed, or_(ServerOutbox.last_status.in_(ACCOUNT_STATUSES),
+                                         ServerOutbox.last_error.in_(_OLD_ACCOUNT_ERRORS))))).all())
+            if not ids:
+                return 0
+            await s.execute(update(ServerOutbox).where(ServerOutbox.request_id.in_(ids)).values(
+                failed=False, last_error="", last_status=None))
+            await s.execute(update(GoodsRequest).where(GoodsRequest.id.in_(ids)).values(last_error=""))
+            return len(ids)
+
+    count = await with_retries(attempt)
+    if count:
+        log.info("Put %d request(s) refused only for an account problem back in the queue", count)
+    return count
 
 
 async def _state_ops(s: AsyncSession, request_id: int) -> int:

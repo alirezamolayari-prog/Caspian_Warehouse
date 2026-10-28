@@ -124,7 +124,7 @@ async def test_not_configured_and_account_rejected(db, admin, request_shop, fake
     await connection.save_connection(db, admin, "https://caspian.test", "warehouse", "warehouse123")
     server.deactivate("warehouse")
     result = await engine.tick(admin)
-    assert result.state == SyncState.ACCOUNT_REJECTED and "غیرفعال" in result.message
+    assert result.state == SyncState.ACCOUNT_PROBLEM and "غیرفعال" in result.message
     logins = server.calls.count(("POST", "/auth/login"))
     await engine.tick(admin)  # no hammering the server with a refused account
     assert server.calls.count(("POST", "/auth/login")) == logins

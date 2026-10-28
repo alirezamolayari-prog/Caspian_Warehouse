@@ -687,4 +687,6 @@ class ServerOutbox(IdMixin, Base):
     # Refused by the server (not a connection problem): kept, and later ops of the request wait.
     failed: Mapped[bool] = mapped_column(Boolean, default=False)
     last_error: Mapped[str] = mapped_column(Text, default="")
+    # HTTP status of the last refusal; 401/403 (an account problem) are never left failed.
+    last_status: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
