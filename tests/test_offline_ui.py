@@ -38,4 +38,4 @@ async def test_status_bar_stays_quiet_when_no_server_is_set(qtbot, themes, db, a
     ctx.server_link._on_result(TickResult(SyncState.NOT_CONFIGURED))
     assert not window.server_status.isVisible()  # no red «قطع» on a PC that works without a server
     ctx.server_link._on_result(TickResult(SyncState.DISCONNECTED, "سرور در دسترس نیست"))
-    assert window.server_status.isVisible() and window.server_status.text() == "سرور: قطع"
+    assert window.server_status.isVisible() and window.server_status.text() == "سرور: قطع (آفلاین)"

@@ -56,6 +56,8 @@ DEFAULT_ROLES: dict[str, tuple[str, frozenset[Perm]]] = {
         frozenset({Perm.ITEMS_VIEW, Perm.DOCUMENTS_VIEW, Perm.REPORTS_VIEW, Perm.STOCK_VIEW}),
     ),
     "counter": ("شمارشگر انبار", frozenset({Perm.ITEMS_VIEW, Perm.STOCKTAKE_RUN})),
+    # First server sign-in on this PC: sees the item list only until an admin gives a role.
+    "new_staff": ("کاربر تازه", frozenset({Perm.ITEMS_VIEW})),
 }
 
 # Permissions introduced after the first release, granted once to existing system roles

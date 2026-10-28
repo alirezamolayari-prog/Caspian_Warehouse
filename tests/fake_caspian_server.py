@@ -33,7 +33,13 @@ class FakeServer:
         self.messages: list[dict] = []
         self.online = True
         self.drop_next = 0  # commit, then fail the connection (the client never sees the answer)
-        self.refuse_next: list[tuple[int, str]] = []  # (status, X-Error-Code) for the next calls
+        self.refuse_next: list[tuple[int, str]] = []
+        self.codes: dict[tuple[str, str], str] = {}  # (mobile, purpose) -> the SMS code
+        self.verified: dict[str, tuple[str, str]] = {}
+        self.sms: list[tuple[str, str]] = []
+        self.otp_refuse: tuple[str, int] | None = None  # (X-Error-Code, Retry-After) for code requests
+        self.logins: list[str] = []
+        self._user_ids = itertools.count(10)  # (status, X-Error-Code) for the next calls
         self.login_retry_after: int | None = None  # set: every login answers 429 login_rate_limited
         self.calls: list[tuple[str, str]] = []
         self._ids = itertools.count(1)
@@ -104,7 +110,8 @@ class FakeServer:
         if self.login_retry_after is not None:
             return self._error(429, "تلاش‌های ناموفق زیاد", "login_rate_limited", self.login_retry_after)
         form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
-        user = self.users.get(form.get("username", ""))
+        name = self._find(form.get("username", ""))
+        user = self.users.get(name) if name else None
         if user is None or user["password"] != form.get("password"):
             return self._error(401, "نام کاربری یا رمز عبور اشتباه است", "invalid_credentials")
         if not user["active"]:
@@ -113,10 +120,67 @@ class FakeServer:
         if state != "approved":
             return self._error(403, "حساب تأیید نشده", f"account_{state}")
         token = f"t{next(self._tokens)}"
-        self.tokens[token] = form["username"]
+        self.tokens[token] = name
+        self.logins.append(name)
         return self._json(200, {"access_token": token, "token_type": "bearer", "role": user["role"],
                                 "full_name": user["full_name"],
                                 "must_change_password": user.get("must_change", False)})
+
+    def _find(self, login: str) -> str | None:
+        """A username, or a mobile number in any accepted form (like the real server)."""
+        if login in self.users:
+            return login
+        digits = "".join(ch for ch in login if ch.isdigit())[-10:]
+        return next((n for n, u in self.users.items() if u.get("mobile", "")[-10:] == digits and digits),
+                    None)
+
+    def add_person(self, mobile: str, password: str, full_name: str, approval: str = "approved",
+                   role: str = "warehouse") -> str:
+        """A personal account (what SMS registration + the admin's approval make)."""
+        name = f"m{mobile}"
+        self.users[name] = {"id": next(self._user_ids), "password": password, "role": role,
+                            "full_name": full_name, "active": True, "mobile": mobile, "approval": approval}
+        return name
+
+    def _otp(self, path: str, body: dict) -> httpx.Response:
+        mobile = "0" + "".join(ch for ch in body.get("mobile", "") if ch.isdigit())[-10:]
+        if path == "/auth/otp/request":
+            if len(mobile) != 11 or not mobile.startswith("09"):
+                return self._error(422, "شماره موبایل نامعتبر است", "invalid_mobile")
+            taken = self._find(mobile) is not None
+            if body["purpose"] == "register" and taken:
+                return self._error(409, "این شماره قبلاً ثبت شده", "mobile_taken")
+            if body["purpose"] == "reset_password" and not taken:
+                return self._error(404, "حسابی نیست", "account_not_found")
+            if self.otp_refuse:
+                code, wait = self.otp_refuse
+                return self._error(429, "سقف", code, wait)
+            self.codes[(mobile, body["purpose"])] = "482913"
+            self.sms.append((mobile, body["purpose"]))
+            return self._json(200, {"expires_in": 120, "resend_after": 90})
+        if path == "/auth/otp/verify":
+            if self.codes.get((mobile, body["purpose"])) != body["code"]:
+                return self._error(400, "کد اشتباه است؛ ۴ بار دیگر می‌توانید امتحان کنید", "code_wrong")
+            del self.codes[(mobile, body["purpose"])]
+            token = f"v{next(self._tokens)}"
+            self.verified[token] = (mobile, body["purpose"])
+            return self._json(200, {"verified_token": token, "expires_in": 300})
+        mobile, purpose = self.verified.pop(body.get("verified_token"), (None, None))
+        if path == "/auth/otp/register" and purpose == "register":
+            if any(ch.isascii() and ch.isalpha() for ch in body["first_name"] + body["last_name"]):
+                return self._json(422, {"detail": [{"loc": ["body", "first_name"], "type": "value_error",
+                                                    "msg": "Value error, نام و نام خانوادگی را با حروف "
+                                                           "فارسی بنویسید (۲ تا ۵۰ حرف)"}]})
+            self.add_person(mobile, body["password"], f"{body['first_name']} {body['last_name']}",
+                            approval="pending")
+            return self._json(201, {"status": "pending"})
+        if path == "/auth/otp/reset-password" and purpose == "reset_password":
+            name = self._find(mobile)
+            self.users[name].update(password=body["new_password"], must_change=False)
+            for token in [t for t, n in self.tokens.items() if n == name]:
+                del self.tokens[token]
+            return self._json(200, {"status": "ok"})
+        return self._error(401, "مرحلهٔ تأیید نامعتبر است", "verification_invalid")
 
     def _user(self, request: httpx.Request) -> dict | None:
         token = request.headers.get("authorization", "").removeprefix("Bearer ")
@@ -141,6 +205,8 @@ class FakeServer:
             return self._json(200, {"status": "ok", "server_time": self._clock.isoformat()})
         if path == "/auth/login":
             return self._login(request)
+        if path.startswith("/auth/otp/"):
+            return self._otp(path, json.loads(request.content))
         user = self._user(request)
         if user is None:
             return self._error(401, "توکن نامعتبر است یا منقضی شده — دوباره وارد شوید")
@@ -175,7 +241,7 @@ class FakeServer:
                                     "next_since": _iso(server_time - OVERLAP),
                                     "requests": reqs, "messages": msgs})
         if parts == ["requests"] and method == "POST":
-            return self._create(body)
+            return self._create(body, user)
         if len(parts) >= 2 and parts[0] == "requests":
             req = self.requests.get(int(parts[1]))
             if req is None:
@@ -214,7 +280,7 @@ class FakeServer:
                 "consumption_location": body["consumption_location"], "note": body.get("note"),
                 "items": [{"id": n, **item} for n, item in enumerate(body["items"], start=1)]}
 
-    def _create(self, body: dict) -> httpx.Response:
+    def _create(self, body: dict, user: dict) -> httpx.Response:
         assert body["items"] and body["consumption_location"] and body["requester_name"]
         for item in body["items"]:
             assert item["quantity"] > 0 and len(item["unit"]) <= 50
@@ -224,7 +290,8 @@ class FakeServer:
                 return self._json(200, self._out(req))
         now = self.now()
         req = {"id": next(self._ids), "client_request_id": cid, **self._fields(body), "status": "pending",
-               "rejection_reason": None, "created_by_id": 2, "decided_at": None, "issue_number": None,
+               "rejection_reason": None, "created_by_id": user["id"],
+               "created_by_name": user["full_name"], "decided_at": None, "issue_number": None,
                "issued_at": None, "created_at": now, "updated_at": now}
         self.requests[req["id"]] = req
         return self._json(201, self._out(req))

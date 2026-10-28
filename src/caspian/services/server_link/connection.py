@@ -60,32 +60,39 @@ async def get_connection(db: Database) -> ServerConnection | None:
     return ServerConnection(str(value["url"]), str(value["username"]))
 
 
+async def get_url(db: Database) -> str | None:
+    """The saved server address (also without a shared account)."""
+    async with db.session() as s:
+        row = await s.get(AppSetting, KEY)
+    value = row.value if row and isinstance(row.value, dict) else {}
+    return str(value["url"]) if value.get("url") else None
+
+
 def get_password(connection: ServerConnection) -> str | None:
     return get_secret(SECRET_KIND, connection.secret_name)
 
 
 async def save_connection(db: Database, actor: Actor, url: str, username: str,
                           password: str | None) -> ServerConnection:
-    """`password` None keeps the stored one (it must exist for this username and host)."""
+    """`password` None keeps the stored one (it must exist for this username and host). An empty
+    `username` saves only the address: no shared account, everyone signs in with their own."""
     if actor.is_ai:
         raise PermissionDenied("دستیار هوشمند اجازه تغییر اتصال سرور را ندارد.")
     if not actor.is_admin:
         raise PermissionDenied("فقط مدیر سیستم می‌تواند اتصال به سرور را تنظیم کند.")
     connection = ServerConnection(clean_url(url), username.strip())
-    if not connection.username:
-        raise ValidationError("نام کاربری سرور را وارد کنید.")
-    if password is None and not get_password(connection):
+    if connection.username and password is None and not get_password(connection):
         raise ValidationError("رمز عبور حساب سرور را وارد کنید.")
     async with db.session(actor) as s:
         row = await s.get(AppSetting, KEY)
-        value = {"url": connection.url, "username": connection.username}
+        value = {"url": connection.url, "username": connection.username}  # "" = no shared account
         if row is None:
             s.add(AppSetting(key=KEY, value=value))
         else:
             row.value = value
         audit.record(s, actor, "server.connection_saved",
                      details={**value, "password_changed": password is not None})
-    if password is not None:
+    if password is not None and connection.username:
         set_secret(SECRET_KIND, connection.secret_name, password)
     return connection
 
@@ -97,6 +104,9 @@ async def test_connection(url: str, username: str, password: str,
     account that isn't approved is reported here and not first by the sync. Returns a Persian
     confirmation or raises a ServerError with the specific reason."""
     client = ServerClient(clean_url(url), username.strip(), password, transport, timeout)
+    if not username.strip():  # no shared account: only check that the server answers
+        await client.health()
+        return "سرور در دسترس است. هر کارمند با شماره موبایل و رمز خودش وارد می‌شود."
     me = await client.call("GET", "/auth/me")
     if client.must_change_password or me.get("must_change_password"):
         raise ServerAccountProblem("password_change_required", status=403)

@@ -27,9 +27,10 @@ from caspian.core.text import to_persian_digits
 from caspian.db.models import DocStatus
 from caspian.services import access, auth, documents
 from caspian.services.actor import Actor
-from caspian.services.server_link import goods
+from caspian.services.server_link import goods, session
 from caspian.services.server_link.sync import SyncState
 from caspian.ui.about import AboutDialog
+from caspian.ui.account_dialogs import ServerPasswordDialog
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.assistant_page import AssistantPage
 from caspian.ui.auth_dialogs import ChangePasswordDialog, SetPinDialog, run_login
@@ -442,7 +443,11 @@ class MainWindow(QMainWindow):
 
     @asyncSlot()
     async def on_change_password(self) -> None:
-        if await exec_dialog(ChangePasswordDialog(self.ctx.db, self.ctx.actor, parent=self)):
+        if await session.is_server_user(self.ctx.db, self.ctx.actor):
+            dialog = ServerPasswordDialog(self.ctx.db, self.ctx.actor, parent=self)
+        else:
+            dialog = ChangePasswordDialog(self.ctx.db, self.ctx.actor, parent=self)
+        if await exec_dialog(dialog):
             show_info(self, "رمز عبور تغییر کرد.")
 
     @asyncSlot()

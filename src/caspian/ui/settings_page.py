@@ -25,6 +25,7 @@ from caspian.services.ai import history as chat_history
 from caspian.services.ai.config import PRESETS, ProviderConfig
 from caspian.services.errors import ServiceError
 from caspian.services.server_link import connection as server_connection
+from caspian.services.server_link.accounts import DEFAULT_URL as DEFAULT_SERVER_URL
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.automation_settings import McpSection, MessagingTab, TasksTab
 from caspian.ui.backup_settings import BackupTab
@@ -328,8 +329,9 @@ class AITab(QWidget):
 
 
 class ServerTab(QWidget):
-    """Caspian Server connection (admin only). The password is kept only in this PC's Windows
-    Credential Manager."""
+    """Caspian Server (admin only). Everyone signs in with their own account (mobile + password);
+    the old shared account below keeps working until the admin switches it off on the server.
+    Passwords are kept only in this PC's Windows Credential Manager."""
 
     def __init__(self, ctx: AppContext, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -338,24 +340,43 @@ class ServerTab(QWidget):
         layout.setContentsMargins(0, 12, 0, 0)
         card = Card()
         card.body.addWidget(QLabel("اتصال به سرور کاسپین (درخواست کالا)", objectName="CardTitle"))
-        intro = QLabel("این برنامه با حساب «انبار» به سرور وصل می‌شود تا درخواست‌ها را برای تأیید مالکان "
-                       "بفرستد و جواب‌ها را بگیرد. رمز فقط روی همین رایانه (Windows Credential Manager) "
-                       "ذخیره می‌شود.\nاگر هنوز سرور ندارید، این بخش را خالی بگذارید: برنامه بدون سرور کامل "
-                       "کار می‌کند و درخواست‌های کالا روی همین رایانه می‌مانند تا بعداً ارسال شوند.",
+        intro = QLabel("هر کارمند با شماره موبایل و رمز خودش وارد برنامه می‌شود (ثبت‌نام با کد پیامک، "
+                       "سپس تأیید مدیر در پنل سرور) و درخواست‌هایش با نام خودش فرستاده می‌شود. "
+                       "رمزها فقط روی همین رایانه، در بخش امن رمزهای ویندوز، ذخیره می‌شوند.\n"
+                       "اگر هنوز سرور ندارید، این بخش را خالی بگذارید: برنامه بدون سرور کامل کار می‌کند "
+                       "و درخواست‌های کالا روی همین رایانه می‌مانند تا بعداً ارسال شوند.",
                        objectName="Muted")
         intro.setWordWrap(True)
         card.body.addWidget(intro)
+
+        card.body.addWidget(QLabel("حساب مشترک (قدیمی)", objectName="CardTitle"))
+        legacy = QLabel("حساب «انبار» که همه با آن کار می‌کردند. درخواست‌های کسانی که هنوز حساب شخصی "
+                        "ندارند با این حساب فرستاده می‌شود. وقتی همه حساب شخصی گرفتند می‌توانید آن را "
+                        "خالی بگذارید.", objectName="Muted")
+        legacy.setWordWrap(True)
+        card.body.addWidget(legacy)
         form = QFormLayout()
         form.setSpacing(10)
-        self.url = ltr_field()
-        self.url.setPlaceholderText("https://caspian.example.ir")
-        self.url.textChanged.connect(self._update_warning)
-        form.addRow("نشانی سرور:", self.url)
         self.username = ltr_field("warehouse")
         form.addRow("نام کاربری:", self.username)
         self.password = password_field()
         form.addRow("رمز عبور:", self.password)
         card.body.addLayout(form)
+
+        self.advanced_button = QPushButton("تنظیمات پیشرفته ▾")
+        self.advanced_button.setProperty("variant", "link")
+        self.advanced_button.setCheckable(True)
+        card.body.addWidget(self.advanced_button, 0, Qt.AlignmentFlag.AlignRight)
+        self.advanced = QWidget()
+        advanced = QFormLayout(self.advanced)
+        advanced.setContentsMargins(0, 0, 0, 0)
+        self.url = ltr_field(DEFAULT_SERVER_URL)
+        self.url.setPlaceholderText(DEFAULT_SERVER_URL)
+        self.url.textChanged.connect(self._update_warning)
+        advanced.addRow("نشانی سرور:", self.url)
+        self.advanced.hide()
+        self.advanced_button.toggled.connect(self.advanced.setVisible)
+        card.body.addWidget(self.advanced)
         self.warning = QLabel("هشدار: با http رمز بدون رمزنگاری از شبکه عبور می‌کند؛ برای سرور اینترنتی "
                               "از https استفاده کنید.", objectName="StatusText")
         self.warning.setProperty("error", True)
@@ -383,6 +404,7 @@ class ServerTab(QWidget):
     @asyncSlot()
     async def load(self) -> None:
         self._saved = await server_connection.get_connection(self._ctx.db)
+        self.url.setText(await server_connection.get_url(self._ctx.db) or DEFAULT_SERVER_URL)
         if self._saved is not None:
             self.url.setText(self._saved.url)
             self.username.setText(self._saved.username)

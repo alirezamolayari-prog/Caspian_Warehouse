@@ -171,6 +171,16 @@ QPushButton[variant="primary"] {{
 QPushButton[variant="primary"]:hover {{ background: {t.primary_hover}; }}
 QPushButton[variant="danger"] {{ background: {t.danger}; border-color: {t.danger}; color: #FFFFFF; }}
 QPushButton[variant="danger"]:hover {{ background: {t.danger_hover}; }}
+QPushButton[variant="link"] {{
+    background: transparent; border: none; color: {t.primary}; padding: 6px 4px;
+    text-decoration: underline;
+}}
+QPushButton[variant="link"]:hover {{ color: {t.primary_hover}; }}
+QPushButton[variant="link"]:disabled {{ color: {t.text_muted}; text-decoration: none; }}
+#AccountWindow QLineEdit {{ min-height: 34px; font-size: 11pt; }}
+#AccountWindow QPushButton[variant="primary"] {{ min-height: 36px; font-size: 11pt; }}
+#RuleOk {{ color: {t.success}; }}
+#RuleBad {{ color: {t.text_muted}; }}
 #WarningBox {{ background: {t.danger_soft}; border: 1px solid {t.danger}; border-radius: 10px; }}
 QPushButton#Chip {{
     background: {t.surface}; border: 1px solid {t.border}; border-radius: 14px;

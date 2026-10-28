@@ -156,18 +156,21 @@ async def request_approval(db: Database, actor: Actor, action: ProtectedAction,
 
 async def run_login(db: Database, username: str = "", cancel_text: str = "خروج",
                     parent: QWidget | None = None, message: str = "") -> Actor | None:
-    """Full login: credentials, then forced password change and admin PIN setup if needed.
+    """Full sign-in: the account window (personal server account, or a local admin as the emergency
+    fallback), then a local admin's forced password change and PIN setup if needed.
     `message`: why the user is asked to sign in again (e.g. the account was deactivated).
 
     Returns None if the user cancels at any step.
     """
-    dialog = LoginDialog(db, username, cancel_text, parent)
-    if message:
-        dialog.show_status(message)
-    if not await exec_dialog(dialog) or dialog.result_login is None:
+    from caspian.ui.account_dialogs import AccountWindow  # imports this module's dialogs' peers
+
+    window = AccountWindow(db, message, cancel_text, parent=parent)
+    if username:
+        window.login_mobile.setText(username)
+    if not await exec_dialog(window) or window.result_login is None:
         return None
-    result = dialog.result_login
-    if result.must_change_password and not await exec_dialog(
+    result = window.result_login
+    if result.must_change_local and not await exec_dialog(
         ChangePasswordDialog(db, result.actor, forced=True, parent=parent)
     ):
         return None
