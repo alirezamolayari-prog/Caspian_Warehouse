@@ -16,6 +16,7 @@ from caspian.services import audit
 from caspian.services.actor import Actor
 from caspian.services.errors import PermissionDenied, ValidationError
 from caspian.services.server_link.client import TIMEOUT_SECONDS, ServerClient
+from caspian.services.server_link.errors import ServerAccountProblem
 
 KEY = "server.connection"
 SECRET_KIND = "server"
@@ -92,10 +93,15 @@ async def save_connection(db: Database, actor: Actor, url: str, username: str,
 async def test_connection(url: str, username: str, password: str,
                           transport: httpx.AsyncBaseTransport | None = None,
                           timeout: float = TIMEOUT_SECONDS) -> str:
-    """Log in and ask «who am I»; returns a Persian confirmation or raises a ServerError."""
+    """Log in *and* make one authorised call («who am I»), so a password that must be changed or an
+    account that isn't approved is reported here and not first by the sync. Returns a Persian
+    confirmation or raises a ServerError with the specific reason."""
     client = ServerClient(clean_url(url), username.strip(), password, transport, timeout)
-    await client.health()
     me = await client.call("GET", "/auth/me")
+    if client.must_change_password or me.get("must_change_password"):
+        raise ServerAccountProblem("password_change_required", status=403)
     if me.get("role") not in ("warehouse", "admin"):
-        raise ValidationError("این حساب در سرور نقش «انبار» ندارد؛ حساب warehouse را وارد کنید.")
-    return f"اتصال برقرار شد: {me.get('full_name') or me.get('username')} ({me.get('role')})"
+        raise ValidationError("این حساب در سرور نقش «انبار» ندارد. از مدیر سرور بخواهید نقش «انبار» را "
+                              "به آن بدهد.")
+    name = me.get("full_name") or username.strip()
+    return f"اتصال برقرار شد و سرور حساب «{name}» را پذیرفت."

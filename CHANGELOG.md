@@ -7,6 +7,32 @@ All notable changes to Caspian Warehouse. Versions follow `pyproject.toml`; inst
 > Database changes run automatically on the first start of the new version and can't be undone
 > from inside the app.
 
+## 1.2.0 — unreleased
+
+### Server sync
+- **A request is no longer stuck in «در صف ارسال» after the server refused the account.** 401/403
+  (wrong password, account waiting for approval, rejected, disabled, password must be changed, too
+  many tries) is an *account* problem: the queue waits and is sent automatically once the account is
+  fixed. Requests an older version had marked failed for this reason are put back in the queue on
+  the first start.
+- A request the server really refused gets a working «ارسال مجدد» button; it is sent again with the
+  same id, so the server never makes a second request.
+- MariaDB «Record has changed since last read» (error 1020, default since MariaDB 11.6) and
+  deadlocks are retried quietly. Writes to requests are short transactions; opening a request no
+  longer reads and then writes the row. `innodb_snapshot_isolation` is left on: it does not exist
+  on MariaDB 10.6–11.3 (setting it would break those installs) and it protects stock from lost
+  updates.
+- «آزمایش اتصال» logs in **and** makes an authorised call, and names the exact problem
+  (wrong password, waiting for approval, rejected, disabled, must change password, too many tries
+  with the waiting time, server unreachable).
+- Clicking «سرور: …» in the status bar retries at once and opens the connection settings (admins);
+  its tooltip shows the last problem in Persian.
+
+### Error messages
+- The unexpected-error window is Persian only: one sentence, the log path, and «کپی جزئیات برای
+  پشتیبانی» (copies the technical details). No English, SQL or «Show Details…». The same error
+  within a few seconds shows a single window.
+
 ## 1.2.0rc1 — release candidate (2026-10-25)
 
 First installer for go-live **without Caspian Server**: everything works with the server address

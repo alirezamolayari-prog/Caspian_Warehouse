@@ -51,7 +51,7 @@ OFFLINE_TEXT = {
     SyncState.NOT_CONFIGURED: "اتصال به سرور کاسپین هنوز تنظیم نشده است (تنظیمات ← اتصال به سرور). "
                               + SAVED_HERE,
     SyncState.DISCONNECTED: "سرور کاسپین الان در دسترس نیست. " + SAVED_HERE,
-    SyncState.ACCOUNT_REJECTED: "سرور حساب انبار را نپذیرفت. " + SAVED_HERE,
+    SyncState.ACCOUNT_PROBLEM: "سرور حساب انبار را نپذیرفت. " + SAVED_HERE,
 }
 COLUMNS = ("شماره", "درخواست‌کننده", "محل مصرف", "اقلام", "وضعیت", "تاریخ", "توضیح")
 LINE_COLUMNS = ("کد", "نام کالا", "واحد", "مقدار", "")
@@ -464,12 +464,15 @@ class RequestsPage(QWidget):
         self.chat_button.clicked.connect(self.on_chat)
         self.edit_button = QPushButton("ویرایش و ارسال دوباره")
         self.edit_button.clicked.connect(self.on_edit)
+        self.retry_button = QPushButton("ارسال مجدد")
+        self.retry_button.setToolTip("سرور این درخواست را نپذیرفته بود؛ دوباره و بدون تغییر فرستاده می‌شود.")
+        self.retry_button.clicked.connect(self.on_retry)
         self.open_button = QPushButton("باز کردن حواله")
         self.open_button.clicked.connect(self.on_open_document)
         self.print_button = QPushButton("چاپ حواله")
         self.print_button.setToolTip("با چاپ، حواله ثبت نهایی و از موجودی کم می‌شود.")
         self.print_button.setMenu(document_print_menu(self, ctx, self._document_id, self.refresh))
-        for b in (self.chat_button, self.edit_button, self.open_button, self.print_button):
+        for b in (self.chat_button, self.retry_button, self.edit_button, self.open_button, self.print_button):
             actions.addWidget(b)
         layout.addLayout(actions)
 
@@ -497,6 +500,7 @@ class RequestsPage(QWidget):
         row = self.selected()
         self.chat_button.setEnabled(row is not None)
         self.edit_button.setEnabled(row is not None and row.editable)
+        self.retry_button.setEnabled(row is not None and row.failed)
         self.open_button.setEnabled(row is not None and row.document_id is not None)
         printable = row is not None and row.document_id is not None and row.status in (
             RequestStatus.APPROVED, RequestStatus.ISSUED)
@@ -509,7 +513,7 @@ class RequestsPage(QWidget):
 
     def _show_server_state(self, result) -> None:
         text = OFFLINE_TEXT.get(result.state, "")
-        if result.state == SyncState.ACCOUNT_REJECTED and result.message:
+        if result.state == SyncState.ACCOUNT_PROBLEM and result.message:
             text = f"{result.message} {SAVED_HERE}"
         self.offline_banner.setText(text)
         self.offline_banner.setVisible(bool(text))
@@ -584,6 +588,20 @@ class RequestsPage(QWidget):
         if row is None or not row.editable:
             return
         await self._open_dialog(await goods.get_request(self._ctx.db, self._ctx.actor, row.id))
+
+    @asyncSlot()
+    async def on_retry(self) -> None:
+        row = self.selected()
+        if row is None or not row.failed:
+            return
+        try:
+            await goods.retry_failed(self._ctx.db, self._ctx.actor, row.id)
+        except ServiceError as exc:
+            show_error(self, exc.message)
+            return
+        if self._ctx.server_link is not None:
+            self._ctx.server_link.wake()
+        await self.refresh()
 
     @asyncSlot()
     async def on_chat(self) -> None:

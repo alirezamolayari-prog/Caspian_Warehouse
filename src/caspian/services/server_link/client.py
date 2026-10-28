@@ -2,7 +2,8 @@
 
 The token is kept in memory only. A 401 means the token expired *or* the account was deactivated
 (the server answers both the same way), so the client logs in again once, silently; if that login
-is refused too, the account itself is the problem (`ServerAccountRejected`).
+is refused too, the account itself is the problem (`ServerAccountProblem`). A 403 is always about the
+account (`X-Error-Code`: pending, rejected, disabled, password_change_required …).
 """
 
 import logging
@@ -11,7 +12,7 @@ from typing import Any
 import httpx
 
 from caspian.services.server_link.errors import (
-    ServerAccountRejected,
+    ServerAccountProblem,
     ServerRejected,
     ServerUnreachable,
 )
@@ -31,6 +32,7 @@ class ServerClient:
         self._transport = transport
         self._timeout = timeout
         self._token: str | None = None
+        self.must_change_password = False
 
     def _http(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(base_url=self.base_url, timeout=self._timeout,
@@ -52,12 +54,15 @@ class ServerClient:
         self._token = None
         response = await self._send(http, "POST", "/auth/login",
                                     data={"username": self.username, "password": self._password})
-        if response.status_code == 401:
-            log.warning("Caspian Server refused the login of %r", self.username)
-            raise ServerAccountRejected()
+        if response.status_code in (401, 403, 429):
+            log.warning("Caspian Server refused the login of %r: %s %s %s", self.username,
+                        response.status_code, error_code(response), _detail(response))
+            raise _account_problem(response, "invalid_credentials")
         if response.status_code != 200:
-            raise ServerRejected(response.status_code, _detail(response))
-        self._token = _json(response)["access_token"]
+            raise ServerRejected(response.status_code, _detail(response), error_code(response))
+        body = _json(response)
+        self._token = body["access_token"]
+        self.must_change_password = bool(body.get("must_change_password"))
 
     async def call(self, method: str, path: str, *, json: Any = None, params: dict | None = None,
                    ok: tuple[int, ...] = (200, 201)) -> Any:
@@ -71,13 +76,16 @@ class ServerClient:
                 await self._login(http)
                 response = await self._send(http, method, path, json=json, params=params,
                                             headers={"Authorization": f"Bearer {self._token}"})
-                if response.status_code == 401:
-                    raise ServerAccountRejected()
+        if response.status_code in (401, 403):
+            log.warning("Caspian Server refused the account on %s %s: %s %s %s", method, path,
+                        response.status_code, error_code(response), _detail(response))
+            raise _account_problem(response, "invalid_credentials" if response.status_code == 401
+                                   else "forbidden")
         if response.status_code not in ok:
             detail = _detail(response)
-            log.warning("Caspian Server refused %s %s (%s): %s", method, path, response.status_code,
-                        detail)
-            raise ServerRejected(response.status_code, detail)
+            log.warning("Caspian Server refused %s %s (%s, %s): %s", method, path, response.status_code,
+                        error_code(response), detail)
+            raise ServerRejected(response.status_code, detail, error_code(response))
         return _json(response)
 
     async def health(self) -> dict:
@@ -86,6 +94,22 @@ class ServerClient:
         if response.status_code != 200:
             raise ServerRejected(response.status_code, _detail(response))
         return _json(response)
+
+
+def error_code(response: httpx.Response) -> str:
+    return response.headers.get("x-error-code", "").strip()
+
+
+def retry_after(response: httpx.Response) -> int | None:
+    try:
+        return int(float(response.headers.get("retry-after", "")))
+    except ValueError:
+        return None
+
+
+def _account_problem(response: httpx.Response, default: str) -> ServerAccountProblem:
+    return ServerAccountProblem(error_code(response) or default, retry_after(response),
+                                response.status_code)
 
 
 def _json(response: httpx.Response) -> Any:

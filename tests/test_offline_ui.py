@@ -22,7 +22,7 @@ async def test_requests_page_explains_offline_work(qtbot, themes, db, admin):
     page = RequestsPage(ctx)
     qtbot.addWidget(page)
     page.show()
-    for state in (SyncState.NOT_CONFIGURED, SyncState.DISCONNECTED, SyncState.ACCOUNT_REJECTED):
+    for state in (SyncState.NOT_CONFIGURED, SyncState.DISCONNECTED, SyncState.ACCOUNT_PROBLEM):
         ctx.server_link._on_result(TickResult(state, "پیام"))
         assert page.offline_banner.isVisible()
         assert "روی همین رایانه ذخیره" in page.offline_banner.text()

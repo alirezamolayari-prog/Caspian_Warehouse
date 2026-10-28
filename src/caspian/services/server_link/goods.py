@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +34,7 @@ from caspian.db.models import (
     Unit,
     Warehouse,
 )
+from caspian.db.retry import with_retries
 from caspian.services import audit, locations
 from caspian.services.actor import Actor
 from caspian.services.documents import Problem
@@ -103,6 +104,7 @@ class RequestRow:
     waiting: bool  # something of this request is still in the outbox
     document_id: int | None = None
     document_status: DocStatus | None = None
+    failed: bool = False  # the server refused something of it: «ارسال مجدد» puts it back in the queue
 
     @property
     def number_text(self) -> str:
@@ -290,19 +292,44 @@ async def resubmit_request(db: Database, actor: Actor, request_id: int, data: Re
     """Correct a rejected request (e.g. smaller quantities) and send it to the owners again."""
     actor.require(Perm.REQUESTS_MANAGE)
     actor.require_human("ارسال دوباره درخواست کالا")
-    async with db.session(actor) as s:
-        req = await _load(s, request_id)
-        if req.status != RequestStatus.REJECTED or req.origin != "local" or await _waiting(s, req.id):
-            raise ValidationError("فقط درخواست ردشده‌ای که در همین برنامه ثبت شده قابل ویرایش و "
-                                  "ارسال دوباره است.")
-        snap = await _ready(s, data)
-        await _apply(s, req, data, snap)
-        req.status = RequestStatus.QUEUED
-        req.unseen = False
-        req.last_error = ""
-        s.add(ServerOutbox(request_id=req.id, op=OutboxOp.RESUBMIT))
-        audit.record(s, actor, "goods_request.resubmitted", "goods_request", req.id,
-                     {"server_id": req.server_id, "lines": len(snap.lines)})
+
+    async def attempt() -> None:
+        async with db.session(actor) as s:
+            req = await _load(s, request_id)
+            if req.status != RequestStatus.REJECTED or req.origin != "local" or await _waiting(s, req.id):
+                raise ValidationError("فقط درخواست ردشده‌ای که در همین برنامه ثبت شده قابل ویرایش و "
+                                      "ارسال دوباره است.")
+            snap = await _ready(s, data)
+            await _apply(s, req, data, snap)
+            req.status = RequestStatus.QUEUED
+            req.unseen = False
+            req.last_error = ""
+            s.add(ServerOutbox(request_id=req.id, op=OutboxOp.RESUBMIT))
+            audit.record(s, actor, "goods_request.resubmitted", "goods_request", req.id,
+                         {"server_id": req.server_id, "lines": len(snap.lines)})
+
+    await with_retries(attempt)
+
+
+async def retry_failed(db: Database, actor: Actor, request_id: int) -> bool:
+    """«ارسال مجدد»: what the server refused goes back to the queue unchanged (same
+    `client_request_id`, so the server never makes a second request). False if nothing had failed."""
+    actor.require(Perm.REQUESTS_MANAGE)
+    actor.require_human("ارسال مجدد درخواست کالا")
+
+    async def attempt() -> bool:
+        async with db.session(actor) as s:
+            await _load(s, request_id)
+            done = await s.execute(update(ServerOutbox).where(
+                ServerOutbox.request_id == request_id, ServerOutbox.failed).values(
+                failed=False, last_error="", last_status=None))
+            if not done.rowcount:
+                return False
+            await s.execute(update(GoodsRequest).where(GoodsRequest.id == request_id).values(last_error=""))
+            audit.record(s, actor, "goods_request.retried", "goods_request", request_id)
+            return True
+
+    return await with_retries(attempt)
 
 
 # ----- assistant drafts -----
@@ -380,13 +407,16 @@ async def _rows(s: AsyncSession, requests: list[GoodsRequest]) -> list[RequestRo
     waiting = set((await s.scalars(select(ServerOutbox.request_id).where(
         ServerOutbox.request_id.in_([r.id for r in requests]),
         ServerOutbox.op != OutboxOp.MESSAGE))).all()) if requests else set()
+    failed = set((await s.scalars(select(ServerOutbox.request_id).where(
+        ServerOutbox.request_id.in_([r.id for r in requests]),
+        ServerOutbox.failed))).all()) if requests else set()
     rows = []
     for r in requests:
         doc_id, doc_status = docs.get(r.server_id, (None, None))
         rows.append(RequestRow(
             r.id, r.server_id, r.status, r.origin, r.requester_name, r.requester_phone, r.location_text,
             r.note, tuple(_line_view(ln) for ln in r.lines), r.created_at, r.unseen, r.rejection_reason,
-            r.issue_number, r.last_error, r.id in waiting, doc_id, doc_status))
+            r.issue_number, r.last_error, r.id in waiting, doc_id, doc_status, r.id in failed))
     return rows
 
 
@@ -412,10 +442,16 @@ async def get_request(db: Database, actor: Actor, request_id: int) -> RequestDet
 
 
 async def mark_seen(db: Database, actor: Actor, request_id: int) -> None:
+    """One UPDATE without reading the row first: the sync may change the same request at this moment
+    (MariaDB 1020 «Record has changed since last read» was shown for the old read-then-write)."""
     actor.require(Perm.REQUESTS_MANAGE)
-    async with db.session() as s:
-        req = await _load(s, request_id)
-        req.unseen = False
+
+    async def attempt() -> None:
+        async with db.session() as s:
+            await s.execute(update(GoodsRequest).where(GoodsRequest.id == request_id, GoodsRequest.unseen)
+                            .values(unseen=False).execution_options(synchronize_session=False))
+
+    await with_retries(attempt)
 
 
 async def unseen_count(db: Database) -> int:

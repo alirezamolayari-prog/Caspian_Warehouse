@@ -288,7 +288,7 @@ class MainWindow(QMainWindow):
         self.server_status.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.server_status.setIconSize(QSize(14, 14))
         self.server_status.setText("سرور: در حال اتصال…")
-        self.server_status.setToolTip("برای تلاش دوباره کلیک کنید")
+        self.server_status.setToolTip("برای دیدن تنظیمات اتصال و تلاش دوباره کلیک کنید")
         self.server_status.clicked.connect(self._retry_server)
         self.server_status.setVisible(False)
         self._server_state: SyncState | None = None  # until the first sync tick reports
@@ -300,8 +300,13 @@ class MainWindow(QMainWindow):
     # ----- Caspian Server -----
 
     def _retry_server(self) -> None:
+        """Click on «سرور: …»: try again now and open the connection settings (admins)."""
         if self.ctx.server_link is not None:
             self.ctx.server_link.retry()
+        if self.ctx.actor.is_admin and self.is_allowed("settings"):
+            self.navigate("settings")
+            settings = self._pages["settings"]
+            settings.tabs.setCurrentIndex(settings.server_index)
 
     def _server_indicator_visible(self) -> bool:
         """Hidden while no server is set: working without Caspian Server is normal, not an alarm."""
@@ -313,8 +318,9 @@ class MainWindow(QMainWindow):
         self.server_status.setVisible(self._server_indicator_visible())
         connected = result.state == SyncState.CONNECTED
         self.server_status.setText(STATE_TEXT[result.state])
-        self.server_status.setToolTip((result.message + "\n" if result.message else "")
-                                      + "برای تلاش دوباره کلیک کنید")
+        hint = ("برای دیدن تنظیمات اتصال و تلاش دوباره کلیک کنید" if self.ctx.actor.is_admin
+                else "برای تلاش دوباره کلیک کنید")
+        self.server_status.setToolTip((result.message + "\n" if result.message else "") + hint)
         theme = self._themes.current
         self.server_status.setIcon(icon("wifi" if connected else "wifi-off",
                                         theme.success if connected else theme.danger))
