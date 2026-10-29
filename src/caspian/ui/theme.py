@@ -210,8 +210,13 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateEdit, QPlainTextEdit, QText
 }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus,
 QPlainTextEdit:focus, QTextEdit:focus {{ border: 1px solid {t.primary}; }}
-/* Branding logo on a white card (a white-background logo stays tidy in the dark theme). */
-#LogoCard {{ background: #ffffff; border-radius: 10px; padding: 8px; }}
+/* Branding logo: its white background is made transparent, so it sits on the theme's surface. */
+#LogoCard {{ background: transparent; border-radius: 10px; padding: 8px; }}
+QPushButton#FilterChip {{
+    background: {t.primary_soft}; border: 1px solid {t.primary}; border-radius: 14px;
+    padding: 4px 14px; color: {t.text}; font-weight: 600;
+}}
+QLabel#Toast {{ background: {t.text}; color: {t.surface}; border-radius: 8px; padding: 8px 16px; }}
 /* A field the user must fix before saving (all problems are shown at once). */
 QLineEdit[invalid="true"], QComboBox[invalid="true"], QSpinBox[invalid="true"],
 QDoubleSpinBox[invalid="true"], QPlainTextEdit[invalid="true"] {{ border: 2px solid {t.danger}; }}

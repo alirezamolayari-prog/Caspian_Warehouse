@@ -48,7 +48,7 @@ from caspian.ui.dialogs import Cancelled, FormDialog, ltr_field
 from caspian.ui.document_print import document_print_menu
 from caspian.ui.location_picker import LocationPicker
 from caspian.ui.messages import show_error
-from caspian.ui.widgets import Card, DataTable, QtyEdit, SearchableCombo, persian_row_numbers
+from caspian.ui.widgets import Card, DataTable, FilterChip, QtyEdit, SearchableCombo, persian_row_numbers
 
 SAVED_HERE = ("درخواست‌ها روی همین رایانه ذخیره می‌شوند و بعداً خودکار ارسال می‌شوند؛ "
               "کارهای انبار (رسید، حواله، چاپ، پشتیبان) مثل همیشه انجام می‌شود.")
@@ -580,6 +580,11 @@ class RequestsPage(QWidget):
         self.mine_only.setToolTip("فقط درخواست‌هایی که خودتان ثبت کرده‌اید")
         self.mine_only.toggled.connect(lambda _: self.refresh())
         toolbar.addWidget(self.mine_only)
+        self.filter_chip = FilterChip()
+        self.filter_chip.clicked.connect(self.clear_filters)
+        toolbar.addWidget(self.filter_chip)
+        self.status_filter.currentIndexChanged.connect(lambda _: self._show_filter())
+        self.mine_only.toggled.connect(lambda _: self._show_filter())
         self.count_label = QLabel(objectName="Muted")
         toolbar.addWidget(self.count_label)
         toolbar.addStretch(1)
@@ -631,6 +636,16 @@ class RequestsPage(QWidget):
         if ctx.server_link is not None:
             ctx.server_link.result.connect(self._on_sync)
         self._update_buttons()
+
+    def _show_filter(self) -> None:
+        parts = [self.status_filter.currentText()] if self.status_filter.currentData() is not None else []
+        if self.mine_only.isChecked():
+            parts.append("درخواست‌های من")
+        self.filter_chip.show_filter("، ".join(parts))
+
+    def clear_filters(self) -> None:
+        self.mine_only.setChecked(False)
+        self.status_filter.setCurrentIndex(0)
 
     def selected(self) -> RequestRow | None:
         row_id = self.table.selected_id()

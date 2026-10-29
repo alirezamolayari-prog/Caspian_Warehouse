@@ -17,6 +17,7 @@ from caspian.core import jalali
 from caspian.core.permissions import Perm
 from caspian.core.text import to_persian_digits
 from caspian.services import documents, health, items
+from caspian.services.server_link import goods
 from caspian.ui.health_dialog import show_health
 from caspian.ui.widgets import Card, DataTable, EmptyState, StatCard
 
@@ -40,7 +41,7 @@ PAGES: tuple[PageSpec, ...] = (
     PageSpec("imports", "ورود اطلاعات", "file-input", perm=Perm.IMPORT_RUN),
     PageSpec("stocktake", "انبارگردانی", "clipboard-check", perm=Perm.STOCKTAKE_RUN),
     PageSpec("reports", "گزارش‌ها", "chart-column", perm=Perm.REPORTS_VIEW),
-    PageSpec("assistant", "دستیار هوشمند", "sparkles", perm=Perm.AI_USE),
+    PageSpec("assistant", "دستیار کاسپین", "sparkles", perm=Perm.AI_USE),
     PageSpec("users", "کاربران", "users", perm=Perm.USERS_MANAGE, bottom=True),
     PageSpec("settings", "تنظیمات", "settings", bottom=True),
 )
@@ -73,8 +74,14 @@ class DashboardPage(QWidget):
             "loans": StatCard("امانی‌های باز", hint="در انتظار بازگشت"),
             "drafts": StatCard("پیش‌نویس‌های در انتظار", hint="اسناد ثبت‌نشده"),
         }
+        if ctx.actor.can(Perm.REQUESTS_MANAGE):  # goods requests waiting for someone (4.5)
+            self.cards["requests_pending"] = StatCard("در انتظار تأیید مالک", hint="درخواست‌های کالا")
+            self.cards["requests_approved"] = StatCard("تأییدشده — منتظر چاپ حواله",
+                                                       hint="با چاپ، حواله ثبت می‌شود")
+            for key, option in (("requests_pending", "pending"), ("requests_approved", "approved")):
+                self.cards[key].clicked.connect(lambda o=option: self.open_page.emit("requests", o))
         for i, card in enumerate(self.cards.values()):
-            grid.addWidget(card, 0, i)
+            grid.addWidget(card, i // 4, i % 4)
         targets = {"items": ("items", ""), "low_stock": ("items", "low_stock"),
                    "loans": ("documents", "loans")}
         for key, (page, option) in targets.items():
@@ -124,6 +131,10 @@ class DashboardPage(QWidget):
         self.pending = pending
         self.cards["drafts"].set_value(to_persian_digits(pending.total), pending.hint)
         self.cards["loans"].set_value(to_persian_digits(loans))
+        if "requests_pending" in self.cards:
+            waiting, approved = await goods.dashboard_counts(self._ctx.db)
+            self.cards["requests_pending"].set_value(to_persian_digits(waiting))
+            self.cards["requests_approved"].set_value(to_persian_digits(approved))
         if not self._ctx.actor.can(Perm.DOCUMENTS_VIEW):
             return
         findings = await health.check(self._ctx.db, self._ctx.actor)

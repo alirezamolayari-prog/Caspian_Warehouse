@@ -94,7 +94,7 @@ async def approve(
     if actor.is_ai:
         async with db.session() as s:
             audit.record(s, actor, "approval.refused_ai", details={"action": action.value})
-        raise ApprovalError("دستیار هوشمند مجاز به انجام عملیات حساس نیست.")
+        raise ApprovalError("دستیار کاسپین مجاز به انجام عملیات حساس نیست.")
 
     error: str | None = None
     approval: Approval | None = None
@@ -138,7 +138,7 @@ async def approve(
 def consume(approval: Approval | None, action: ProtectedAction, actor: Actor) -> int:
     """Validate and burn an approval. Returns the approving admin's user id."""
     if actor.is_ai:
-        raise ApprovalError("دستیار هوشمند مجاز به انجام عملیات حساس نیست.")
+        raise ApprovalError("دستیار کاسپین مجاز به انجام عملیات حساس نیست.")
     if approval is None:
         raise ApprovalError("این عملیات نیاز به تأیید مدیر با PIN دارد.")
     _purge_expired()

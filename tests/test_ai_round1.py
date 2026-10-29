@@ -94,7 +94,7 @@ async def test_services_refuse_destructive_actions_for_the_ai(db, admin, shop, t
         documents.post_document(db, ai, draft),  # stock changes need a person (QA Part A #1)
     ]
     for attempt in attempts:
-        with pytest.raises(PermissionDenied, match="دستیار هوشمند"):
+        with pytest.raises(PermissionDenied, match="دستیار کاسپین"):
             await attempt
     assert (await documents.get_document(db, admin, posted)).status is DocStatus.POSTED
     assert (await documents.get_document(db, admin, draft)).status is DocStatus.DRAFT
@@ -153,7 +153,7 @@ async def test_the_assistant_can_never_post(db, admin, shop):
                          lines=[{"code": "1001", "qty": 2}], post=True)
     assert result["status"] == "DRAFT" and "posted" not in result
     assert "error" in await _tool(ctx, "post_document", document=str(result["document_id"]))
-    with pytest.raises(PermissionDenied, match="دستیار هوشمند"):  # enforced in the service
+    with pytest.raises(PermissionDenied, match="دستیار کاسپین"):  # enforced in the service
         await documents.post_document(db, admin.as_ai(), result["document_id"])
     await documents.post_document(db, admin, result["document_id"])  # people still can
 

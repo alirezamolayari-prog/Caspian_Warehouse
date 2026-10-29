@@ -118,6 +118,7 @@ class AssistantPage(QWidget):
 
         ctx.user_changed.connect(self._on_user_changed)
         ctx.themes.theme_changed.connect(self._refresh_icons)
+        ctx.themes.theme_changed.connect(self._redraw)
         self._refresh_icons()
         self._welcome()
 
@@ -129,6 +130,16 @@ class AssistantPage(QWidget):
         self.mic.setIcon(icon("mic", color))
 
     def _append(self, role: str, text: str, extra_html: str = "") -> None:
+        self._bubbles.append((role, text, extra_html))
+        self._draw(role, text, extra_html)
+
+    def _redraw(self, *_args) -> None:
+        """Every bubble again in the current theme's colours (4.4: none stays light in dark mode)."""
+        self.transcript.clear()
+        for bubble in self._bubbles:
+            self._draw(*bubble)
+
+    def _draw(self, role: str, text: str, extra_html: str = "") -> None:
         theme = self._ctx.themes.current
         if role == "user":
             bg, fg, who = theme.primary_soft, theme.text, "شما"
@@ -146,6 +157,7 @@ class AssistantPage(QWidget):
 
     def _welcome(self) -> None:
         self.transcript.clear()
+        self._bubbles = []
         self._append("assistant",
                      "سلام! می‌توانم موجودی و اسناد را برایتان جستجو کنم، کالاهای نیازمند سفارش را "
                      "پیشنهاد بدهم، پیام درخواست خرید بنویسم یا مثل شما رسید و حواله بزنم؛ مثلاً: "

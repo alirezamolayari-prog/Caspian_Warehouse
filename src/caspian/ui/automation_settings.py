@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -34,7 +33,7 @@ from caspian.ui import mcp_runner
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.dialogs import FormDialog, ltr_field, password_field
 from caspian.ui.messages import show_error, show_info
-from caspian.ui.widgets import Card, DataTable
+from caspian.ui.widgets import Card, DataTable, PersianSpinBox
 
 CHANNEL_NAMES = {"telegram": "تلگرام", "email": "ایمیل"}
 
@@ -50,7 +49,7 @@ class MessagingTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 12, 0, 0)
         layout.setSpacing(12)
-        note = QLabel("گیرندگان را فقط مدیر تعیین می‌کند؛ دستیار هوشمند و کارهای زمان‌بندی‌شده فقط به همین "
+        note = QLabel("گیرندگان را فقط مدیر تعیین می‌کند؛ دستیار کاسپین و کارهای زمان‌بندی‌شده فقط به همین "
                       "گیرندگان پیام می‌فرستند. توکن و رمز فقط روی همین رایانه ذخیره می‌شوند.",
                       objectName="Muted")
         note.setWordWrap(True)
@@ -74,7 +73,7 @@ class MessagingTab(QWidget):
         form = QFormLayout()
         self.mail_enabled = QCheckBox("فعال")
         self.mail_host = ltr_field()
-        self.mail_port = QSpinBox()
+        self.mail_port = PersianSpinBox()
         self.mail_port.setRange(1, 65535)
         self.mail_security = QComboBox()
         for value, label in (("starttls", "STARTTLS"), ("ssl", "SSL/TLS"), ("none", "بدون رمزنگاری")):
@@ -398,7 +397,7 @@ class McpSection(Card):
         # Streamable HTTP for agents on a server / another PC (n8n, web agents…).
         http = QHBoxLayout()
         http.addWidget(QLabel("HTTP — درگاه:"))
-        self.port = QSpinBox()
+        self.port = PersianSpinBox()
         self.port.setRange(1024, 65535)
         self.port.setValue(ctx.settings.mcp_http_port)
         http.addWidget(self.port)

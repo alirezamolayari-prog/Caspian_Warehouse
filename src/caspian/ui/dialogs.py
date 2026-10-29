@@ -66,6 +66,21 @@ class Cancelled(Exception):
     """Raised by `submit` when the user declined a confirmation: the dialog just stays open."""
 
 
+def track_edits(root: QWidget, changed) -> None:
+    """Call `changed()` whenever the *user* edits a field under `root` (not when code fills it)."""
+    for edit in root.findChildren(QLineEdit):
+        edit.textEdited.connect(changed)
+    for text in root.findChildren(QPlainTextEdit):
+        text.textChanged.connect(changed)
+    for combo in root.findChildren(QComboBox):
+        combo.activated.connect(changed)
+    for spin in root.findChildren(QAbstractSpinBox):
+        spin.editingFinished.connect(changed)
+    for button in root.findChildren(QAbstractButton):
+        if button.isCheckable():
+            button.clicked.connect(changed)
+
+
 class FormDialog(QDialog):
     """Subclasses add rows with `add_row` and implement `async submit()`.
 
@@ -134,17 +149,7 @@ class FormDialog(QDialog):
             self._track_edits()
 
     def _track_edits(self) -> None:
-        for edit in self.findChildren(QLineEdit):
-            edit.textEdited.connect(self.mark_dirty)
-        for text in self.findChildren(QPlainTextEdit):
-            text.textChanged.connect(self.mark_dirty)
-        for combo in self.findChildren(QComboBox):
-            combo.activated.connect(self.mark_dirty)
-        for spin in self.findChildren(QAbstractSpinBox):
-            spin.editingFinished.connect(self.mark_dirty)
-        for button in self.findChildren(QAbstractButton):
-            if button.isCheckable():
-                button.clicked.connect(self.mark_dirty)
+        track_edits(self, self.mark_dirty)
 
     def mark_dirty(self, *_args) -> None:
         self.dirty = True

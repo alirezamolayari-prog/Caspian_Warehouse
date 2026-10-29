@@ -24,7 +24,7 @@ async def allow_drafts(db: Database) -> bool:
 async def set_allow_drafts(db: Database, actor: Actor, enabled: bool) -> None:
     actor.require(Perm.SETTINGS_EDIT)
     if actor.is_ai:
-        raise PermissionDenied("دستیار هوشمند نمی‌تواند دسترسی MCP را تغییر دهد.")
+        raise PermissionDenied("دستیار کاسپین نمی‌تواند دسترسی MCP را تغییر دهد.")
     async with db.session(actor) as s:
         row = await s.get(AppSetting, ALLOW_DRAFTS_KEY)
         if row is None:

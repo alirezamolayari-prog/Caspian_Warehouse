@@ -663,10 +663,13 @@ class ImportsPage(QWidget):
 
     async def _after_apply(self, doc_id: int, message: str) -> None:
         """Importing only drafts a document; stock changes once it is posted (#9)."""
-        choices = [("open", "باز کردن سند"), ("later", "بعداً")]
-        if self._ctx.actor.can(Perm.DOCUMENTS_POST):
-            choices.insert(0, ("post", "ثبت نهایی همین حالا"))
-        choice = await ask(self, message, choices, "ورود اطلاعات اعمال شد")
+        if not self._ctx.actor.can(Perm.DOCUMENTS_POST):
+            show_info(self, message + "\nسند به‌صورت پیش‌نویس ماند؛ کاربر دارای مجوز آن را ثبت "
+                                      "نهایی می‌کند.")
+            return
+        # 4.6: two plain choices instead of four.
+        choice = await ask(self, message, [("post", "ثبت نهایی"), ("later", "بعداً (پیش‌نویس بماند)")],
+                           "ورود اطلاعات اعمال شد", cancel=False)
         if choice == "post":
             from caspian.services import documents as docs
             from caspian.ui.documents_page import with_stocktake_override

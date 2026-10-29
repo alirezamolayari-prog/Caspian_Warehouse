@@ -427,7 +427,7 @@ async def _create_document(ctx: ToolContext, args: dict) -> dict:
     doc_id = await documents.create_document(ctx.db, ctx.actor, documents.DocumentInput(
         doc_type, dt.date.today(), wh.id, doc_lines, dest_warehouse_id=dest.id if dest else None,
         person_id=person_id, related_document_id=related,
-        description=str(args.get("description", "") or "ثبت توسط دستیار هوشمند")[:500], **place))
+        description=str(args.get("description", "") or "ثبت توسط دستیار کاسپین")[:500], **place))
     detail = await documents.get_document(ctx.db, ctx.actor, doc_id)
     summary = await documents.confirmation(ctx.db, ctx.actor, doc_id)
     result = {"document_id": doc_id, "number": documents.number_text(doc_type, detail.number),

@@ -476,3 +476,48 @@ def make_scheduled_handler(db: Database, config: DbConfig, app_password: str, se
         return f"{info.name} ({format_size(info.size)}){warning}"
 
     return handler
+
+
+# ----- warnings on the backup tab (4.9: warn, never change the settings by itself) -----
+
+LOW_SPACE_BYTES = 5 * 1024 ** 3
+OLD_BACKUP_DAYS = 7
+
+
+@dataclass(frozen=True)
+class BackupWarning:
+    key: str  # "system_drive" | "low_space" | "daily_off" | "old" — which setting the button opens
+    text: str
+
+
+def backup_warnings(folder: str, daily_enabled: bool, newest: dt.datetime | None,
+                    now: dt.datetime | None = None, system_drive: str | None = None,
+                    free_bytes: int | None = None) -> list[BackupWarning]:
+    """What the person should know about where and how often backups are made."""
+    from caspian.core.text import to_persian_digits
+
+    now = now or dt.datetime.now()
+    warnings = []
+    drive = Path(folder).drive.upper() if folder else ""
+    system_drive = (system_drive or os.environ.get("SYSTEMDRIVE", "C:")).upper()
+    if drive and drive == system_drive:
+        warnings.append(BackupWarning("system_drive", (
+            f"پوشه پشتیبان روی درایو ویندوز ({drive}) است؛ اگر ویندوز خراب شود یا دوباره نصب شود، "
+            "پشتیبان‌ها هم از بین می‌روند. پوشه‌ای روی درایو دیگر یا حافظه بیرونی انتخاب کنید.")))
+    if free_bytes is None and folder:
+        try:
+            free_bytes = shutil.disk_usage(Path(folder).anchor or folder).free
+        except OSError:
+            free_bytes = None
+    if free_bytes is not None and free_bytes < LOW_SPACE_BYTES:
+        gigabytes = to_persian_digits(f"{free_bytes / 1024 ** 3:.1f}".replace(".", "٫"))
+        warnings.append(BackupWarning("low_space", (
+            f"فضای خالی درایو پشتیبان کم است ({gigabytes} گیگابایت)؛ ممکن است پشتیبان بعدی ساخته نشود.")))
+    if not daily_enabled:
+        warnings.append(BackupWarning("daily_off", (
+            "پشتیبان‌گیری خودکار روزانه خاموش است؛ اگر کسی یادش برود، اطلاعات چند روز در خطر است.")))
+    if newest is None or now - newest > dt.timedelta(days=OLD_BACKUP_DAYS):
+        warnings.append(BackupWarning("old", (
+            "هنوز هیچ پشتیبانی در این پوشه نیست." if newest is None else
+            f"آخرین پشتیبان بیش از {to_persian_digits(OLD_BACKUP_DAYS)} روز پیش گرفته شده است.")))
+    return warnings

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -78,6 +79,21 @@ def popup_inside(menu, button: QWidget) -> None:
     menu.popup(QPoint(x, y))
 
 
+class FilterChip(QPushButton):
+    """«فیلتر: فقط زیر نقطه سفارش ✕» above a list: shows which filter is on (e.g. one a dashboard card
+    applied) and clears it with one click (4.5)."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent, objectName="FilterChip")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("برای برداشتن فیلتر و دیدن همه کلیک کنید")
+        self.hide()
+
+    def show_filter(self, text: str) -> None:
+        self.setText(f"فیلتر: {text}   ✕" if text else "")
+        self.setVisible(bool(text))
+
+
 class Toast(QLabel):
     """A short, non-blocking confirmation at the bottom of a page that hides itself (#23)."""
 
@@ -85,8 +101,7 @@ class Toast(QLabel):
         super().__init__(text, parent, objectName="Toast")
         self.setWordWrap(True)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setStyleSheet("QLabel#Toast { background: rgba(30, 41, 59, 230); color: white; "
-                           "border-radius: 8px; padding: 8px 16px; }")
+        self.ensurePolished()  # colours come from the theme (QLabel#Toast): readable in both themes
         self.adjustSize()
         width = min(max(self.width(), 260), max(parent.width() - 40, 260))
         self.resize(width, self.heightForWidth(width) if self.hasHeightForWidth() else self.height())
@@ -405,8 +420,20 @@ class SearchableCombo(QComboBox):
         super().focusOutEvent(event)
 
 
+def persian_number_text(text: str) -> str:
+    """What a number field shows while typing: Persian digits, «٫» for the decimal point and «٬»
+    between thousands («150000» → «۱۵۰٬۰۰۰»)."""
+    plain = to_ascii_digits(text).replace("٬", "").replace(",", "").replace("٫", ".")
+    sign = "-" if plain.startswith("-") else ""
+    whole, dot, frac = plain.removeprefix("-").partition(".")
+    if whole.isdigit():
+        whole = f"{int(whole):,}" if len(whole) > 1 and not whole.startswith("0") else whole
+    return to_persian_digits(f"{sign}{whole}{'٫' if dot else ''}{frac}".replace(",", "٬"))
+
+
 class QtyEdit(QLineEdit):
-    """Numeric input accepting Persian/Latin digits and separators. Empty = None."""
+    """Numeric input accepting Persian/Latin digits and separators; shows Persian digits with «٬»
+    grouping while typing (4.2). Empty = None; the value is a plain Decimal."""
 
     def __init__(self, value: Decimal | None = None, allow_empty: bool = True,
                  parent: QWidget | None = None) -> None:
@@ -415,7 +442,21 @@ class QtyEdit(QLineEdit):
         self.setValidator(QRegularExpressionValidator(pattern, self))
         self.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         self.allow_empty = allow_empty
+        self.textEdited.connect(self._persianize)
         self.set_value(value)
+
+    def _persianize(self, text: str) -> None:
+        shown = persian_number_text(text)
+        if shown == text:
+            return
+        # Keep the cursor after the same number of digits it was after.
+        digits_before = sum(ch.isdigit() for ch in text[:self.cursorPosition()])
+        self.setText(shown)
+        pos, seen = 0, 0
+        while pos < len(shown) and seen < digits_before:
+            seen += shown[pos].isdigit()
+            pos += 1
+        self.setCursorPosition(pos)
 
     def value(self) -> Decimal | None:
         try:
@@ -425,8 +466,25 @@ class QtyEdit(QLineEdit):
 
     def set_value(self, value: Decimal | None) -> None:
         # Shown with Persian digits like the tables; typing either script works (#28).
-        self.setText(to_persian_digits(format_qty(value, persian=False).replace(",", "")
-                                       .replace(".", "٫")) if value is not None else "")
+        self.setText(format_qty(value) if value is not None else "")
+
+
+class PersianSpinBox(QSpinBox):
+    """A whole-number box that shows Persian digits and accepts Persian or Latin ones (4.2)."""
+
+    def textFromValue(self, value: int) -> str:
+        return to_persian_digits(str(value))
+
+    def valueFromText(self, text: str) -> int:
+        plain = to_ascii_digits(text).removeprefix(self.prefix()).removesuffix(self.suffix()).strip()
+        try:
+            return int(plain.replace("٬", "").replace(",", ""))
+        except ValueError:
+            return self.value()
+
+    def validate(self, text: str, pos: int):
+        state, _plain, pos = super().validate(to_ascii_digits(text), pos)
+        return state, text, pos
 
 
 class JalaliCalendar(QFrame):

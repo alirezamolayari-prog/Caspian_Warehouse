@@ -150,3 +150,21 @@ async def test_burn_rate_columns_are_not_squeezed(page):
     assert page.burn.filters.indexOf(page.only_order) == -1
     second = page.burn.layout().itemAt(page.burn.layout().indexOf(page.burn.filters) + 1).layout()
     assert second.indexOf(page.only_order) >= 0
+
+
+async def test_light_reports_show_by_themselves(qtbot, themes, db, admin):
+    """4.8: opening a tab or changing a filter shows the report; no «نمایش گزارش» needed."""
+    from caspian.core.settings import Settings
+    from caspian.db.database import DbConfig
+    from caspian.ui.app_context import AppContext
+    from caspian.ui.reports_page import ReportsPage
+    from helpers import wait_until
+
+    page = ReportsPage(AppContext(db, DbConfig(), Settings(), themes, admin))
+    qtbot.addWidget(page)
+    page.show()
+    page.tabs.setCurrentWidget(page.loans)
+    assert page.loans._auto_timer.isActive()  # opening the tab schedules the report
+    page.loans._auto_timer.timeout.emit()  # (Qt timers don't tick on the test's asyncio loop)
+    assert await wait_until(lambda: page.loans.report is not None)
+    assert page.stock.auto and page.places.auto and not page.burn.auto and not page.cardex.auto

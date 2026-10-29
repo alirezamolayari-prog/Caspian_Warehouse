@@ -52,7 +52,8 @@ async def env(locations_required, admin):
 
 async def test_by_floor_in_building_order(env):
     rows = await reports.consumption(env["db"], env["admin"], "floor")
-    assert [r.floor_code for r in rows] == ["P4", "P3", "P2", "P1", "B", "G", "F1", "F2", "F3", "ROOF"]
+    # 4.8: as people read the building — roof down to the basement, then parking P1 … P4.
+    assert [r.floor_code for r in rows] == ["ROOF", "F3", "F2", "F1", "G", "B", "P1", "P2", "P3", "P4"]
     by = {r.floor_code: r for r in rows}
     assert (by["G"].documents, by["G"].items) == (2, 2)
     assert by["F2"].documents == 2 and by["B"].documents == 1 and by["P4"].documents == 0
@@ -154,3 +155,17 @@ async def test_reports_tab(qtbot, themes, env):
     page.places_person.select_value(env["cleaner"])
     await page.places.refresh()
     assert page.places.table.rowCount() == 2
+
+
+async def test_value_ignores_a_newer_receipt_without_price(env):
+    """4.8: a later receipt line with no price (0) must not turn the value into ۰."""
+    db, admin = env["db"], env["admin"]
+    u = {x.name: x.id for x in await master.list_units(db)}
+    wh = (await master.list_warehouses(db))[0].id
+    await docs.create_and_post(db, admin, DocumentInput(DocType.RECEIPT, DAY - dt.timedelta(days=1), wh, [
+        LineInput(env["lamp"], u["عدد"], Decimal(10), Decimal(0))]))
+    async with db.session() as s:
+        prices = await reports.last_purchase_prices(s, [env["lamp"]])
+    assert prices[env["lamp"]] == Decimal(50_000)
+    by = {r.floor_code: r for r in await reports.consumption(db, admin, "floor")}
+    assert by["G"].value == Decimal(3 * 50_000 + 200_000)

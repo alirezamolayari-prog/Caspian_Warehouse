@@ -8,7 +8,7 @@ transaction. AI actors may create batches but can never apply them.
 """
 
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 from rapidfuzz import fuzz, process
@@ -78,6 +78,15 @@ class ItemIndex:
     display: dict[int, str]
     units_of: dict[int, set[int]]  # item -> unit ids it may be counted in
     unit_by_name: dict[str, int]  # normalized unit name -> id (active units)
+    base_unit: dict[int, str] = field(default_factory=dict)  # item -> its base unit's name
+
+
+# «۵ تا», «۵ دونه», «۵ عدد»: just a count — the item's own (base) unit (QA 4.6).
+BASE_UNIT_WORDS = frozenset(normalize(w) for w in ("تا", "دانه", "دونه", "عدد"))
+
+
+def counts_in_base_unit(unit_name: str) -> bool:
+    return not unit_name.strip() or normalize(unit_name) in BASE_UNIT_WORDS
 
 
 async def build_index(s: AsyncSession) -> ItemIndex:
@@ -87,6 +96,7 @@ async def build_index(s: AsyncSession) -> ItemIndex:
         .join(Item, Item.id == ItemBarcode.item_id).where(Item.is_active)
     )).all()
     units = (await s.scalars(select(Unit).where(Unit.is_active))).all()
+    unit_names = {u.id: u.name for u in (await s.scalars(select(Unit))).all()}
     return ItemIndex(
         by_code={i.code: i.id for i in rows},
         by_barcode={b: (i, u) for b, i, u in barcodes},
@@ -94,6 +104,7 @@ async def build_index(s: AsyncSession) -> ItemIndex:
         display={i.id: i.name for i in rows},
         units_of={i.id: {i.base_unit_id, *(u.unit_id for u in i.units)} for i in rows},
         unit_by_name={normalize(u.name): u.id for u in units},
+        base_unit={i.id: unit_names.get(i.base_unit_id, "") for i in rows},
     )
 
 
@@ -126,7 +137,7 @@ def evaluate(index: ItemIndex, kind: ImportKind, line: ImportLine,
     if kind == ImportKind.STOCK and (line.qty is None or line.qty <= 0):
         return Evaluation(LineStatus.ERROR, "مقدار باید بزرگ‌تر از صفر باشد.")
     unit_id = None
-    if line.unit_name:
+    if not counts_in_base_unit(line.unit_name):
         unit_id = index.unit_by_name.get(normalize(line.unit_name))
         if unit_id is None:
             return Evaluation(LineStatus.ERROR, f"واحد «{line.unit_name}» تعریف نشده است.")
@@ -215,6 +226,9 @@ async def _evaluate_batch(s: AsyncSession, batch: ImportBatch) -> None:
         line.match_item_id = result.match_item_id
         line.match_score = result.match_score
         line.candidates = result.candidates
+        if (batch.kind == ImportKind.STOCK and result.match_item_id is not None
+                and counts_in_base_unit(line.unit_name or "")):
+            line.unit_name = index.base_unit.get(result.match_item_id, "") or line.unit_name
         if old_status != line.status or line.resolution is None:
             default = default_resolution(line.status)
             line.resolution = default if default in allowed_resolutions(batch.kind, line) else None
@@ -504,7 +518,7 @@ async def apply_batch(db: Database, actor: Actor, batch_id: int,
                       similar_approval: Approval | None = None) -> ApplyResult:
     """Write the reviewed batch: new/updated items and (for stock) a DRAFT document."""
     if actor.is_ai:
-        raise PermissionDenied("دستیار هوشمند فقط پیش‌نویس می‌سازد؛ اعمال آن با کاربر است.")
+        raise PermissionDenied("دستیار کاسپین فقط پیش‌نویس می‌سازد؛ اعمال آن با کاربر است.")
     actor.require(Perm.IMPORT_RUN)
     async with db.session(actor) as s:
         batch = await _load(s, batch_id)
@@ -586,7 +600,8 @@ async def apply_batch(db: Database, actor: Actor, batch_id: int,
                 if ln.id not in item_for_line:
                     continue
                 item = await s.get(Item, item_for_line[ln.id])
-                unit_id = units.get(normalize(ln.unit_name)) if ln.unit_name else None
+                unit_id = (None if counts_in_base_unit(ln.unit_name or "")
+                           else units.get(normalize(ln.unit_name)))
                 allowed = {item.base_unit_id, *(u.unit_id for u in item.units)}
                 doc_lines.append(documents.LineInput(
                     item.id, unit_id if unit_id in allowed else item.base_unit_id, ln.qty,

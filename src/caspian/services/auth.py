@@ -141,7 +141,7 @@ async def change_password(db: Database, actor: Actor, current: str, new: str) ->
 async def set_pin(db: Database, actor: Actor, password: str, pin: str) -> None:
     """Admins set their own PIN, confirming with their password."""
     if actor.is_ai:
-        raise PermissionDenied("دستیار هوشمند مجاز به این کار نیست.")
+        raise PermissionDenied("دستیار کاسپین مجاز به این کار نیست.")
     if not actor.is_admin:
         raise PermissionDenied("فقط مدیران سیستم PIN دارند.")
     if problem := security.pin_problem(pin):

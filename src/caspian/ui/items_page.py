@@ -34,7 +34,16 @@ from caspian.ui.auth_dialogs import request_approval
 from caspian.ui.dialogs import Cancelled, FormDialog, ltr_field
 from caspian.ui.messages import show_error, show_info
 from caspian.ui.tasks import spawn
-from caspian.ui.widgets import Card, DataTable, EmptyState, QtyEdit, SearchableCombo, SearchBox, Toast
+from caspian.ui.widgets import (
+    Card,
+    DataTable,
+    EmptyState,
+    FilterChip,
+    QtyEdit,
+    SearchableCombo,
+    SearchBox,
+    Toast,
+)
 
 COLUMNS = ("کد", "نام کالا", "گروه", "واحد", "موجودی", "نقطه سفارش", "وضعیت")
 
@@ -437,6 +446,11 @@ class ItemsPage(QWidget):
         self.low_only.toggled.connect(lambda _: self.refresh())
         self.low_only.setVisible(ctx.actor.can(Perm.STOCK_VIEW))
         toolbar.addWidget(self.low_only)
+        self.filter_chip = FilterChip()
+        self.filter_chip.clicked.connect(lambda: self.low_only.setChecked(False))
+        self.low_only.toggled.connect(
+            lambda on: self.filter_chip.show_filter("فقط زیر نقطه سفارش" if on else ""))
+        toolbar.addWidget(self.filter_chip)
         self.duplicates_only = QCheckBox("فقط کالاهای تکراری/مشابه")
         self.duplicates_only.toggled.connect(lambda _: self.refresh())
         toolbar.addWidget(self.duplicates_only)

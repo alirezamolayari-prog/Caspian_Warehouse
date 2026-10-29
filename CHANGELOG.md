@@ -69,6 +69,29 @@ All notable changes to Caspian Warehouse. Versions follow `pyproject.toml`; inst
   stock is marked on its row (not blocked: the owner decides); the connection notice is a coloured
   bar with «ورود / تنظیم الان».
 
+### Everyday screens
+- The assistant is called «دستیار کاسپین» everywhere; the small sparkle button at the top is gone
+  (it only repeated the sidebar entry).
+- Numbers are typed and shown with Persian digits in every box (also the small number boxes in
+  settings and reports), with «٬» between thousands while typing (۱۵۰٬۰۰۰); Latin digits typed are
+  converted. The stocktake list shows «۰ از ۶».
+- Settings: leaving a tab or the page with unsaved changes asks first.
+- Dark mode: chat bubbles and toasts follow the theme (also after switching); the logo's white
+  background is made transparent instead of sitting in a white box.
+- Dashboard: «در انتظار تأیید مالک» and «تأییدشده — منتظر چاپ حواله» cards open the requests list
+  with that filter; a filter applied from a card shows as «فیلتر: … ✕» and is cleared with one click.
+- Text import: «۵ تا», «۵ دونه», «۵ عدد» or no unit use the item's base unit (shown in the review);
+  after «اعمال» there are just two choices: «ثبت نهایی» and «بعداً (پیش‌نویس بماند)».
+- Stocktake: uncounted rows are marked when «ثبت نهایی شمارش» is refused, and the final step asks
+  for confirmation.
+- Reports appear by themselves when a tab opens or a filter changes (the heavy cardex and burn-rate
+  analysis keep their button). «مصرف به تفکیک محل» lists floors from the roof down to the basement,
+  then parking P1–P4. «ارزش تقریبی» uses the voucher's own price, or the last receipt that really had
+  a price (a newer receipt entered without a price no longer makes it ۰).
+- Backups (Settings ← پشتیبان‌گیری): warnings when the folder is on the Windows drive, the drive is
+  low on space, the daily backup is off, or the last backup is older than 7 days — each with a button
+  to the setting. Nothing is changed automatically.
+
 ### Error messages
 - The unexpected-error window is Persian only: one sentence, the log path, and «کپی جزئیات برای
   پشتیبانی» (copies the technical details). No English, SQL or «Show Details…». The same error

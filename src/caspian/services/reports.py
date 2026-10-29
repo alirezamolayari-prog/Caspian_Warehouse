@@ -68,8 +68,17 @@ async def _warehouse_name(s, warehouse_id: int | None) -> str:
     return wh.name
 
 
+def report_floor_order(code: str, sort_order: int) -> int:
+    """How people read the building in reports: roof, upper floors … ground, basement, then the
+    parking levels P1, P2, P3, P4 (4.8; `sort_order` itself runs bottom to top)."""
+    if code.startswith("P") and code[1:].isdigit():
+        return 100 + int(code[1:])
+    return -sort_order
+
+
 async def last_purchase_prices(s, item_ids: list[int] | None = None) -> dict[int, Decimal]:
-    """Latest posted receipt price per item, converted to the base unit."""
+    """Latest posted receipt price per item, converted to the base unit. A line without a real price
+    (0) is skipped, so an older priced receipt still counts (4.8: value showed ۰)."""
     ranked = (
         select(DocumentLine.item_id, DocumentLine.unit_price, DocumentLine.factor,
                func.row_number().over(partition_by=DocumentLine.item_id,
@@ -77,7 +86,7 @@ async def last_purchase_prices(s, item_ids: list[int] | None = None) -> dict[int
                .label("rn"))
         .join(Document, Document.id == DocumentLine.document_id)
         .where(Document.doc_type.in_([DocType.RECEIPT, DocType.OPENING]),
-               Document.status == DocStatus.POSTED, DocumentLine.unit_price.is_not(None))
+               Document.status == DocStatus.POSTED, DocumentLine.unit_price > 0)
     )
     if item_ids is not None:
         ranked = ranked.where(DocumentLine.item_id.in_(item_ids))
@@ -309,7 +318,7 @@ ACTION_NAMES = {
     "auth.login_failed": "ورود ناموفق", "auth.locked": "قفل شدن حساب",
     "auth.password_changed": "تغییر رمز عبور", "auth.pin_set": "تنظیم PIN",
     "approval.granted": "تأیید عملیات حساس", "approval.denied": "رد تأیید عملیات حساس",
-    "approval.refused_ai": "رد درخواست دستیار هوشمند",
+    "approval.refused_ai": "رد درخواست دستیار کاسپین",
     "user.created": "ایجاد کاربر", "user.updated": "ویرایش کاربر",
     "user.role_changed": "تغییر نقش کاربر", "user.password_reset": "بازنشانی رمز",
     "user.activated": "فعال‌سازی کاربر", "user.deactivated": "غیرفعال‌سازی کاربر",
@@ -416,7 +425,8 @@ async def consumption(db: Database, actor: Actor, group_by: str = "floor",
         raise ValueError(group_by)
     async with db.session() as s:
         stmt = (select(Document.id, Document.location_id, Document.consumption_floor_id,
-                       DocumentLine.item_id, DocumentLine.base_qty)
+                       DocumentLine.item_id, DocumentLine.base_qty, DocumentLine.unit_price,
+                       DocumentLine.factor)
                 .join(DocumentLine, DocumentLine.document_id == Document.id)
                 .where(Document.doc_type == DocType.ISSUE, Document.status == DocStatus.POSTED))
         if date_from:
@@ -436,16 +446,17 @@ async def consumption(db: Database, actor: Actor, group_by: str = "floor",
 
     groups: dict[tuple, dict] = {}
     if group_by == "floor":
-        for f in sorted(floors.values(), key=lambda f: f.sort_order):
+        for f in sorted(floors.values(), key=lambda f: report_floor_order(f.code, f.sort_order)):
             if f.is_active:
                 groups[(f.id,)] = {"docs": set(), "items": set(), "qty": Decimal(0), "value": Decimal(0)}
-    for doc_id, location_id, floor_id, line_item, qty in lines:
+    for doc_id, location_id, floor_id, line_item, qty, line_price, factor in lines:
         key = (floor_id,) if group_by == "floor" else (location_id, floor_id)
         g = groups.setdefault(key, {"docs": set(), "items": set(), "qty": Decimal(0), "value": Decimal(0)})
         g["docs"].add(doc_id)
         g["items"].add(line_item)
         g["qty"] += qty
-        g["value"] += qty * prices.get(line_item, Decimal(0))
+        own = line_price / factor if line_price and factor else line_price  # the voucher's own price
+        g["value"] += qty * (own or prices.get(line_item, Decimal(0)))
 
     rows = []
     for key, g in groups.items():
@@ -458,7 +469,8 @@ async def consumption(db: Database, actor: Actor, group_by: str = "floor",
             location_text = place_label(loc.name_fa, loc.type, floor.code if floor else None,
                                         floor.name_fa if floor else None) if loc else NO_PLACE
         rows.append(ConsumptionRow(location_code, location_text, floor.code if floor else None, floor_text,
-                                   floor.sort_order if floor else 999, len(g["docs"]), len(g["items"]),
+                                   report_floor_order(floor.code, floor.sort_order) if floor else 999,
+                                   len(g["docs"]), len(g["items"]),
                                    g["qty"], g["value"]))
     if group_by == "floor":
         rows.sort(key=lambda r: r.floor_sort)

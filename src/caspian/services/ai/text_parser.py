@@ -18,9 +18,9 @@ _TENS = {"بیست": 20, "سی": 30, "چهل": 40, "پنجاه": 50, "شصت": 6
          "نود": 90}
 _HUNDREDS = {"صد": 100, "یکصد": 100, "دویست": 200, "سیصد": 300, "چهارصد": 400, "پانصد": 500}
 _WORDS = {normalize(k): v for k, v in {**_ONES, **_TENS, **_HUNDREDS}.items()}
-# Colloquial counters meaning "pieces" -> the item's base unit. ("عدد" stays an explicit unit so
-# "۵ عدد کابل" for an item counted in meters is flagged instead of silently read as 5 m.)
-_PIECES = {"تا", "دانه"}
+# Colloquial counters meaning "pieces" -> the item's base unit (QA 4.6). «عدد» is kept as written;
+# the import treats it as the base unit too (services.imports.counts_in_base_unit).
+_PIECES = {"تا", "دانه", "دونه"}
 _NUMBER = re.compile(r"^[0-9]+(?:[.٫][0-9]+)?$")
 
 
