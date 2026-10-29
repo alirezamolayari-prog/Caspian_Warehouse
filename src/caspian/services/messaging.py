@@ -77,7 +77,7 @@ async def save_config(db: Database, actor: Actor, config: MessagingConfig,
                       telegram_token: str | None = None, smtp_password: str | None = None) -> None:
     actor.require(Perm.SETTINGS_EDIT)
     if actor.is_ai:
-        raise ValidationError("دستیار هوشمند نمی‌تواند گیرندگان پیام را تغییر دهد.")
+        raise ValidationError("دستیار کاسپین نمی‌تواند گیرندگان پیام را تغییر دهد.")
     if config.email.security not in ("starttls", "ssl", "none"):
         raise ValidationError("نوع امنیت ایمیل نامعتبر است.")
     config.telegram.chat_ids = [c.strip() for c in config.telegram.chat_ids if c.strip()]

@@ -51,7 +51,7 @@ def ctx_for(env, actor):
     return AppContext(env["db"], DbConfig(), Settings(), env["themes"], actor)
 
 
-async def test_count_dialog_scan_and_submit(qtbot, env):
+async def test_count_dialog_scan_and_submit(qtbot, env, confirmations):
     db, counter = env["db"], env["counter"]
     sheet = await st.count_sheet(db, counter, env["sid"])
     dlg = CountDialog(ctx_for(env, counter), sheet)
@@ -65,9 +65,14 @@ async def test_count_dialog_scan_and_submit(qtbot, env):
     dlg.submit_button.click()
     await settle(dlg)
     assert "شمارش نشده" in dlg.status.text()  # فرز not counted yet
+    uncounted = dlg.qty_edits[sheet.lines[1].id]
+    assert uncounted.property("invalid") is True  # 4.7: the uncounted row is marked
+    assert dlg.qty_edits[first].property("invalid") is not True
+    assert not confirmations  # nothing asked while rows are missing
     dlg.missing_zero.setChecked(True)
     dlg.submit_button.click()
     await settle(dlg)
+    assert confirmations and "ثبت نهایی" in confirmations[-1]  # asked before the final step
     rows = await st.list_stocktakes(db, counter)
     assert rows[0].status is StocktakeStatus.COUNTED
 

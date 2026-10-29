@@ -10,12 +10,12 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
-    QSpinBox,
     QTimeEdit,
     QVBoxLayout,
     QWidget,
@@ -37,7 +37,7 @@ from caspian.ui.dialogs import FormDialog, password_field
 from caspian.ui.health_dialog import show_health
 from caspian.ui.messages import show_error, show_info
 from caspian.ui.tasks import spawn
-from caspian.ui.widgets import Card, DataTable
+from caspian.ui.widgets import Card, DataTable, PersianSpinBox
 
 
 class BackupPasswordDialog(FormDialog):
@@ -45,7 +45,7 @@ class BackupPasswordDialog(FormDialog):
         super().__init__("رمز نسخه‌های پشتیبان",
                          "همه نسخه‌های پشتیبان با این رمز رمزنگاری می‌شوند. بدون آن، بازیابی ممکن نیست؛ "
                          "آن را جایی امن (خارج از این رایانه) یادداشت کنید. رمز روی همین رایانه در "
-                         "Windows Credential Manager نگه داشته می‌شود تا پشتیبان‌گیری خودکار کار کند.",
+                         "بخش امن رمزهای ویندوز نگه داشته می‌شود تا پشتیبان‌گیری خودکار کار کند.",
                          submit_text="ذخیره", parent=parent)
         self.password = self.add_row("رمز جدید:", password_field("حداقل ۸ کاراکتر"))
         self.repeat = self.add_row("تکرار:", password_field())
@@ -107,6 +107,15 @@ class BackupTab(QWidget):
         layout.setContentsMargins(0, 12, 0, 0)
         layout.setSpacing(10)
 
+        # 4.9: warnings with a button to the setting concerned; nothing is changed automatically.
+        self.warnings = QFrame(objectName="NoticeBar")
+        self.warnings_layout = QVBoxLayout(self.warnings)
+        self.warnings_layout.setContentsMargins(12, 8, 12, 8)
+        self.warnings.hide()
+        layout.addWidget(self.warnings)
+        self._daily_enabled: bool | None = None
+        self._newest = None
+
         card = Card()
         card.body.addWidget(QLabel("تنظیمات پشتیبان‌گیری (این رایانه)", objectName="CardTitle"))
         form = QFormLayout()
@@ -117,7 +126,7 @@ class BackupTab(QWidget):
         folder_row.addWidget(self.folder, 1)
         folder_row.addWidget(browse)
         form.addRow("پوشه پشتیبان:", folder_row)
-        self.keep = QSpinBox()
+        self.keep = PersianSpinBox()
         self.keep.setRange(0, 1000)
         self.keep.setValue(settings.backup_keep)
         self.keep.setSuffix(" نسخه آخر (۰ = همه)")
@@ -234,6 +243,8 @@ class BackupTab(QWidget):
         if at is not None:
             self.daily_time.setTime(QTime(at.hour, at.minute))
         self._update_daily()
+        self._daily_enabled = enabled
+        self._show_warnings()
 
     def refresh(self) -> None:
         rows = backup.list_backups(self.folder.text())
@@ -245,6 +256,47 @@ class BackupTab(QWidget):
             b.name)) for b in rows])
         self.status.setText(f"{to_persian_digits(len(rows))} نسخه پشتیبان در پوشه")
         self._update_buttons()
+        self._newest = max((b.created_at for b in rows), default=None)
+        self._show_warnings()
+
+    def _show_warnings(self) -> None:
+        if self._daily_enabled is None:  # wait until the daily setting is known
+            return
+        while self.warnings_layout.count():
+            item = self.warnings_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                while item.layout().count():
+                    child = item.layout().takeAt(0)
+                    if child.widget():
+                        child.widget().deleteLater()
+        found = backup.backup_warnings(self.folder.text().strip(), self._daily_enabled, self._newest)
+        targets = {"system_drive": ("تغییر پوشه", self._focus_folder),
+                   "low_space": ("تغییر پوشه", self._focus_folder),
+                   "daily_off": ("رفتن به تنظیم روزانه", self._focus_daily),
+                   "old": ("رفتن به «پشتیبان‌گیری اکنون»", self._focus_backup_now)}
+        for warning in found:
+            row = QHBoxLayout()
+            label = QLabel(f"⚠ {warning.text}")
+            label.setWordWrap(True)
+            row.addWidget(label, 1)
+            text, slot = targets[warning.key]
+            button = QPushButton(text)
+            button.clicked.connect(slot)
+            row.addWidget(button)
+            self.warnings_layout.addLayout(row)
+        self.warnings.setVisible(bool(found))
+
+    def _focus_folder(self) -> None:
+        self.folder.setFocus()
+        self.folder.selectAll()
+
+    def _focus_daily(self) -> None:
+        self.daily.setFocus()
+
+    def _focus_backup_now(self) -> None:
+        self.backup_button.setFocus()
 
     def selected(self) -> BackupInfo | None:
         key = self.table.selected_id()

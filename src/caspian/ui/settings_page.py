@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -29,10 +28,11 @@ from caspian.services.server_link.accounts import DEFAULT_URL as DEFAULT_SERVER_
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.automation_settings import McpSection, MessagingTab, TasksTab
 from caspian.ui.backup_settings import BackupTab
-from caspian.ui.dialogs import FormDialog, ltr_field, password_field
-from caspian.ui.messages import show_error, show_info
+from caspian.ui.dialogs import FormDialog, ltr_field, password_field, track_edits
+from caspian.ui.messages import confirm, show_error, show_info
+from caspian.ui.tasks import spawn
 from caspian.ui.theme import ThemeManager
-from caspian.ui.widgets import Card, DataTable
+from caspian.ui.widgets import Card, DataTable, PersianSpinBox
 from caspian.ui.year_end import FiscalTab
 
 
@@ -76,7 +76,7 @@ class ProviderDialog(FormDialog):
     def __init__(self, ctx: AppContext, provider: ProviderConfig | None = None, parent=None) -> None:
         super().__init__("ویرایش سرویس هوش مصنوعی" if provider else "افزودن سرویس هوش مصنوعی",
                          "تنظیمات سرویس برای همه رایانه‌های شبکه مشترک است؛ کلید API فقط روی همین "
-                         "رایانه (در Windows Credential Manager) ذخیره می‌شود.",
+                         "رایانه (در بخش امن رمزهای ویندوز) ذخیره می‌شود.",
                          submit_text="ذخیره", parent=parent)
         self.setMinimumWidth(520)
         self._ctx, self._provider = ctx, provider
@@ -107,7 +107,7 @@ class ProviderDialog(FormDialog):
         self._models: list = []
         self.stt_model = self.add_row("مدل گفتار به متن:", ltr_field(provider.stt_model if provider else ""))
         self.stt_model.setPlaceholderText("خالی = بدون پشتیبانی صدا")
-        self.timeout = QSpinBox()
+        self.timeout = PersianSpinBox()
         self.timeout.setRange(3, 300)
         self.timeout.setValue(provider.timeout_seconds if provider else 30)
         self.add_row("زمان انتظار (ثانیه):", self.timeout)
@@ -207,7 +207,7 @@ class AITab(QWidget):
         layout.addWidget(rule)
         retention = QHBoxLayout()
         retention.addWidget(QLabel("نگهداری سوابق گفتگو با دستیار:"))
-        self.history_days = QSpinBox()
+        self.history_days = PersianSpinBox()
         self.history_days.setRange(1, 365)
         self.history_days.setSuffix(" روز")
         self.history_days.editingFinished.connect(self.on_history_days)
@@ -456,6 +456,9 @@ class ServerTab(QWidget):
         show_info(self, "اتصال به سرور ذخیره شد.")
 
 
+UNSAVED_QUESTION = "تغییرات ذخیره نشده‌اند. اگر ادامه دهید از بین می‌روند. بدون ذخیره ادامه می‌دهید؟"
+
+
 class SettingsPage(QWidget):
     def __init__(self, ctx: AppContext, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -481,6 +484,54 @@ class SettingsPage(QWidget):
         layout.addWidget(self.tabs)
         ctx.user_changed.connect(self._apply_permissions)
         self._apply_permissions()
+        # 4.3: leaving a tab (or the page) with unsaved edits asks first, like the item form.
+        self._dirty: set[QWidget] = set()
+        self._tracking = False
+        self._current = self.tabs.currentIndex()
+        self._asking = False
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._tracking:
+            return
+        self._tracking = True  # after the tabs filled themselves: only the user's edits count
+        for tab in (self.ai, self.messaging, self.tasks, self.backup, self.fiscal, self.server):
+            track_edits(tab, lambda *_a, t=tab: self._dirty.add(t))
+            for button in tab.findChildren(QPushButton):
+                if button.text().startswith("ذخیره"):  # «ذخیره…»: saved
+                    button.clicked.connect(lambda *_a, t=tab: self._dirty.discard(t))
+
+    def has_unsaved(self) -> bool:
+        return bool(self._dirty)
+
+    async def confirm_leave(self) -> bool:
+        """True when there is nothing unsaved, or the person chooses to leave without saving."""
+        if not self._dirty:
+            return True
+        if not await confirm(self, UNSAVED_QUESTION, "ادامه بدون ذخیره", danger=True):
+            return False
+        self._dirty.clear()
+        return True
+
+    def _on_tab_changed(self, index: int) -> None:
+        previous = self.tabs.widget(self._current)
+        self._current = index
+        if previous in self._dirty and not self._asking:
+            spawn(self._ask_after_switch(previous))
+
+    async def _ask_after_switch(self, previous: QWidget) -> None:
+        self._asking = True
+        try:
+            if not await confirm(self, UNSAVED_QUESTION, "ادامه بدون ذخیره", danger=True):
+                self.tabs.setCurrentWidget(previous)  # back to the tab with the edits
+                return
+            self._dirty.discard(previous)
+            reload = getattr(previous, "load", None) or getattr(previous, "refresh", None)
+            if callable(reload):
+                reload()  # show what is really saved again
+        finally:
+            self._asking = False
 
     def _apply_permissions(self, *_args) -> None:
         self.tabs.setTabVisible(self.ai_index, self._ctx.actor.can(Perm.AI_CONFIGURE))

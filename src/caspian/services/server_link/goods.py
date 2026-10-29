@@ -499,6 +499,15 @@ async def mark_seen(db: Database, actor: Actor, request_id: int) -> None:
     await with_retries(attempt)
 
 
+async def dashboard_counts(db: Database) -> tuple[int, int]:
+    """(waiting for an owner, approved and waiting for its slip to be printed)."""
+    async with db.session() as s:
+        rows = dict((await s.execute(select(GoodsRequest.status, func.count()).where(
+            GoodsRequest.status.in_((RequestStatus.PENDING, RequestStatus.APPROVED)))
+            .group_by(GoodsRequest.status))).all())
+    return rows.get(RequestStatus.PENDING, 0), rows.get(RequestStatus.APPROVED, 0)
+
+
 async def unseen_count(db: Database) -> int:
     async with db.session() as s:
         return await s.scalar(select(func.count()).select_from(GoodsRequest).where(GoodsRequest.unseen)) or 0

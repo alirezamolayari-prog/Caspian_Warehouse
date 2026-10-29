@@ -77,7 +77,7 @@ async def save_connection(db: Database, actor: Actor, url: str, username: str,
     """`password` None keeps the stored one (it must exist for this username and host). An empty
     `username` saves only the address: no shared account, everyone signs in with their own."""
     if actor.is_ai:
-        raise PermissionDenied("دستیار هوشمند اجازه تغییر اتصال سرور را ندارد.")
+        raise PermissionDenied("دستیار کاسپین اجازه تغییر اتصال سرور را ندارد.")
     if not actor.is_admin:
         raise PermissionDenied("فقط مدیر سیستم می‌تواند اتصال به سرور را تنظیم کند.")
     connection = ServerConnection(clean_url(url), username.strip())

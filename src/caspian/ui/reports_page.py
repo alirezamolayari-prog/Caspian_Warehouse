@@ -4,8 +4,9 @@ import datetime as dt
 from collections.abc import Awaitable, Callable
 from decimal import Decimal
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QCheckBox,
     QComboBox,
     QHBoxLayout,
@@ -35,7 +36,7 @@ from caspian.ui.file_dialogs import ask_save_path
 from caspian.ui.messages import show_error, show_info
 from caspian.ui.printing import output_menu, report_html
 from caspian.ui.tasks import spawn
-from caspian.ui.widgets import Card, DataTable, JalaliDateEdit, SearchableCombo
+from caspian.ui.widgets import Card, DataTable, JalaliDateEdit, PersianSpinBox, SearchableCombo
 
 MIN_COLUMN = 72
 SHORT_TEXT_COLUMNS = {"کد", "واحد", "گروه", "انبار"}
@@ -68,6 +69,9 @@ def report_to_html(report: ReportTable) -> str:
             for i, v in report.totals.items())
     return report_html(report.title, report.meta, [c.title for c in report.columns], rows,
                        footer=footer)
+
+
+AUTO_DELAY_MS = 400
 
 
 class ReportView(QWidget):
@@ -107,6 +111,31 @@ class ReportView(QWidget):
         self.totals = QLabel(objectName="Muted")
         layout.addWidget(self.totals)
         self._set_export_enabled(False)
+        self.auto = False
+        self._auto_timer = QTimer(self, singleShot=True, interval=AUTO_DELAY_MS)
+        self._auto_timer.timeout.connect(self.refresh)
+
+    def watch(self, *widgets: QWidget) -> None:
+        """4.8: show the report by itself when the tab opens and whenever one of these filters
+        changes (heavy reports keep only the button)."""
+        self.auto = True
+        self.show_button.setText("به‌روزرسانی")
+        self.table.set_empty_text("گزارشی برای این فیلترها نیست.")
+        for widget in widgets:
+            if isinstance(widget, JalaliDateEdit):
+                widget.textChanged.connect(
+                    lambda _t, w=widget: w.date() is not None and self._auto_timer.start())
+            elif isinstance(widget, QComboBox):
+                widget.currentIndexChanged.connect(lambda _i: self._auto_timer.start())
+            elif isinstance(widget, QAbstractButton):
+                widget.toggled.connect(lambda _on: self._auto_timer.start())
+            elif isinstance(widget, QSpinBox):
+                widget.valueChanged.connect(lambda _v: self._auto_timer.start())
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self.auto and self.report is None:
+            self._auto_timer.start()
 
     def _set_export_enabled(self, enabled: bool) -> None:
         self.excel_button.setEnabled(enabled)
@@ -169,7 +198,7 @@ def _warehouse_combo(warehouses, with_all: bool = True) -> QComboBox:
 
 
 def _spin(value: int, maximum: int = 730) -> QSpinBox:
-    spin = QSpinBox()
+    spin = PersianSpinBox()
     spin.setRange(0, maximum)
     spin.setValue(value)
     return spin
@@ -207,6 +236,7 @@ class ReportsPage(QWidget):
         for w in (QLabel("انبار:"), self.stock_wh, QLabel("گروه:"), self.stock_cat, self.stock_zero):
             self.stock.filters.addWidget(w)
         self.stock.filters.addStretch(1)
+        self.stock.watch(self.stock_wh, self.stock_cat, self.stock_zero)
         self.tabs.addTab(self.stock, "موجودی کالا")
 
         # cardex
@@ -269,11 +299,14 @@ class ReportsPage(QWidget):
         places_second.addStretch(1)
         self.places.layout().insertLayout(self.places.layout().indexOf(self.places.filters) + 1,
                                           places_second)
+        self.places.watch(self.places_group, self.places_item, self.places_person, self.places_from,
+                          self.places_to)
         self.tabs.addTab(self.places, "مصرف به تفکیک محل")
 
         # loans
         self.loans = ReportView(ctx, self._run_loans)
         self.loans.filters.addStretch(1)
+        self.loans.watch()
         self.tabs.addTab(self.loans, "امانی‌های باز")
 
         # user activity
@@ -285,6 +318,7 @@ class ReportsPage(QWidget):
                   QLabel("تا:"), self.activity_to):
             self.activity.filters.addWidget(w)
         self.activity.filters.addStretch(1)
+        self.activity.watch(self.activity_user, self.activity_from, self.activity_to)
         self.activity_index = self.tabs.addTab(self.activity, "فعالیت کاربران")
 
         ctx.user_changed.connect(self._apply_permissions)

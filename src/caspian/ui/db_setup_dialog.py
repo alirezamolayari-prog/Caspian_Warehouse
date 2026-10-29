@@ -23,6 +23,7 @@ from caspian.db.bootstrap import open_mariadb
 from caspian.db.database import DEFAULT_PORT, Database, DbConfig, describe_error
 from caspian.db.provision import create_app_user
 from caspian.services.errors import ValidationError
+from caspian.ui.widgets import PersianSpinBox
 
 log = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ class DbSetupDialog(QDialog):
         form = QFormLayout()
         form.setSpacing(10)
         self.host_edit = QLineEdit(config.host)
-        self.port_spin = QSpinBox()
+        self.port_spin = PersianSpinBox()
         self.port_spin.setRange(1, 65535)
         self.port_spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         self.port_spin.setLocale(QLocale.c())  # Latin digits for technical fields

@@ -207,8 +207,21 @@ class CountDialog(FormDialog):
 
     async def submit(self) -> None:
         await self._save()
+        missing = [e for e in self.qty_edits.values() if not e.text().strip()]
+        if missing and not self.missing_zero.isChecked():  # 4.7: show which rows, not only how many
+            self.mark_invalid(missing)
+            self.table.scrollToItem(self.table.item(self._row_of[self._line_of(missing[0])], 0))
+            raise ValidationError(f"{to_persian_digits(len(missing))} ردیف شمارش نشده است (با رنگ "
+                                  "مشخص شده‌اند). آن‌ها را بشمارید یا گزینهٔ «شمارش‌نشده‌ها صفر در نظر "
+                                  "گرفته شوند» را بزنید.")
+        if not await confirm(self, "شمارش ثبت نهایی شود؟ پس از ثبت نهایی، مقادیر شمارش دیگر قابل "
+                             "تغییر نیست.", "ثبت نهایی شمارش"):
+            raise Cancelled()
         await st.submit_counts(self._ctx.db, self._ctx.actor, self._sheet.row.id,
                                self.missing_zero.isChecked())
+
+    def _line_of(self, edit) -> int:
+        return next(line_id for line_id, e in self.qty_edits.items() if e is edit)
 
 
 class ReportDialog(FormDialog):
@@ -346,7 +359,7 @@ class StocktakePage(QWidget):
         self.table.set_rows(
             [(r.id, (to_persian_digits(r.number), r.warehouse, r.category, r.title or "—",
                      jalali.format_date(r.snapshot_at), r.status_name,
-                     f"{to_persian_digits(r.counted)} / {to_persian_digits(r.total)}"))
+                     f"\u200f{to_persian_digits(r.counted)} از {to_persian_digits(r.total)}"))
              for r in rows],
             muted=[r.status == StocktakeStatus.CANCELLED for r in rows],
             highlight={(i, 5): warn for i, r in enumerate(rows) if r.status == StocktakeStatus.COUNTED})

@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QRadioButton,
-    QSpinBox,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -31,7 +30,7 @@ from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import request_approval
 from caspian.ui.dialogs import ltr_field, password_field
 from caspian.ui.messages import show_info
-from caspian.ui.widgets import Card, DataTable
+from caspian.ui.widgets import Card, DataTable, PersianSpinBox
 
 STEPS = ("بررسی", "گزینه‌ها", "پشتیبان و بایگانی", "تأیید و اجرا")
 
@@ -73,7 +72,7 @@ class YearEndWizard(QDialog):
         col = QVBoxLayout(page)
         row = QHBoxLayout()
         row.addWidget(QLabel("سالی که بسته می‌شود:"))
-        self.year = QSpinBox()
+        self.year = PersianSpinBox()
         self.year.setRange(1390, 1500)
         self.year.setValue(jalali.fiscal_year_of(dt.date.today()) - 1)
         self.year.valueChanged.connect(lambda _: self.run_check())

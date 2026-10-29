@@ -35,7 +35,7 @@ def test_qty_edit_accepts_persian_digits(qtbot):
     edit.clear()
     edit.insert("12")
     edit.insert("abc")
-    assert edit.text() == "12"  # letters rejected by the validator
+    assert edit.text() == "۱۲"  # letters rejected; digits shown in Persian (4.2)
     edit.set_value(Decimal("24.0000"))
     assert edit.text() == "۲۴" and edit.value() == Decimal(24)  # shown like the tables (#28)
 

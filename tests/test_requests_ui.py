@@ -382,3 +382,27 @@ async def test_connection_bar_is_coloured_with_a_setup_button(qtbot, themes, lin
     assert page.notice.isVisible() and not page.setup_button.isVisible()
     page._show_server_state(TickResult(SyncState.CONNECTED))
     assert not page.notice.isVisible()
+
+
+async def test_dashboard_request_cards_open_the_filtered_list(qtbot, themes, linked, admin):
+    """4.5: «در انتظار تأیید مالک» / «تأییدشده — منتظر چاپ حواله» open the list with that filter,
+    shown as a chip that clears it."""
+    db, server, engine = linked["db"], linked["server"], linked["engine"]
+    for qty in (1, 2):
+        await goods.create_request(db, admin, request_input(linked, qty=qty))
+    await engine.tick(admin)
+    server.approve(1)
+    await engine.tick(admin)
+    assert await goods.dashboard_counts(db) == (1, 1)
+    window = MainWindow(_ctx(themes, linked, admin))
+    qtbot.addWidget(window)
+    dashboard = window._pages["dashboard"]
+    await dashboard.refresh()
+    assert dashboard.cards["requests_pending"].value.text() == "۱"
+    dashboard.cards["requests_approved"].clicked.emit()
+    requests = window._pages["requests"]
+    assert window._stack.currentWidget() is requests
+    assert requests.status_filter.currentData() == RequestStatus.APPROVED
+    assert requests.filter_chip.isVisibleTo(requests) and "تأیید شد" in requests.filter_chip.text()
+    requests.filter_chip.click()
+    assert requests.status_filter.currentData() is None and not requests.filter_chip.isVisibleTo(requests)

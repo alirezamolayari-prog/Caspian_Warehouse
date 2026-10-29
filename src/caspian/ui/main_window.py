@@ -24,7 +24,7 @@ from caspian import APP_DISPLAY_NAME, __version__
 from caspian.core import jalali
 from caspian.core.permissions import DEFAULT_ROLES
 from caspian.core.text import to_persian_digits
-from caspian.db.models import DocStatus
+from caspian.db.models import DocStatus, RequestStatus
 from caspian.services import access, auth, documents
 from caspian.services.actor import Actor
 from caspian.services.server_link import goods, session
@@ -205,12 +205,6 @@ class MainWindow(QMainWindow):
         header.addWidget(self._page_title)
         header.addStretch(1)
 
-        self._assistant_button = QToolButton(objectName="IconButton")
-        self._assistant_button.setToolTip("دستیار هوشمند")
-        self._assistant_button.setIconSize(QSize(20, 20))
-        self._assistant_button.clicked.connect(lambda: self.navigate("assistant"))
-        header.addWidget(self._assistant_button)
-
         self._theme_button = QToolButton(objectName="IconButton")
         self._theme_button.setToolTip("تغییر پوسته روشن / تیره")
         self._theme_button.setIconSize(QSize(20, 20))
@@ -372,6 +366,20 @@ class MainWindow(QMainWindow):
         return spec.perm is None or self.ctx.actor.can(spec.perm)
 
     def navigate(self, key: str) -> None:
+        settings = self._pages.get("settings")
+        if (settings is not None and key != "settings" and self._stack.currentWidget() is settings
+                and settings.has_unsaved()):
+            spawn(self._leave_settings(key))  # 4.3: ask before unsaved settings are lost
+            return
+        self._show_page(key)
+
+    async def _leave_settings(self, key: str) -> None:
+        if await self._pages["settings"].confirm_leave():
+            self._show_page(key)
+        else:
+            self._nav_buttons["settings"].setChecked(True)
+
+    def _show_page(self, key: str) -> None:
         if not self.is_allowed(key):
             key = "dashboard"
         self._stack.setCurrentWidget(self._pages[key])
@@ -386,6 +394,10 @@ class MainWindow(QMainWindow):
         elif option == "loans":
             documents = self._pages["documents"]
             documents.tabs.setCurrentWidget(documents.loans)
+        elif option in ("pending", "approved"):
+            requests = self._pages["requests"]
+            status = RequestStatus.PENDING if option == "pending" else RequestStatus.APPROVED
+            requests.status_filter.setCurrentIndex(requests.status_filter.findData(status))
         elif option == "drafts":
             documents = self._pages["documents"]
             documents.tabs.setCurrentWidget(documents.documents)
@@ -428,7 +440,6 @@ class MainWindow(QMainWindow):
             action.setVisible(self.is_allowed("users"))
         for key, button in self._nav_buttons.items():
             button.setVisible(self.is_allowed(key))
-        self._assistant_button.setVisible(self.is_allowed("assistant"))
         self.server_status.setVisible(self._server_indicator_visible())
         if self.ctx.server_link is not None:
             self.ctx.server_link.set_actor(actor)  # approved requests become vouchers as this person
@@ -495,7 +506,6 @@ class MainWindow(QMainWindow):
             button.setIcon(icon(name, color))
         if not self._logo.has_logo:
             self._brand_icon.setPixmap(icon("boxes", theme.primary).pixmap(28, 28))
-        self._assistant_button.setIcon(icon("sparkles", theme.text_muted))
         self._theme_button.setIcon(icon("sun" if theme.is_dark else "moon", theme.text_muted))
         self._user_button.setIcon(icon("user", theme.text_muted))
 

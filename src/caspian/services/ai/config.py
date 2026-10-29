@@ -121,7 +121,7 @@ async def save_provider(db: Database, actor: Actor, name: str, kind: ProviderKin
     """api_key: None = leave unchanged; "" = remove from this PC; otherwise store on this PC."""
     actor.require(Perm.AI_CONFIGURE)
     if actor.is_ai:
-        raise ValidationError("دستیار هوشمند نمی‌تواند تنظیمات خودش را تغییر دهد.")
+        raise ValidationError("دستیار کاسپین نمی‌تواند تنظیمات خودش را تغییر دهد.")
     _validate(name, base_url, model, timeout_seconds)
     kind = ProviderKind(kind)  # Qt combo boxes hand back plain strings
     async with db.session(actor) as s:

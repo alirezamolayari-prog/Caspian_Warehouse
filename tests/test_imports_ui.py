@@ -114,9 +114,9 @@ async def _applied_stock_batch(ctx, warehouse_id):
     return (await imports.apply_batch(ctx.db, ctx.actor, batch)).document_id
 
 
-@pytest.mark.parametrize("choice", ["post", "open", "later"])
-async def test_after_apply_offers_post_or_open(qtbot, env, monkeypatch, choice):
-    """An import only drafts a receipt; the user is offered to post it right away (#9)."""
+@pytest.mark.parametrize("choice", ["post", "later", None])
+async def test_after_apply_offers_post_or_later(qtbot, env, monkeypatch, choice):
+    """An import only drafts a receipt; two plain choices: post now, or later (4.6)."""
     from caspian.db.models import DocStatus
     from caspian.ui import imports_page
 
@@ -124,23 +124,30 @@ async def test_after_apply_offers_post_or_open(qtbot, env, monkeypatch, choice):
     doc_id = await _applied_stock_batch(ctx, warehouses[0].id)
     offered = {}
 
-    async def fake_ask(parent, text, choices, title="", danger=False):
-        offered["keys"] = [k for k, _ in choices]
+    async def fake_ask(parent, text, choices, title="", danger=False, cancel=True):
+        offered["labels"], offered["cancel"] = [t for _k, t in choices], cancel
         return choice
 
-    opened = []
-
-    async def open_document(i):
-        opened.append(i)
-
     monkeypatch.setattr(imports_page, "ask", fake_ask)
-    page = ImportsPage(ctx, open_document=open_document)
+    page = ImportsPage(ctx)
     qtbot.addWidget(page)
     await page._after_apply(doc_id, "اعمال شد")
-    assert offered["keys"] == ["post", "open", "later"]
+    assert offered == {"labels": ["ثبت نهایی", "بعداً (پیش‌نویس بماند)"], "cancel": False}
     status = (await docs.get_document(ctx.db, ctx.actor, doc_id)).status
     assert status is (DocStatus.POSTED if choice == "post" else DocStatus.DRAFT)
-    assert opened == ([doc_id] if choice == "open" else [])
+
+
+async def test_text_import_without_unit_uses_the_base_unit(env):
+    """«لامپ مهتابی ۵ تا» / «… ۵ دونه» / «… ۵ عدد» / no unit: the item's base unit, not empty (4.6)."""
+    from caspian.services.ai.text_parser import parse_text
+
+    ctx, warehouses, _ = env
+    rows = parse_text("دریل بوش ۵ تا\nدریل بوش ۲ دونه\n۳ عدد دریل بوش\nدریل بوش ۴", {"عدد", "کارتن"})
+    assert [r.qty for r in rows] == [5, 2, 3, 4]
+    batch = await imports.create_batch(ctx.db, ctx.actor, imports.ImportKind.STOCK, ImportSource.TEXT, rows,
+                                       "متن", DocType.RECEIPT, warehouses[0].id)
+    detail = await imports.get_batch(ctx.db, ctx.actor, batch)
+    assert {ln.unit_name for ln in detail.lines} == {"عدد"}  # the drill's base unit, shown
 
 
 async def test_manual_entry_grid_to_review(qtbot, env):

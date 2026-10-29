@@ -29,9 +29,10 @@ def _show(box: QMessageBox) -> QMessageBox:
 
 
 async def ask(parent: QWidget | None, text: str, choices: Sequence[tuple[str, str]],
-              title: str = "تأیید", danger: bool = False) -> str | None:
+              title: str = "تأیید", danger: bool = False, cancel: bool = True) -> str | None:
     """Ask without blocking the event loop. `choices` = (key, button text), the first one is the
-    default; returns the chosen key, or None for «انصراف» / Esc / closing the box."""
+    default; returns the chosen key, or None for «انصراف» / Esc / closing the box. `cancel=False`:
+    no extra «انصراف» button — the last choice is what Esc / closing means."""
     box = QMessageBox(QMessageBox.Icon.Warning if danger else QMessageBox.Icon.Question, title, text,
                       QMessageBox.StandardButton.NoButton, parent)
     keys = {}
@@ -40,7 +41,10 @@ async def ask(parent: QWidget | None, text: str, choices: Sequence[tuple[str, st
         keys[button] = key
         if i == 0:
             box.setDefaultButton(button)
-    box.setEscapeButton(box.addButton("انصراف", QMessageBox.ButtonRole.RejectRole))
+    if cancel:
+        box.setEscapeButton(box.addButton("انصراف", QMessageBox.ButtonRole.RejectRole))
+    else:
+        box.setEscapeButton(button)
     future: asyncio.Future[str | None] = asyncio.get_running_loop().create_future()
     box.buttonClicked.connect(lambda b: future.done() or future.set_result(keys.get(b)))
     box.finished.connect(lambda _r: future.done() or future.set_result(None))
