@@ -46,6 +46,7 @@ async def _stock(db, item_id) -> Decimal:
 def _page(qtbot, themes, db, actor, handler, open_document=None):
     ctx = AppContext(db, DbConfig(), Settings(), themes, actor)
     ctx.ai = Gateway(db, httpx.MockTransport(handler), online_check=lambda: True)
+    ctx.assistant_ai = ctx.ai  # the conversation logic, with a mocked provider instead of the server
     page = AssistantPage(ctx, open_document=open_document)
     qtbot.addWidget(page)
     page.resize(900, 700)

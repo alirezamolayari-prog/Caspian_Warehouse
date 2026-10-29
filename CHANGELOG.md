@@ -7,7 +7,7 @@ All notable changes to Caspian Warehouse. Versions follow `pyproject.toml`; inst
 > Database changes run automatically on the first start of the new version and can't be undone
 > from inside the app.
 
-## 1.2.0 — unreleased
+## 1.2.0 (2026-10-29)
 
 ### Server sync
 - **A request is no longer stuck in «در صف ارسال» after the server refused the account.** 401/403
@@ -91,6 +91,19 @@ All notable changes to Caspian Warehouse. Versions follow `pyproject.toml`; inst
 - Backups (Settings ← پشتیبان‌گیری): warnings when the folder is on the Windows drive, the drive is
   low on space, the daily backup is off, or the last backup is older than 7 days — each with a button
   to the setting. Nothing is changed automatically.
+
+### «دستیار کاسپین» through Caspian Server
+- The assistant now works through Caspian Server with each person's own account — no AI provider or
+  key is needed on the PC any more («هیچ سرویس هوش مصنوعی تنظیم نشده است» is gone). The app sends
+  the conversation and its tools, runs every tool itself on its own data, and sends the results back;
+  the server adds its own instructions. At most five tool rounds per question.
+- «سهم امروز شما: … از …» is shown on the assistant page. Every server answer is a Persian sentence:
+  daily limit used up (yours or everyone's), conversation too long, empty message, assistant not
+  available, app/role not allowed, password must be changed, not signed in, server unreachable.
+- Local AI providers stay as an optional advanced fallback (Settings ← هوش مصنوعی (پیشرفته) →
+  «استفاده از سرویس محلی»), off by default.
+- Unchanged rules: the assistant only prepares drafts and requests that you confirm, never approves
+  for an owner, never posts or prints a slip, never deletes or does protected work.
 
 ### Error messages
 - The unexpected-error window is Persian only: one sentence, the log path, and «کپی جزئیات برای

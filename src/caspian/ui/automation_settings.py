@@ -184,7 +184,7 @@ class InstructionsDialog(FormDialog):
         text = self.text.toPlainText().strip()
         if not text:
             raise ValidationError("دستورالعملی وارد نشده است.")
-        proposals, _used_ai = await scheduler.propose_from_text(text, self._ctx.ai)
+        proposals, _used_ai = await scheduler.propose_from_text(text, self._ctx.assistant_ai)
         if not proposals:
             raise ValidationError("کار قابل‌فهمی (پشتیبان‌گیری یا ارسال گزارش با زمان مشخص) پیدا نشد.")
         self.created = await scheduler.add_proposals(self._ctx.db, self._ctx.actor, proposals)

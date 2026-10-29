@@ -30,6 +30,7 @@ from caspian.services.actor import Actor
 from caspian.services.errors import AuthenticationError
 from caspian.services.server_link import connection
 from caspian.services.server_link.accounts import DEFAULT_URL, AuthApi, AuthError
+from caspian.services.server_link.client import ServerClient
 from caspian.services.server_link.errors import ServerUnreachable
 
 log = logging.getLogger(__name__)
@@ -226,3 +227,25 @@ async def _local_admin(db: Database, username: str, password: str) -> PersonLogi
         raise AuthenticationError(USE_MOBILE)
     return PersonLogin(result.actor, needs_pin=result.needs_pin,
                        must_change_local=result.must_change_password)
+
+
+async def client_for(db: Database, actor: Actor, transport: httpx.AsyncBaseTransport | None = None,
+                     timeout: float = 60.0) -> ServerClient | None:
+    """A client for calls made *for* this person (the assistant): their own saved login, else — for
+    a local-only user — the old shared account. None: nobody can call the server for them."""
+    if actor.is_ai or actor.user_id is None:
+        return None
+    async with db.session() as s:
+        user = await s.get(User, actor.user_id)
+    if user is not None and user.server_user_id is not None:
+        url = await server_url(db)
+        token = get_token(user.server_user_id, url)
+        password = (remembered_password(user.mobile, url) or "") if user.mobile else ""
+        if not token and not password:
+            return None
+        return ServerClient(url, user.mobile or "", password, transport, timeout, token,
+                            lambda new, uid=user.server_user_id: save_token(uid, url, new))
+    conn = await connection.get_connection(db)
+    if conn is None:
+        return None
+    return ServerClient(conn.url, conn.username, connection.get_password(conn) or "", transport, timeout)

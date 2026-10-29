@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 from qasync import asyncSlot
 
+from caspian.core.numbers import format_qty
 from caspian.core.permissions import Perm
 from caspian.core.recorder import Recorder, RecorderError, has_microphone, is_silent
 from caspian.core.text import to_persian_digits
@@ -50,6 +51,13 @@ def _to_html(text: str) -> str:
     return out.replace("\n", "<br>")
 
 
+def quota_text(limits: dict) -> str:
+    """«سهم امروز شما: ۱٬۵۴۰ از ۲۰٬۰۰۰» (or «نامحدود»)."""
+    used = format_qty(limits.get("used_today") or 0)
+    limit = limits.get("daily_limit")
+    return f"سهم امروز شما: {used} از {format_qty(limit)}" if limit else f"سهم امروز شما: {used} (نامحدود)"
+
+
 class AssistantPage(QWidget):
     def __init__(self, ctx: AppContext, open_batch=None, parent: QWidget | None = None,
                  open_document=None, open_request=None) -> None:
@@ -58,7 +66,7 @@ class AssistantPage(QWidget):
         self._open_batch = open_batch  # callable(batch_id) supplied by the main window
         self._open_document = open_document  # async (doc_id) -> None
         self._open_request = open_request  # async () -> None: show «درخواست کالا»
-        self._assistant = Assistant(ctx.db, ctx.ai, ctx.actor, ctx.messenger)
+        self._assistant = Assistant(ctx.db, ctx.assistant_ai, ctx.actor, ctx.messenger)
         self._recorder = Recorder()
         self._busy = False
 
@@ -174,7 +182,7 @@ class AssistantPage(QWidget):
             self.status.setText(text)
 
     def _on_user_changed(self, actor) -> None:
-        self._assistant = Assistant(self._ctx.db, self._ctx.ai, actor, self._ctx.messenger)
+        self._assistant = Assistant(self._ctx.db, self._ctx.assistant_ai, actor, self._ctx.messenger)
         self._welcome()
 
     def showEvent(self, event) -> None:
@@ -184,8 +192,21 @@ class AssistantPage(QWidget):
 
     @asyncSlot()
     async def update_status(self) -> None:
-        online = await self._ctx.ai.is_online()
-        ready = len(await self._ctx.ai.candidates())
+        """Through Caspian Server: «سهم امروز شما» (5); a short note when it can't be used."""
+        gateway = self._ctx.assistant_ai
+        if not hasattr(gateway, "limits_me"):  # a local provider gateway (advanced use, tests)
+            await self._local_status(gateway)
+            return
+        if not await gateway.available():
+            self.status.setText("دستیار در دسترس نیست — با حساب سرور وارد شوید یا اینترنت را بررسی کنید. "
+                                "بقیه برنامه به‌طور کامل کار می‌کند.")
+            return
+        limits = await gateway.limits_me()
+        self.status.setText(quota_text(limits) if limits else "دستیار کاسپین از طریق سرور کاسپین پاسخ می‌دهد.")
+
+    async def _local_status(self, gateway) -> None:
+        online = await gateway.is_online()
+        ready = len(await gateway.candidates())
         if ready:
             # Configured is not the same as answering: the first reply proves it (#5).
             self.status.setText(f"{to_persian_digits(ready)} سرویس هوش مصنوعی تنظیم شده"
@@ -193,6 +214,12 @@ class AssistantPage(QWidget):
         else:
             self.status.setText("دستیار در دسترس نیست — سرویس هوش مصنوعی تنظیم نشده یا اینترنت قطع است. "
                                 "بقیه برنامه به‌طور کامل کار می‌کند.")
+
+    def _show_quota(self) -> None:
+        limits = getattr(self._ctx.assistant_ai, "limits", None)
+        if limits and limits.get("used_today") is not None:
+            self.status.setText(quota_text({"used_today": limits["used_today"],
+                                            "daily_limit": limits.get("limit_today")}))
 
     # ----- actions -----
 
@@ -229,6 +256,7 @@ class AssistantPage(QWidget):
             f'({"ثبت نهایی" if d.get("status") == "POSTED" else "پیش‌نویس"}) ←</a>'
             for d in reply.created_documents)
         self._append("assistant", reply.text, links)
+        self._show_quota()
         self._set_busy(False, f"پاسخ از «{reply.provider}»" if reply.provider else "")
         for d in reply.created_documents:
             if d.get("status") == "DRAFT" and d.get("needs_confirmation"):

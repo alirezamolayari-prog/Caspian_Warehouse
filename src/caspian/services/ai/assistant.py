@@ -18,7 +18,7 @@ from caspian.services.ai.text_parser import parse_text
 from caspian.services.ai.tools import ToolContext, available_tools, run_tool
 
 log = logging.getLogger(__name__)
-MAX_TOOL_ROUNDS = 6
+MAX_TOOL_ROUNDS = 5  # the server asks apps to cap the tool loop (docs/ai-api.md)
 HISTORY_LIMIT = 30
 AI_TOTAL_TIMEOUT = 60  # seconds for one whole request, all tool rounds included (#8)
 

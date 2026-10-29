@@ -39,6 +39,11 @@ class FakeServer:
         self.sms: list[tuple[str, str]] = []
         self.otp_refuse: tuple[str, int] | None = None  # (X-Error-Code, Retry-After) for code requests
         self.logins: list[str] = []
+        self.ai_requests: list[dict] = []
+        self.ai_used = 0
+        self.ai_refuse: tuple[int, str] | None = None  # (status, X-Error-Code) for /ai/chat
+        self.ai_tool: tuple[str, dict] | None = None  # the tool the fake AI calls first
+        self.ai_answer = "پاسخ آزمایشی دستیار"
         self._user_ids = itertools.count(10)  # (status, X-Error-Code) for the next calls
         self.login_retry_after: int | None = None  # set: every login answers 429 login_rate_limited
         self.calls: list[tuple[str, str]] = []
@@ -226,6 +231,11 @@ class FakeServer:
         if self.refuse_next:
             status, code = self.refuse_next.pop(0)
             return self._error(status, "رد شد", code)
+        if path == "/ai/chat":
+            return self._ai_chat(body, user)
+        if path == "/ai/limits/me":
+            return self._json(200, {"used_today": self.ai_used, "daily_limit": 20000, "unlimited": False,
+                                    "remaining": 20000 - self.ai_used, "resets_in_seconds": 3600})
         if path == "/auth/me":
             return self._json(200, {"id": user["id"], "username": "warehouse", "full_name": user["full_name"],
                                     "role": user["role"], "mobile": None, "approval_status": "approved",
@@ -274,6 +284,29 @@ class FakeServer:
                 self.messages.append(message)
                 return self._json(201, self._msg_out(message))
         return self._error(404, "Not Found")
+
+    def _ai_chat(self, body: dict, user: dict) -> httpx.Response:
+        """Like the server's dev mode: a call to `ai_tool` (if the app sent tools), then text."""
+        self.ai_requests.append(body)
+        if self.ai_refuse:
+            status, code = self.ai_refuse
+            return self._error(status, "رد شد", code, 3600 if status == 429 else None)
+        if body.get("app") != "warehouse" or body.get("capability") != "assistant":
+            return self._error(400, "نامعتبر", "ai_unknown_capability")
+        self.ai_used += 100
+        last = body["messages"][-1]
+        names = [t["function"]["name"] for t in body.get("tools") or []]
+        if last["role"] != "tool" and self.ai_tool and self.ai_tool[0] in names:
+            message = {"role": "assistant", "content": None, "tool_calls": [{
+                "id": f"call_{len(self.ai_requests)}", "type": "function",
+                "function": {"name": self.ai_tool[0], "arguments": json.dumps(self.ai_tool[1],
+                                                                              ensure_ascii=False)}}]}
+            finish = "tool_calls"
+        else:
+            message, finish = {"role": "assistant", "content": self.ai_answer, "tool_calls": None}, "stop"
+        return self._json(200, {"message": message, "finish_reason": finish, "model": "dev", "mode": "dev",
+                                "usage": {"total_tokens": 100}, "used_today": self.ai_used,
+                                "limit_today": 20000})
 
     def _fields(self, body: dict) -> dict:
         return {"requester_name": body["requester_name"], "requester_phone": body.get("requester_phone"),
