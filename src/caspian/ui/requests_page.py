@@ -11,10 +11,14 @@ import uuid
 from dataclasses import dataclass
 from decimal import Decimal
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QModelIndex, QStringListModel, Qt, QTimer, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
+    QCompleter,
     QDialog,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -30,10 +34,11 @@ from PySide6.QtWidgets import (
 from qasync import asyncSlot
 
 from caspian.core import jalali
+from caspian.core.numbers import format_qty
 from caspian.core.permissions import Perm
 from caspian.core.text import to_persian_digits
 from caspian.db.models import PersonKind, RequestStatus
-from caspian.services import items, locations, master
+from caspian.services import documents, items, locations, master
 from caspian.services.errors import ServiceError, ValidationError
 from caspian.services.server_link import goods
 from caspian.services.server_link.goods import STATUS_NAMES, RequestDetail, RequestRow
@@ -53,7 +58,9 @@ OFFLINE_TEXT = {
     SyncState.DISCONNECTED: "سرور کاسپین الان در دسترس نیست. " + SAVED_HERE,
     SyncState.ACCOUNT_PROBLEM: "سرور حساب انبار را نپذیرفت. " + SAVED_HERE,
 }
-COLUMNS = ("شماره", "درخواست‌کننده", "محل مصرف", "اقلام", "وضعیت", "تاریخ", "توضیح")
+COLUMNS = ("شماره", "درخواست‌کننده", "ثبت‌کننده", "محل مصرف", "اقلام", "وضعیت", "وضعیت ارسال", "تاریخ",
+           "توضیحات")
+STATUS_COL, SEND_COL = 5, 6
 LINE_COLUMNS = ("کد", "نام کالا", "واحد", "مقدار", "")
 
 
@@ -96,6 +103,26 @@ class _Line:
     item_id: int
     unit: QComboBox
     qty: QtyEdit
+    name_cell: QTableWidgetItem | None = None
+    name: str = ""
+
+
+SEARCH_DELAY_MS = 250
+OVER_STOCK = "⚠ بیشتر از موجودی ({stock}) — ثبت می‌شود و مالک تصمیم می‌گیرد"
+
+
+async def add_location(ctx: AppContext, parent, typed: str) -> int | None:
+    """«+ افزودن محل جدید» in the request form: the usual location editor, prefilled with what was
+    typed; returns the new place's id."""
+    from caspian.ui.locations_tab import LocationDialog
+
+    dialog = LocationDialog(ctx, await locations.list_floors(ctx.db), parent=parent)
+    dialog.name.setText(typed)
+    before = {loc.id for loc in (await locations.load_index(ctx.db)).locations}
+    if not await exec_dialog(dialog):
+        return None
+    after = (await locations.load_index(ctx.db)).locations
+    return next((loc.id for loc in after if loc.id not in before), None)
 
 
 class RequestDialog(FormDialog):
@@ -125,6 +152,8 @@ class RequestDialog(FormDialog):
                               current=data.person_id if data else None)
         self.add_row("درخواست‌کننده:", self.person)
         self.place = LocationPicker()
+        if ctx.actor.can(Perm.LOCATIONS_MANAGE):
+            self.place.enable_add(lambda typed: add_location(ctx, self, typed))
         self.add_row("محل مصرف:", self.place)
         self.warehouse = QComboBox()
         for w in warehouses:
@@ -137,9 +166,22 @@ class RequestDialog(FormDialog):
         self.note.setPlaceholderText("مثلاً فوری، برای نظافت پله…")
 
         self.item_input = QLineEdit()
-        self.item_input.setPlaceholderText("کد، نام یا بارکد کالا را بنویسید و Enter بزنید")
+        self.item_input.setPlaceholderText("کد، نام یا بارکد کالا را بنویسید و از فهرست انتخاب کنید")
         self.item_input.returnPressed.connect(self.on_item_entered)
         self.body.addWidget(self.item_input)
+        # Live suggestions while typing: code — name — unit — stock (QA 3.5).
+        self._factors: dict[int, dict[int, Decimal]] = {}
+        self._stock: dict[int, Decimal | None] = {}
+        self._suggested: list = []
+        self._suggest_model = QStringListModel(self)
+        self.item_completer = QCompleter(self._suggest_model, self)
+        self.item_completer.setCompletionMode(QCompleter.CompletionMode.UnfilteredPopupCompletion)
+        self.item_completer.setMaxVisibleItems(12)
+        self.item_completer.setWidget(self.item_input)
+        self.item_completer.activated[QModelIndex].connect(self._on_suggestion)
+        self._search_timer = QTimer(self, singleShot=True, interval=SEARCH_DELAY_MS)
+        self._search_timer.timeout.connect(self._suggest)
+        self.item_input.textEdited.connect(lambda _text: self._search_timer.start())
         self.table = QTableWidget(0, len(LINE_COLUMNS))
         persian_row_numbers(self.table)
         self.table.setHorizontalHeaderLabels(LINE_COLUMNS)
@@ -173,6 +215,9 @@ class RequestDialog(FormDialog):
             base = detail.input.base_unit_id
             self._item_units[item_id] = [(base, self._unit_names.get(base, "?"))] + [
                 (u, self._unit_names.get(u, "?")) for u, _f in detail.input.units]
+            self._factors[item_id] = {base: Decimal(1), **dict(detail.input.units)}
+            if item_id not in self._stock:
+                self._stock[item_id] = await self._on_hand(item_id)
         return self._item_units[item_id]
 
     def _add_line(self, item_id: int, code: str, name: str, unit_id: int | None, qty: Decimal) -> None:
@@ -180,7 +225,7 @@ class RequestDialog(FormDialog):
         for uid, uname in self._item_units[item_id]:
             unit.addItem(uname, uid)
         unit.setCurrentIndex(max(unit.findData(unit_id), 0))
-        line = _Line(item_id, unit, QtyEdit(qty))
+        line = _Line(item_id, unit, QtyEdit(qty), name=name)
         self.lines.append(line)
         r = self.table.rowCount()
         self.table.insertRow(r)
@@ -188,6 +233,9 @@ class RequestDialog(FormDialog):
             cell = QTableWidgetItem(text)
             cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(r, col, cell)
+        line.name_cell = self.table.item(r, 1)
+        line.qty.textChanged.connect(lambda _t: self._check_stock(line))
+        unit.currentIndexChanged.connect(lambda _i: self._check_stock(line))
         self.table.setCellWidget(r, 2, unit)
         self.table.setCellWidget(r, 3, line.qty)
         remove = QToolButton(objectName="IconButton")
@@ -195,6 +243,74 @@ class RequestDialog(FormDialog):
         remove.setToolTip("حذف ردیف")
         remove.clicked.connect(lambda: self._remove_line(line))
         self.table.setCellWidget(r, 4, remove)
+        self._check_stock(line)
+
+    async def _on_hand(self, item_id: int) -> Decimal | None:
+        if not self._ctx.actor.can(Perm.STOCK_VIEW):  # blind counting: no stock for this person
+            return None
+        return sum((q for _w, q in await documents.stock_by_warehouse(self._ctx.db, item_id)), Decimal(0))
+
+    def _check_stock(self, line: _Line) -> None:
+        """More than the stock is allowed (the owner decides) but said plainly on that row."""
+        stock = self._stock.get(line.item_id)
+        qty = line.qty.value()
+        factor = self._factors.get(line.item_id, {}).get(line.unit.currentData(), Decimal(1))
+        over = stock is not None and qty is not None and qty * factor > stock
+        if line.name_cell is None:
+            return
+        theme = self._ctx.themes.current
+        if over:
+            base = self._item_units[line.item_id][0][1]
+            text = OVER_STOCK.format(stock=f"{format_qty(stock)} {base}")
+            line.name_cell.setText(f"{line.name}  ⚠")
+            line.name_cell.setToolTip(text)
+            line.name_cell.setForeground(QColor(theme.warning))
+        else:
+            line.name_cell.setText(line.name)
+            line.name_cell.setToolTip(line.name)
+            line.name_cell.setForeground(QColor(theme.text))
+
+    def over_stock_lines(self) -> list[_Line]:
+        return [ln for ln in self.lines if ln.name_cell is not None and "⚠" in ln.name_cell.text()]
+
+    @asyncSlot()
+    async def _suggest(self) -> None:
+        text = self.item_input.text().strip()
+        if not text:
+            self.item_completer.popup().hide()
+            return
+        try:
+            rows = await items.search_items(self._ctx.db, self._ctx.actor, text, limit=15)
+        except ServiceError:
+            return
+        if text != self.item_input.text().strip():
+            return  # typed on meanwhile: the next search shows the right list
+        self._suggested = rows
+        for row in rows:
+            self._stock.setdefault(row.id, row.on_hand)
+        self._suggest_model.setStringList([self._suggestion_text(r) for r in rows])
+        if rows:
+            self.item_completer.complete()
+        else:
+            self.item_completer.popup().hide()
+
+    @staticmethod
+    def _suggestion_text(row) -> str:
+        stock = f" — موجودی: {format_qty(row.on_hand)}" if row.on_hand is not None else ""
+        return f"{locations.fa_digits(row.code)} — {row.name} — {row.base_unit}{stock}"
+
+    @asyncSlot(QModelIndex)
+    async def _on_suggestion(self, index: QModelIndex) -> None:
+        if not 0 <= index.row() < len(self._suggested):
+            return
+        row = self._suggested[index.row()]
+        self._search_timer.stop()
+        try:
+            await self.add_item(row.id, row.code, row.name)
+        except ServiceError as exc:
+            self.show_status(exc.message)
+        self.item_input.clear()
+        self.item_input.setFocus()
 
     def _remove_line(self, line: _Line) -> None:
         r = self.lines.index(line)
@@ -215,8 +331,9 @@ class RequestDialog(FormDialog):
         from caspian.ui.documents_page import ItemChooserDialog
 
         text = self.item_input.text().strip()
-        if not text:
-            return
+        if not text or self.item_completer.popup().isVisible():
+            return  # a highlighted suggestion is added by the list itself
+        self._search_timer.stop()
         self.show_status("")
         try:
             unit_id = None
@@ -315,12 +432,14 @@ class RequestChatDialog(QDialog):
     def __init__(self, ctx: AppContext, row: RequestRow, parent=None) -> None:
         super().__init__(parent)
         self._ctx, self._row = ctx, row
-        self.setWindowTitle(f"‏گفتگوی درخواست {row.number_text}")
+        self.setWindowTitle(f"‏گفتگو — {row.title}")
         self.setMinimumSize(620, 560)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(10)
-        layout.addWidget(QLabel(f"درخواست {row.number_text} — {row.requester}", objectName="PageTitle"))
+        self.heading = QLabel(row.title, objectName="PageTitle")
+        self.heading.setWordWrap(True)
+        layout.addWidget(self.heading)
         self.details = QLabel(objectName="Muted")
         self.details.setWordWrap(True)
         self.details.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -347,9 +466,14 @@ class RequestChatDialog(QDialog):
         self._show_details(row)
         if ctx.server_link is not None:
             ctx.server_link.result.connect(self._on_sync)
+        ctx.themes.theme_changed.connect(self._render)
 
     def _show_details(self, row: RequestRow) -> None:
-        parts = [f"وضعیت: {row.status_name}", f"محل مصرف: {row.location}", f"اقلام: {row.items_text}"]
+        self.heading.setText(row.title)
+        parts = [f"وضعیت: {row.status_name}", f"وضعیت ارسال: {row.send_status}",
+                 f"محل مصرف: {row.location}", f"اقلام: {row.items_text}"]
+        if row.created_by:
+            parts.append(f"ثبت‌کننده: {row.created_by}")
         if row.note:
             parts.append(f"توضیحات: {row.note}")
         if row.rejection_reason:
@@ -378,14 +502,21 @@ class RequestChatDialog(QDialog):
             return
         self._row = detail.row
         self._show_details(detail.row)
+        self._messages = messages
+        self._render()
+
+    def _render(self, *_args) -> None:
+        """The conversation in the current theme's colours (redrawn when the theme changes)."""
+        messages = getattr(self, "_messages", [])
         theme = self._ctx.themes.current
         self.transcript.clear()
         if not messages:
             self.transcript.append(f'<p style="color:{theme.text_muted}">هنوز پیامی رد و بدل نشده است.</p>')
         for m in messages:
             bg = theme.primary_soft if m.mine else theme.surface_alt
-            when = jalali.format_date(m.created_at.date()) if m.created_at else ""
-            note = " · در صف ارسال" if m.queued else ""
+            when = (f"{jalali.format_date(m.created_at.date())} ساعت "
+                    f"{to_persian_digits(m.created_at.strftime('%H:%M'))}") if m.created_at else ""
+            note = " · در صف ارسال" if m.queued else (" · ارسال شد" if m.mine else "")
             who = f"{html.escape(m.sender)} · {when}{note}"
             self.transcript.append(
                 f'<table width="100%" cellpadding="10" style="margin:6px 0"><tr><td '
@@ -426,6 +557,7 @@ class RequestChatDialog(QDialog):
 
 class RequestsPage(QWidget):
     refreshed = Signal()  # the list was reloaded (e.g. a request was opened: the badge may change)
+    setup_requested = Signal()  # «ورود / تنظیم الان» on the connection bar
 
     def __init__(self, ctx: AppContext, open_document=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -444,6 +576,10 @@ class RequestsPage(QWidget):
             self.status_filter.addItem(name, status)
         self.status_filter.currentIndexChanged.connect(lambda _: self.refresh())
         toolbar.addWidget(self.status_filter)
+        self.mine_only = QCheckBox("درخواست‌های من")
+        self.mine_only.setToolTip("فقط درخواست‌هایی که خودتان ثبت کرده‌اید")
+        self.mine_only.toggled.connect(lambda _: self.refresh())
+        toolbar.addWidget(self.mine_only)
         self.count_label = QLabel(objectName="Muted")
         toolbar.addWidget(self.count_label)
         toolbar.addStretch(1)
@@ -453,10 +589,18 @@ class RequestsPage(QWidget):
         toolbar.addWidget(self.new_button)
         layout.addLayout(toolbar)
         # Working without Caspian Server is normal (go-live before the server is ready): say so plainly.
-        self.offline_banner = QLabel(objectName="StatusText")
+        self.notice = QFrame(objectName="NoticeBar")
+        notice = QHBoxLayout(self.notice)
+        notice.setContentsMargins(12, 8, 12, 8)
+        self.offline_banner = QLabel()
         self.offline_banner.setWordWrap(True)
-        self.offline_banner.hide()
-        layout.addWidget(self.offline_banner)
+        notice.addWidget(self.offline_banner, 1)
+        self.setup_button = QPushButton("ورود / تنظیم الان")
+        self.setup_button.setProperty("variant", "primary")
+        self.setup_button.clicked.connect(self.setup_requested.emit)
+        notice.addWidget(self.setup_button)
+        self.notice.hide()
+        layout.addWidget(self.notice)
 
         actions = QHBoxLayout()
         actions.addStretch(1)
@@ -517,32 +661,21 @@ class RequestsPage(QWidget):
             text = f"{result.message} {SAVED_HERE}"
         self.offline_banner.setText(text)
         self.offline_banner.setVisible(bool(text))
+        self.notice.setVisible(bool(text))
+        # Nothing to set up while the internet is simply down: then the bar only informs.
+        self.setup_button.setVisible(result.state != SyncState.DISCONNECTED)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self.refresh()
-
-    def _note(self, r: RequestRow) -> str:
-        if r.last_error:
-            return r.last_error
-        if r.status == RequestStatus.REJECTED and r.rejection_reason:
-            return f"دلیل رد: {r.rejection_reason}"
-        if r.origin == "remote":
-            return "ثبت‌شده خارج از این برنامه (فقط نمایش)"
-        if r.status == RequestStatus.APPROVED and r.document_id is None:
-            return "حواله خروج پیش‌نویس به‌زودی ساخته می‌شود"
-        if r.status == RequestStatus.APPROVED:
-            return "آماده چاپ حواله"
-        if r.issue_number:
-            return f"حواله {to_persian_digits(r.issue_number)}"
-        return r.note
 
     @asyncSlot()
     async def refresh(self) -> None:
         self._seq += 1
         seq = self._seq
         try:
-            rows = await goods.list_requests(self._ctx.db, self._ctx.actor, self.status_filter.currentData())
+            rows = await goods.list_requests(self._ctx.db, self._ctx.actor, self.status_filter.currentData(),
+                                             mine=self.mine_only.isChecked())
         except ServiceError as exc:
             show_error(self, exc.message)
             return
@@ -553,13 +686,14 @@ class RequestsPage(QWidget):
         colors = {RequestStatus.APPROVED: theme.success, RequestStatus.REJECTED: theme.danger,
                   RequestStatus.QUEUED: theme.warning, RequestStatus.DRAFT: theme.warning}
         self.table.set_rows(
-            [(r.id, (r.number_text, r.requester, r.location, r.items_text,
-                     ("● " if r.unseen else "") + r.status_name,
-                     jalali.format_date(r.created_at.date()) if r.created_at else "", self._note(r)))
+            [(r.id, (r.number_text, r.requester, r.created_by, r.location, r.items_text,
+                     ("● " if r.unseen else "") + r.status_name, r.send_status,
+                     jalali.format_date(r.created_at.date()) if r.created_at else "", r.note))
              for r in rows],
             muted=[r.origin == "remote" for r in rows],
-            highlight={**{(i, 4): colors[r.status] for i, r in enumerate(rows) if r.status in colors},
-                       **{(i, 6): theme.danger for i, r in enumerate(rows) if r.last_error}})
+            highlight={**{(i, STATUS_COL): colors[r.status]
+                          for i, r in enumerate(rows) if r.status in colors},
+                       **{(i, SEND_COL): theme.danger for i, r in enumerate(rows) if r.failed}})
         self.count_label.setText(f"{to_persian_digits(len(rows))} درخواست")
         self._update_buttons()
         self.refreshed.emit()

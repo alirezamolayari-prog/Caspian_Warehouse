@@ -32,6 +32,7 @@ from caspian.db.models import (
     RequestStatus,
     ServerOutbox,
     Unit,
+    User,
     Warehouse,
 )
 from caspian.db.retry import with_retries
@@ -105,10 +106,41 @@ class RequestRow:
     document_id: int | None = None
     document_status: DocStatus | None = None
     failed: bool = False  # the server refused something of it: «ارسال مجدد» puts it back in the queue
+    created_by: str = ""  # «ثبت‌کننده»: the server's name for the registrar, else the local author's
+    mine: bool = False  # registered by the person looking at the list
 
     @property
     def number_text(self) -> str:
-        return to_persian_digits(self.server_id) if self.server_id else "—"
+        return to_persian_digits(self.server_id) if self.server_id else "در صف"
+
+    @property
+    def title(self) -> str:
+        """«درخواست شمارهٔ ۱۲ — علی رضایی» / «درخواست در صف ارسال — علی رضایی»."""
+        head = (f"درخواست شمارهٔ {to_persian_digits(self.server_id)}" if self.server_id
+                else "درخواست در صف ارسال")
+        return f"{head} — {self.requester}" if self.requester else head
+
+    @property
+    def send_status(self) -> str:
+        """«وضعیت ارسال»: what happened to it on the way to the owners and back (not the user's note)."""
+        if self.last_error:
+            return self.last_error
+        if self.origin == "remote":
+            return "ثبت‌شده خارج از این برنامه (فقط نمایش)"
+        if self.status == RequestStatus.DRAFT:
+            return "منتظر تأیید شما"
+        if self.status == RequestStatus.QUEUED or (self.waiting and self.status != RequestStatus.ISSUED):
+            return "در صف ارسال"
+        if self.status == RequestStatus.APPROVED and self.document_id is None:
+            return "حواله خروج به‌زودی ساخته می‌شود"
+        if self.status == RequestStatus.APPROVED:
+            return "آماده چاپ حواله"
+        if self.status == RequestStatus.ISSUED:
+            number = f"حواله {to_persian_digits(self.issue_number)}" if self.issue_number else "حواله صادر شد"
+            return number + (" (در صف ارسال به سرور)" if self.waiting else "")
+        if self.status == RequestStatus.REJECTED and self.rejection_reason:
+            return f"دلیل رد: {self.rejection_reason}"
+        return "ارسال شد"
 
     @property
     def status_name(self) -> str:
@@ -399,7 +431,7 @@ def _line_view(ln: GoodsRequestLine) -> RequestLineView:
     return RequestLineView(ln.item_id, ln.unit_id, ln.qty, ln.item_code, ln.item_name, ln.unit_name)
 
 
-async def _rows(s: AsyncSession, requests: list[GoodsRequest]) -> list[RequestRow]:
+async def _rows(s: AsyncSession, requests: list[GoodsRequest], viewer: int | None = None) -> list[RequestRow]:
     server_ids = [r.server_id for r in requests if r.server_id is not None]
     docs = {sid: (doc_id, status) for doc_id, status, sid in (await s.execute(
         select(Document.id, Document.status, Document.server_request_id)
@@ -410,31 +442,44 @@ async def _rows(s: AsyncSession, requests: list[GoodsRequest]) -> list[RequestRo
     failed = set((await s.scalars(select(ServerOutbox.request_id).where(
         ServerOutbox.request_id.in_([r.id for r in requests]),
         ServerOutbox.failed))).all()) if requests else set()
+    author_ids = {r.created_by_id for r in requests if r.created_by_id}
+    authors = {uid: (name or username, sid) for uid, name, username, sid in (await s.execute(
+        select(User.id, User.full_name, User.username, User.server_user_id).where(
+            User.id.in_(author_ids)))).all()} if author_ids else {}
+    me = authors.get(viewer) if viewer else None
+    if viewer and me is None:
+        me = (None, await s.scalar(select(User.server_user_id).where(User.id == viewer)))
     rows = []
     for r in requests:
         doc_id, doc_status = docs.get(r.server_id, (None, None))
+        author, _ = authors.get(r.created_by_id, ("", None))
+        mine = bool(viewer) and (r.created_by_id == viewer if r.created_by_server_id is None
+                                 else r.created_by_server_id == (me[1] if me else None))
         rows.append(RequestRow(
             r.id, r.server_id, r.status, r.origin, r.requester_name, r.requester_phone, r.location_text,
             r.note, tuple(_line_view(ln) for ln in r.lines), r.created_at, r.unseen, r.rejection_reason,
-            r.issue_number, r.last_error, r.id in waiting, doc_id, doc_status, r.id in failed))
+            r.issue_number, r.last_error, r.id in waiting, doc_id, doc_status, r.id in failed,
+            r.created_by_name or (author if r.origin == "local" else ""), mine))
     return rows
 
 
 async def list_requests(db: Database, actor: Actor, status: RequestStatus | None = None,
-                        limit: int = 300) -> list[RequestRow]:
+                        limit: int = 300, mine: bool = False) -> list[RequestRow]:
+    """`mine`: only what the person looking registered («درخواست‌های من»)."""
     actor.require(Perm.REQUESTS_MANAGE)
     async with db.session() as s:
         stmt = select(GoodsRequest).order_by(GoodsRequest.id.desc()).limit(limit)
         if status is not None:
             stmt = stmt.where(GoodsRequest.status == status)
-        return await _rows(s, list((await s.scalars(stmt)).all()))
+        rows = await _rows(s, list((await s.scalars(stmt)).all()), actor.user_id)
+    return [r for r in rows if r.mine] if mine else rows
 
 
 async def get_request(db: Database, actor: Actor, request_id: int) -> RequestDetail:
     actor.require(Perm.REQUESTS_MANAGE)
     async with db.session() as s:
         req = await _load(s, request_id)
-        [row] = await _rows(s, [req])
+        [row] = await _rows(s, [req], actor.user_id)
         data = RequestInput(req.person_id, req.location_id, req.floor_id, req.note,
                             [RequestLineInput(ln.item_id, ln.unit_id, ln.qty) for ln in req.lines
                              if ln.item_id is not None and ln.unit_id is not None], req.warehouse_id)

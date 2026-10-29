@@ -70,10 +70,10 @@ async def test_print_from_list_counts_copies(qtbot, env, monkeypatch):
     lst.table.select_id(env["receipt"])
     assert lst.print_button.isEnabled()
     actions = lst.print_button.menu().actions()
-    assert [a.text() for a in actions] == ["پیش‌نمایش و چاپ (A5)", "پیش‌نمایش و چاپ (A4)", "ذخیره PDF (A5)"]
-    actions[0].trigger()
-    assert await wait_until(lambda: "چاپ‌شده (۱)" in lst.table.item(lst.table.currentRow(), 6).text())
+    assert [a.text() for a in actions] == ["پیش‌نمایش (بدون ثبت)", "چاپ (A5)", "چاپ (A4)", "ذخیره PDF (A5)"]
     actions[1].trigger()
+    assert await wait_until(lambda: "چاپ‌شده (۱)" in lst.table.item(lst.table.currentRow(), 6).text())
+    actions[2].trigger()
     assert await wait_until(lambda: len(shown) == 2)
     assert "المثنی" not in shown[0][0] and "المثنی" in shown[1][0] and shown[1][1] == "A4"
     assert await wait_until(lambda: "چاپ‌شده (۲)" in lst.table.item(lst.table.currentRow(), 6).text())

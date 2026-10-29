@@ -2,6 +2,7 @@
 
 import datetime as dt
 import html
+import logging
 from collections.abc import Callable
 from decimal import Decimal
 
@@ -17,11 +18,13 @@ from caspian.services import documents as docs
 from caspian.services.documents import PrintSheet
 from caspian.services.errors import ServiceError
 from caspian.ui.app_context import AppContext, exec_dialog
-from caspian.ui.file_dialogs import ask_save_path
+from caspian.ui.file_dialogs import ask_print, ask_save_path
 from caspian.ui.fonts import FONT_FAMILY
 from caspian.ui.messages import show_error, show_info
 from caspian.ui.printing import LOGO_URL, print_to, rtl_cells, save_pdf
 from caspian.ui.tasks import callback
+
+log = logging.getLogger(__name__)
 
 RLM = "‏"  # right-to-left mark (bidi, #16); no isolates: Qt ignores them (QA Part A #2)
 PAPERS = {"A5": QPageSize.PageSizeId.A5, "A4": QPageSize.PageSizeId.A4}
@@ -202,24 +205,70 @@ async def preview_and_print(parent: QWidget | None, html_text: str, paper: str) 
 
 LINKED_POST_QUESTION = ("«{title}» از درخواست تأییدشده ساخته شده است. با چاپ، حواله ثبت نهایی می‌شود و "
                         "کالاها از موجودی کم می‌شوند (فقط با ابطال قابل برگشت است). ادامه می‌دهید؟")
+DRAFT_WATERMARK = "پیش‌نویس"
+PRINT_FAILED = ("حواله ثبت نهایی شد ولی چاپ نشد (چاپگر را بررسی کنید). از «چاپ» دوباره چاپ کنید؛ "
+                "این نسخه هنوز اصل حساب می‌شود.")
+PREVIEW_DPI = 110
 
 
-async def _ready_sheet(parent: QWidget, ctx: AppContext, doc_id: int) -> PrintSheet | None:
-    """The sheet to print. A draft made from an approved goods request is posted first — after the
-    user agrees — so the paper the requester carries is always a final voucher. None = stop."""
-    sheet = await docs.print_sheet(ctx.db, ctx.actor, doc_id)  # refuses it before approval
-    if not (sheet.linked_request and sheet.status == DocStatus.DRAFT):
-        return sheet
+class DraftPreviewDialog(QDialog):
+    """See a slip before it is final: pages with a big «پیش‌نویس» across them, and only «بستن»
+    (nothing can be printed or finalised from here)."""
+
+    def __init__(self, html_text: str, paper: str, parent: QWidget | None = None) -> None:
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QPixmap
+        from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout
+
+        from caspian.ui.printing import page_images
+
+        super().__init__(parent)
+        self.setWindowTitle("‏پیش‌نمایش (پیش‌نویس — هنوز ثبت نشده)")
+        size = QPageSize(PAPERS[paper]).sizePixels(PREVIEW_DPI)
+        self.pages = page_images(html_text, size.width(), size.height(), PREVIEW_DPI, DRAFT_WATERMARK)
+        layout = QVBoxLayout(self)
+        note = QLabel("این فقط پیش‌نمایش است و حواله ثبت نهایی نشده. برای ثبت نهایی و چاپ، «چاپ» را "
+                      "بزنید.", objectName="Muted")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        holder = QWidget()
+        pages = QVBoxLayout(holder)
+        for image in self.pages:
+            label = QLabel()
+            label.setPixmap(QPixmap.fromImage(image))
+            pages.addWidget(label, 0, Qt.AlignmentFlag.AlignHCenter)
+        scroll.setWidget(holder)
+        layout.addWidget(scroll, 1)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        close = QPushButton("بستن")
+        close.clicked.connect(self.reject)
+        buttons.addWidget(close)
+        layout.addLayout(buttons)
+        self.resize(size.width() + 80, min(size.height() + 140, 900))
+
+
+def _linked_draft(sheet: PrintSheet) -> bool:
+    return bool(sheet.linked_request and sheet.status == DocStatus.DRAFT)
+
+
+async def _agree_to_post(parent: QWidget, ctx: AppContext, sheet: PrintSheet) -> bool:
     from caspian.core.permissions import Perm
-    from caspian.ui.documents_page import with_stocktake_override  # that module imports this one
     from caspian.ui.messages import confirm
 
     if not ctx.actor.can(Perm.DOCUMENTS_POST):
         show_error(parent, "چاپ این حواله آن را ثبت نهایی می‌کند و مجوز «ثبت نهایی سند» لازم است.")
-        return None
-    if not await confirm(parent, LINKED_POST_QUESTION.format(title=f"{sheet.type_name} {sheet.number_text}"),
-                         "ثبت نهایی و چاپ"):
-        return None
+        return False
+    return await confirm(parent, LINKED_POST_QUESTION.format(title=f"{sheet.type_name} {sheet.number_text}"),
+                         "ثبت نهایی و چاپ")
+
+
+async def _post_linked(parent: QWidget, ctx: AppContext, doc_id: int) -> PrintSheet:
+    """Post a slip made from an approved request — only once the printer or PDF file was chosen."""
+    from caspian.ui.documents_page import with_stocktake_override  # that module imports this one
+
     await with_stocktake_override(ctx, parent, lambda approval: docs.post_document(
         ctx.db, ctx.actor, doc_id, approval=approval, via="goods_request"))
     if ctx.server_link is not None:
@@ -227,14 +276,31 @@ async def _ready_sheet(parent: QWidget, ctx: AppContext, doc_id: int) -> PrintSh
     return await docs.print_sheet(ctx.db, ctx.actor, doc_id)
 
 
-async def print_document(parent: QWidget, ctx: AppContext, doc_id: int, paper: str = "A5") -> bool:
+async def preview_document(parent: QWidget, ctx: AppContext, doc_id: int, paper: str = "A5") -> bool:
+    """«پیش‌نمایش (بدون ثبت)»: a slip of an approved request is shown with «پیش‌نویس» across it and
+    is not finalised; any other document opens the usual preview."""
     try:
-        sheet = await _ready_sheet(parent, ctx, doc_id)
-        if sheet is None:
-            return False
+        sheet = await docs.print_sheet(ctx.db, ctx.actor, doc_id)  # refuses it before approval
+        if not _linked_draft(sheet):
+            return await print_document(parent, ctx, doc_id, paper)
+        html_text = document_html(sheet, sheet.print_count + 1, paper, ctx.actor.display_name)
+    except ServiceError as exc:
+        show_error(parent, exc.message)
+        return False
+    await exec_dialog(DraftPreviewDialog(html_text, paper, parent))
+    return False
+
+
+async def print_document(parent: QWidget, ctx: AppContext, doc_id: int, paper: str = "A5") -> bool:
+    """Print. A slip of an approved request becomes final only after the print dialog was accepted
+    (cancelled = nothing changes); it is then printed with its final number."""
+    try:
+        sheet = await docs.print_sheet(ctx.db, ctx.actor, doc_id)  # refuses it before approval
+        if _linked_draft(sheet):
+            return await _print_linked(parent, ctx, doc_id, sheet, paper)
         html_text = document_html(sheet, sheet.print_count + 1, paper, ctx.actor.display_name)
         if not await preview_and_print(parent, html_text, paper):
-            return sheet.linked_request  # it may have just been posted: the caller refreshes
+            return False
         if sheet.trackable:
             await docs.record_print(ctx.db, ctx.actor, doc_id, "printer")
     except ServiceError as exc:
@@ -243,15 +309,37 @@ async def print_document(parent: QWidget, ctx: AppContext, doc_id: int, paper: s
     return True
 
 
+async def _print_linked(parent: QWidget, ctx: AppContext, doc_id: int, sheet: PrintSheet,
+                        paper: str) -> bool:
+    if not await _agree_to_post(parent, ctx, sheet):
+        return False
+    printer = _printer(paper)
+    if not await ask_print(printer, parent):
+        return False  # no printer chosen: the slip stays a draft
+    sheet = await _post_linked(parent, ctx, doc_id)
+    try:
+        print_to(printer, document_html(sheet, sheet.print_count + 1, paper, ctx.actor.display_name))
+    except Exception:
+        log.exception("Printing a just-posted slip failed")
+        show_error(parent, PRINT_FAILED)
+        return True  # posted: the caller refreshes; the next print is still the original
+    if sheet.trackable:
+        await docs.record_print(ctx.db, ctx.actor, doc_id, "printer")
+    return True
+
+
 async def pdf_document(parent: QWidget, ctx: AppContext, doc_id: int, paper: str = "A5") -> bool:
     try:
-        sheet = await _ready_sheet(parent, ctx, doc_id)
-        if sheet is None:
+        sheet = await docs.print_sheet(ctx.db, ctx.actor, doc_id)
+        linked = _linked_draft(sheet)
+        if linked and not await _agree_to_post(parent, ctx, sheet):
             return False
         path = await ask_save_path(parent, "ذخیره PDF", ctx.settings,
                                    f"{sheet.type_name} {sheet.number_text}.pdf", "PDF (*.pdf)")
         if not path:
-            return False
+            return False  # no file chosen: a slip stays a draft
+        if linked:
+            sheet = await _post_linked(parent, ctx, doc_id)
         save_pdf(document_html(sheet, sheet.print_count + 1, paper, ctx.actor.display_name), path,
                  PAPERS[paper])
         if sheet.trackable:
@@ -275,7 +363,8 @@ def document_print_menu(parent: QWidget, ctx: AppContext, current_id: Callable[[
                 after()
         return callback(run)
 
-    menu.addAction("پیش‌نمایش و چاپ (A5)", action(print_document, "A5"))
-    menu.addAction("پیش‌نمایش و چاپ (A4)", action(print_document, "A4"))
+    menu.addAction("پیش‌نمایش (بدون ثبت)", action(preview_document, "A5"))
+    menu.addAction("چاپ (A5)", action(print_document, "A5"))
+    menu.addAction("چاپ (A4)", action(print_document, "A4"))
     menu.addAction("ذخیره PDF (A5)", action(pdf_document, "A5"))
     return menu

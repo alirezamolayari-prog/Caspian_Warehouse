@@ -254,8 +254,9 @@ class DocumentDialog(FormDialog):
             for w in (self.warehouse, self.person, self.place, self.usage_note, self.item_input):
                 w.setEnabled(False)
                 self._inputs.remove(w)  # stays disabled after a busy state too
-            note = QLabel("این حواله از درخواست کالای تأییدشده ساخته شده است؛ اقلام، تحویل‌گیرنده و محل "
-                          "مصرف قابل تغییر نیست. با «چاپ» ثبت نهایی می‌شود.", objectName="Muted")
+            self.item_input.hide()  # nothing can be added: don't offer a search box that does nothing
+            note = QLabel("اقلام این حواله از درخواست تأییدشده آمده و قابل تغییر نیست (تحویل‌گیرنده و محل "
+                          "مصرف هم). با «چاپ» ثبت نهایی می‌شود.", objectName="LockedNote")
             note.setWordWrap(True)
             self._layout.insertWidget(1, note)
         if not ctx.actor.can(Perm.DOCUMENTS_POST):
@@ -350,8 +351,8 @@ class DocumentDialog(FormDialog):
         remove.setText("✕")
         remove.setToolTip("حذف ردیف")
         remove.clicked.connect(lambda: self._remove_line(line))
-        remove.setEnabled(not (self._read_only or self._linked))
-        self.table.setCellWidget(r, 6, remove)
+        if not (self._read_only or self._linked):  # a locked row has no «✕» at all
+            self.table.setCellWidget(r, 6, remove)
         self._update_totals()
 
     def _remove_line(self, line: _Line) -> None:

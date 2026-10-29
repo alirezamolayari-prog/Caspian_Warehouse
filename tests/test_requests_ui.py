@@ -5,6 +5,7 @@ connection tab, and printing an approved voucher (which posts it)."""
 from decimal import Decimal
 
 import pytest
+from PySide6.QtWidgets import QLabel, QToolButton
 from sqlalchemy import func, select
 
 from caspian.core.settings import Settings
@@ -58,10 +59,40 @@ async def test_list_shows_every_status(qtbot, themes, linked, admin):
     qtbot.addWidget(page)
     page.show()
     await page.refresh()
-    statuses = {page.table.item(r, 4).text() for r in range(page.table.rowCount())}
+    rows = range(page.table.rowCount())
+    statuses = {page.table.item(r, 5).text() for r in rows}
     assert statuses == {"در صف ارسال", "● تأیید شد", "● رد شد", "در انتظار تأیید مالک"}
-    notes = {page.table.item(r, 6).text() for r in range(page.table.rowCount())}
-    assert "دلیل رد: زیاد است" in notes and "آماده چاپ حواله" in notes
+    sending = {page.table.item(r, 6).text() for r in rows}
+    assert "دلیل رد: زیاد است" in sending and "آماده چاپ حواله" in sending
+    assert {page.table.item(r, 8).text() for r in rows} == {"فوری"}  # «توضیحات» = the user's note only
+    numbers = {page.table.item(r, 0).text() for r in rows}
+    assert "در صف" in numbers and "—" not in numbers
+    assert {page.table.item(r, 2).text() for r in rows} == {"انبار پاساژ", "مدیر سیستم"}  # «ثبت‌کننده»
+
+
+async def test_full_error_in_tooltip_and_details_and_my_requests_filter(qtbot, themes, linked, admin):
+    db, server, engine = linked["db"], linked["server"], linked["engine"]
+    request_id = await goods.create_request(db, admin, request_input(linked))
+    server.refuse_next = [(422, "")]
+    await engine.tick(admin)
+    ctx = _ctx(themes, linked, admin)
+    page = RequestsPage(ctx)
+    qtbot.addWidget(page)
+    page.show()
+    await page.refresh()
+    [row] = page._rows.values()
+    cell = page.table.item(0, 6)
+    assert cell.text().startswith("ارسال نشد:") and cell.toolTip() == row.last_error
+    dialog = RequestChatDialog(ctx, row, page)
+    qtbot.addWidget(dialog)
+    assert row.last_error in dialog.details.text()
+    assert dialog.heading.text() == "درخواست در صف ارسال — علی رضایی"
+    page.mine_only.setChecked(True)
+    assert await wait_until(lambda: page.table.rowCount() == 1)
+    await users.create_user(db, admin, "other", "دیگری", "Str0ngPass1", "manager")
+    other = (await auth.login(db, "other", "Str0ngPass1")).actor
+    assert not await goods.list_requests(db, other, mine=True)
+    assert [r.id for r in await goods.list_requests(db, admin, mine=True)] == [request_id]
 
 
 async def test_new_request_dialog_makes_one_request(qtbot, themes, linked, admin):
@@ -143,6 +174,11 @@ async def test_chat_opens_at_the_latest_message(qtbot, themes, linked, admin):
     dialog.send_button.click()
     assert await wait_until(lambda: "در صف ارسال" in dialog.transcript.toPlainText())
     assert (await goods.list_messages(db, admin, request_id))[-1].text == "ok"
+    assert "ساعت ۰" in dialog.transcript.toPlainText() or "ساعت ۱" in dialog.transcript.toPlainText() \
+        or "ساعت ۲" in dialog.transcript.toPlainText()  # Jalali date + HH:MM
+    await engine.tick(admin)
+    await dialog.reload()
+    assert await wait_until(lambda: "ارسال شد" in dialog.transcript.toPlainText())
 
 
 async def _approved_draft(linked, admin) -> int:
@@ -155,32 +191,92 @@ async def _approved_draft(linked, admin) -> int:
         return await s.scalar(select(Document.id).where(Document.server_request_id == 1))
 
 
-async def test_printing_an_approved_voucher_posts_it(qtbot, themes, linked, admin, monkeypatch):
+async def test_approved_slip_is_final_only_after_it_is_really_printed(qtbot, themes, linked, admin,
+                                                                       monkeypatch):
+    """3.1: closing the preview or the print dialog never posts; printing does; a reprint is a copy."""
     db, server, engine = linked["db"], linked["server"], linked["engine"]
     doc_id = await _approved_draft(linked, admin)
     ctx = _ctx(themes, linked, admin)
-    asked = []
+    previews, printed, choose_printer = [], [], []
 
     async def confirm(parent, text, *args, **kwargs):
-        asked.append(text)
-        return len(asked) > 1  # «انصراف» the first time, «ثبت نهایی و چاپ» the second
-
-    async def printed(parent, html_text, paper):
         return True
 
-    monkeypatch.setattr(messages, "confirm", confirm)
-    monkeypatch.setattr(document_print, "preview_and_print", printed)
-    assert not await document_print.print_document(None, ctx, doc_id)
-    assert (await documents.get_document(db, admin, doc_id)).status == DocStatus.DRAFT
-    assert "ثبت نهایی" in asked[0] and await stock(db, linked["bags"]) == 50
+    async def ask_print(printer, parent=None):
+        return choose_printer.pop(0)
 
+    async def exec_dialog(dialog):
+        previews.append(dialog)
+        return 0
+
+    monkeypatch.setattr(messages, "confirm", confirm)
+    monkeypatch.setattr(document_print, "ask_print", ask_print)
+    monkeypatch.setattr(document_print, "print_to", lambda printer, html_text: printed.append(html_text))
+    monkeypatch.setattr(document_print, "exec_dialog", exec_dialog)
+
+    assert not await document_print.preview_document(None, ctx, doc_id)  # preview, then «بستن»
+    [preview] = previews
+    assert isinstance(preview, document_print.DraftPreviewDialog) and preview.pages
+    assert (await documents.get_document(db, admin, doc_id)).status == DocStatus.DRAFT
+    assert await stock(db, linked["bags"]) == 50 and not printed
+
+    choose_printer.append(False)  # the print dialog is cancelled
+    assert not await document_print.print_document(None, ctx, doc_id)
+    assert (await documents.get_document(db, admin, doc_id)).status == DocStatus.DRAFT and not printed
+
+    choose_printer.append(True)  # a printer was chosen: posted, printed with its number
     assert await document_print.print_document(None, ctx, doc_id)
-    detail = await documents.get_document(db, admin, doc_id)
-    assert detail.status == DocStatus.POSTED and await stock(db, linked["bags"]) == 30
-    sheet = await documents.print_sheet(db, admin, doc_id)
-    assert sheet.print_count == 1  # the original; reprints are stamped as copies
+    assert (await documents.get_document(db, admin, doc_id)).status == DocStatus.POSTED
+    assert await stock(db, linked["bags"]) == 30
+    assert len(printed) == 1 and "پیش‌نویس" not in printed[0] and "المثنی" not in printed[0]
+    assert (await documents.print_sheet(db, admin, doc_id)).print_count == 1
     await engine.tick(admin)
     assert server.requests[1]["status"] == "issued"
+
+    async def preview_and_print(parent, html_text, paper):
+        printed.append(html_text)
+        return True
+
+    monkeypatch.setattr(document_print, "preview_and_print", preview_and_print)
+    assert await document_print.print_document(None, ctx, doc_id)  # a reprint
+    assert "المثنی" in printed[-1]
+
+
+async def test_pdf_of_an_approved_slip_cancelled_posts_nothing(qtbot, themes, linked, admin, monkeypatch):
+    db = linked["db"]
+    doc_id = await _approved_draft(linked, admin)
+
+    async def confirm(parent, text, *args, **kwargs):
+        return True
+
+    async def no_file(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(messages, "confirm", confirm)
+    monkeypatch.setattr(document_print, "ask_save_path", no_file)
+    assert not await document_print.pdf_document(None, _ctx(themes, linked, admin), doc_id)
+    assert (await documents.get_document(db, admin, doc_id)).status == DocStatus.DRAFT
+
+
+async def test_print_failure_after_posting_keeps_the_original(qtbot, themes, linked, admin, monkeypatch):
+    db = linked["db"]
+    doc_id = await _approved_draft(linked, admin)
+    errors = []
+
+    async def yes(*args, **kwargs):
+        return True
+
+    def broken(printer, html_text):
+        raise RuntimeError("printer jammed")
+
+    monkeypatch.setattr(messages, "confirm", yes)
+    monkeypatch.setattr(document_print, "ask_print", yes)
+    monkeypatch.setattr(document_print, "print_to", broken)
+    monkeypatch.setattr(document_print, "show_error", lambda parent, text: errors.append(text))
+    assert await document_print.print_document(None, _ctx(themes, linked, admin), doc_id)
+    assert errors == [document_print.PRINT_FAILED]
+    sheet = await documents.print_sheet(db, admin, doc_id)
+    assert sheet.status == DocStatus.POSTED and sheet.print_count == 0  # the next print is the original
 
 
 async def test_voucher_of_pending_request_is_not_printed(qtbot, themes, linked, admin, monkeypatch):
@@ -209,6 +305,11 @@ async def test_linked_voucher_editor_is_locked(qtbot, themes, linked, admin):
     assert not dialog.person.isEnabled() and not dialog.place.isEnabled()
     assert not dialog.item_input.isEnabled() and not dialog.lines[0].qty.isEnabled()
     assert dialog.description.isEnabled() and dialog.date.isEnabled()
+    dialog.show()
+    assert not dialog.item_input.isVisible()  # 3.2: no search box that does nothing
+    assert not [w for w in dialog.table.findChildren(QToolButton) if w.text() == "✕" and w.isVisible()]
+    note = dialog.findChild(QLabel, "LockedNote")
+    assert note is not None and "قابل تغییر نیست" in note.text()
 
 
 async def test_connection_tab_only_for_admin(qtbot, themes, linked, admin):
@@ -231,3 +332,53 @@ async def test_page_hidden_without_permission(qtbot, themes, linked, admin, role
     qtbot.addWidget(window)
     assert not window._nav_buttons["requests"].isVisibleTo(window)
     assert not window.server_status.isVisibleTo(window)
+
+
+async def test_item_suggestions_while_typing_and_over_stock_warning(qtbot, themes, linked, admin):
+    """3.5: suggestions (code — name — unit — stock) appear before Enter; more than the stock is
+    allowed but marked on that row."""
+    dialog = await _dialog(_ctx(themes, linked, admin), linked)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.item_input.setText("کیسه")
+    dialog._suggest()
+    assert await wait_until(lambda: dialog._suggest_model.rowCount() > 0)
+    text = dialog._suggest_model.stringList()[0]
+    assert "کیسه زباله" in text and "موجودی: ۵۰" in text
+    dialog._on_suggestion(dialog._suggest_model.index(0))
+    assert await wait_until(lambda: len(dialog.lines) == 1)
+    line = dialog.lines[0]
+    assert not dialog.over_stock_lines()
+    line.qty.set_value(Decimal(80))
+    assert dialog.over_stock_lines() == [line] and "بیشتر از موجودی" in line.name_cell.toolTip()
+    line.qty.set_value(Decimal(5))
+    assert not dialog.over_stock_lines()
+
+
+async def test_add_place_link_only_for_location_managers(qtbot, themes, linked, admin):
+    dialog = await _dialog(_ctx(themes, linked, admin), linked)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    assert dialog.place.add_button.isVisible()
+    await users.create_user(linked["db"], admin, "m2", "مدیر انبار", "Str0ngPass1", "manager")
+    manager = (await auth.login(linked["db"], "m2", "Str0ngPass1")).actor
+    other = await _dialog(_ctx(themes, linked, manager), linked)
+    qtbot.addWidget(other)
+    other.show()
+    assert not other.place.add_button.isVisible()
+
+
+async def test_connection_bar_is_coloured_with_a_setup_button(qtbot, themes, linked, admin):
+    page = RequestsPage(_ctx(themes, linked, admin))
+    qtbot.addWidget(page)
+    page.show()
+    asked = []
+    page.setup_requested.connect(lambda: asked.append(1))
+    page._show_server_state(TickResult(SyncState.ACCOUNT_PROBLEM, "رمز اشتباه است"))
+    assert page.notice.isVisible() and page.setup_button.isVisible()
+    page.setup_button.click()
+    assert asked == [1]
+    page._show_server_state(TickResult(SyncState.DISCONNECTED, "قطع"))
+    assert page.notice.isVisible() and not page.setup_button.isVisible()
+    page._show_server_state(TickResult(SyncState.CONNECTED))
+    assert not page.notice.isVisible()

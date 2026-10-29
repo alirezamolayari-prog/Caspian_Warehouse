@@ -259,6 +259,7 @@ class MainWindow(QMainWindow):
             elif spec.key == "requests":
                 page = RequestsPage(self.ctx, open_document=self.open_document)
                 page.refreshed.connect(lambda: spawn(self.update_requests_badge()))
+                page.setup_requested.connect(self._on_setup_requested)
             elif spec.key == "assistant":
                 page = AssistantPage(self.ctx, open_batch=self.open_import_batch,
                                      open_document=self.open_document, open_request=self.open_requests)
@@ -308,6 +309,13 @@ class MainWindow(QMainWindow):
             self.navigate("settings")
             settings = self._pages["settings"]
             settings.tabs.setCurrentIndex(settings.server_index)
+
+    def _on_setup_requested(self) -> None:
+        """«ورود / تنظیم الان»: the admin sets up the connection; anyone else signs in (again)."""
+        if self.ctx.actor.is_admin:
+            self._retry_server()
+        else:
+            self.on_switch_user()
 
     def _server_indicator_visible(self) -> bool:
         """Hidden while no server is set: working without Caspian Server is normal, not an alarm."""

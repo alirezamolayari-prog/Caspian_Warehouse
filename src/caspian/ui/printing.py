@@ -6,6 +6,7 @@ from collections.abc import Sequence
 
 from PySide6.QtCore import QMarginsF, QRectF, QSizeF, Qt, QUrl
 from PySide6.QtGui import (
+    QColor,
     QFont,
     QImage,
     QPageLayout,
@@ -111,9 +112,25 @@ def save_pdf(html_text: str, path: str,
     _lay_out(build_document(html_text), writer, size).print_(writer)
 
 
-def page_images(html_text: str, width: int, height: int, dpi: int = RASTER_DPI) -> list[QImage]:
+def paint_watermark(painter: QPainter, width: float, height: float, text: str) -> None:
+    """A big diagonal, half-transparent word across the page (e.g. «پیش‌نویس» on a draft)."""
+    painter.save()
+    font = QFont(FONT_FAMILY)
+    font.setBold(True)
+    font.setPixelSize(max(12, round(min(width, height) / 4.5)))
+    painter.setFont(font)
+    painter.setPen(QColor(200, 30, 30, 70))
+    painter.translate(width / 2, height / 2)
+    painter.rotate(-35)
+    box = QRectF(-width, -height / 4, 2 * width, height / 2)
+    painter.drawText(box, int(Qt.AlignmentFlag.AlignCenter), text)
+    painter.restore()
+
+
+def page_images(html_text: str, width: int, height: int, dpi: int = RASTER_DPI,
+                watermark: str = "") -> list[QImage]:
     """Every page of the document painted onto an image: the same text engine as the screen, which
-    keeps right-to-left lines intact."""
+    keeps right-to-left lines intact. `watermark`: a diagonal word over every page."""
     dots = round(dpi / 0.0254)
 
     def blank() -> QImage:
@@ -133,6 +150,9 @@ def page_images(html_text: str, width: int, height: int, dpi: int = RASTER_DPI) 
                                | QPainter.RenderHint.SmoothPixmapTransform)
         painter.translate(0, -number * height)
         doc.drawContents(painter, QRectF(0, number * height, width, height))
+        if watermark:
+            painter.translate(0, number * height)
+            paint_watermark(painter, width, height, watermark)
         painter.end()
         images.append(image)
     return images
