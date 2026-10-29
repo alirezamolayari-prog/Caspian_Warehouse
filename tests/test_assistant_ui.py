@@ -24,6 +24,7 @@ def no_keys(monkeypatch):
 def make_ctx(db, admin, themes, handler, online=True):
     ctx = AppContext(db, DbConfig(), Settings(), themes, admin)
     ctx.ai = Gateway(db, httpx.MockTransport(handler), online_check=lambda: online)
+    ctx.assistant_ai = ctx.ai  # the conversation logic, with a mocked provider instead of the server
     return ctx
 
 

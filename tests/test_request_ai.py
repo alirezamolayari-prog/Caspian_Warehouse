@@ -98,6 +98,7 @@ async def test_chat_card_sends_after_yes(qtbot, themes, linked, admin, monkeypat
         {"content": "پیش‌نویس درخواست آماده است؛ برای ارسال، دکمه را بزنید."})
     ctx = AppContext(db, DbConfig(), Settings(), themes, admin)
     ctx.ai = Gateway(db, httpx.MockTransport(handler), online_check=lambda: True)
+    ctx.assistant_ai = ctx.ai
     page = AssistantPage(ctx)
     qtbot.addWidget(page)
     page.resize(900, 700)

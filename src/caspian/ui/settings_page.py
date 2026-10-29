@@ -19,7 +19,7 @@ from qasync import asyncSlot
 from caspian.core.permissions import Perm
 from caspian.core.text import ltr, to_persian_digits
 from caspian.db.models import ProviderKind
-from caspian.services.ai import config
+from caspian.services.ai import config, server_gateway
 from caspian.services.ai import history as chat_history
 from caspian.services.ai.config import PRESETS, ProviderConfig
 from caspian.services.errors import ServiceError
@@ -191,12 +191,22 @@ class AITab(QWidget):
         super().__init__(parent)
         self._ctx = ctx
         self._rows: dict[int, ProviderConfig] = {}
+        self._loading = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 12, 0, 0)
         layout.setSpacing(10)
+        server = QLabel(
+            "«دستیار کاسپین» از طریق سرور کاسپین و با حساب هر کاربر کار می‌کند و روی این رایانه کلید یا "
+            "تنظیمی لازم ندارد. سرویس‌های زیر فقط پشتیبان اختیاری و پیشرفته‌اند.", objectName="Muted")
+        server.setWordWrap(True)
+        layout.addWidget(server)
+        self.local_fallback = QCheckBox("استفاده از سرویس محلی (پیشرفته): اگر سرور کاسپین پاسخ نداد، "
+                                        "از سرویس‌های زیر استفاده شود")
+        self.local_fallback.toggled.connect(self.on_local_fallback)
+        layout.addWidget(self.local_fallback)
         intro = QLabel(
             "سرویس‌ها به ترتیب اولویت امتحان می‌شوند؛ اگر یکی محدود (۴۲۹)، کند یا در دسترس نبود، "
-            "بی‌صدا سراغ بعدی می‌رود. بدون اینترنت فقط مدل‌های محلی (Ollama) استفاده می‌شوند و بقیه "
+            "بی‌صدا سراغ بعدی می‌رود. بدون اینترنت فقط مدل‌های محلی استفاده می‌شوند و بقیه "
             "برنامه کاملاً آفلاین کار می‌کند.", objectName="Muted")
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -260,7 +270,19 @@ class AITab(QWidget):
             show_error(self, exc.message)
 
     @asyncSlot()
+    async def on_local_fallback(self, enabled: bool) -> None:
+        if self._loading:
+            return
+        try:
+            await server_gateway.set_local_fallback(self._ctx.db, self._ctx.actor, enabled)
+        except ServiceError as exc:
+            show_error(self, exc.message)
+
+    @asyncSlot()
     async def refresh(self) -> None:
+        self._loading = True
+        self.local_fallback.setChecked(await server_gateway.local_fallback(self._ctx.db))
+        self._loading = False
         self.history_days.setValue(await chat_history.retention_days(self._ctx.db))
         rows = await config.list_providers(self._ctx.db)
         self._rows = {p.id: p for p in rows}
@@ -474,7 +496,7 @@ class SettingsPage(QWidget):
         self.backup = BackupTab(ctx)
         self.fiscal = FiscalTab(ctx)
         self.tabs.addTab(self.appearance, "ظاهر")
-        self.ai_index = self.tabs.addTab(self.ai, "هوش مصنوعی")
+        self.ai_index = self.tabs.addTab(self.ai, "هوش مصنوعی (پیشرفته)")
         self.messaging_index = self.tabs.addTab(self.messaging, "پیام‌رسان‌ها")
         self.tasks_index = self.tabs.addTab(self.tasks, "کارهای زمان‌بندی‌شده")
         self.backup_index = self.tabs.addTab(self.backup, "پشتیبان‌گیری")

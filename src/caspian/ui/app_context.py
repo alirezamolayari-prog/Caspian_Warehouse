@@ -9,6 +9,7 @@ from caspian.core.settings import Settings
 from caspian.db.database import Database, DbConfig
 from caspian.services.actor import Actor
 from caspian.services.ai.gateway import Gateway
+from caspian.services.ai.server_gateway import CaspianGateway
 from caspian.services.messaging import Messenger
 from caspian.ui.theme import ThemeManager
 
@@ -25,7 +26,9 @@ class AppContext(QObject):
         self.settings = settings
         self.themes = themes
         self.actor = actor
-        self.ai = Gateway(db)
+        self.ai = Gateway(db)  # local AI providers: settings tab, voice, optional fallback
+        # «دستیار کاسپین» through Caspian Server, with the signed-in person's account (phase 5).
+        self.assistant_ai = CaspianGateway(db, self.ai, lambda: self.actor)
         self.messenger = Messenger(db)
         self.server_link = None  # ui.server_status.ServerLink, set by the app (not in tests)
 

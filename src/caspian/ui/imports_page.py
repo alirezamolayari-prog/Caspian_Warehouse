@@ -278,7 +278,7 @@ class TextImportDialog(FormDialog):
         self.show_status("در حال پردازش متن… (حداکثر یک دقیقه؛ در صورت نبود پاسخ، بدون هوش مصنوعی "
                          "پردازش می‌شود)", is_error=False)
         self.batch_id, self.used_ai = await text_to_draft(
-            self._ctx.db, self._ctx.ai, self._ctx.actor, self.text.toPlainText(),
+            self._ctx.db, self._ctx.assistant_ai, self._ctx.actor, self.text.toPlainText(),
             DocType(self.target.doc_type.currentData()), self.target.warehouse.currentData())
 
 
