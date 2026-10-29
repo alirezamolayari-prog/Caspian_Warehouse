@@ -3,7 +3,7 @@
 import pytest
 from sqlalchemy import func, select
 
-from caspian.core.text import normalize_location
+from caspian.core.text import normalize_location, to_ascii_digits, to_persian_digits
 from caspian.db import location_seed
 from caspian.db.models import AuditLog, Floor, Location, LocationAlias, LocationType
 from caspian.services import locations
@@ -68,8 +68,10 @@ def test_normalisation_rules():
 @pytest.mark.parametrize("text", ["50", "۵۰", "1", "6", "46", "57", "83", "92", "پلاک 50"])
 async def test_phase1_plates_are_refused(db, text):
     index = await locations.load_index(db)
-    with pytest.raises(Phase1Plate, match="این پلاک مربوط به فاز ۱ است"):
+    with pytest.raises(Phase1Plate, match="مربوط به فاز ۱ است؛ این نرم‌افزار فقط برای فاز ۲ است") as exc:
         index.exact(text)
+    number = text.removeprefix("پلاک").strip()
+    assert exc.value.message.startswith("پلاک " + to_persian_digits(to_ascii_digits(number)) + " ")
     with pytest.raises(Phase1Plate):
         index.search(text)
 

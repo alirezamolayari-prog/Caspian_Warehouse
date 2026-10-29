@@ -6,13 +6,25 @@ floor box next to the field, and the document can't be saved until a floor is ch
 plates are refused with «این پلاک مربوط به فاز ۱ است».
 """
 
-from PySide6.QtCore import QStringListModel, Qt, Signal
-from PySide6.QtWidgets import QComboBox, QCompleter, QHBoxLayout, QLabel, QLineEdit, QVBoxLayout, QWidget
+from collections.abc import Awaitable, Callable
+
+from PySide6.QtCore import QEvent, QObject, QStringListModel, Qt, Signal
+from PySide6.QtWidgets import (
+    QComboBox,
+    QCompleter,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from caspian.db.database import Database
 from caspian.services import locations
 from caspian.services.errors import ValidationError
 from caspian.services.locations import FloorRow, LocationIndex, LocationRow, Phase1Plate
+from caspian.ui.tasks import spawn
 
 NOTHING_CHOSEN = "محل مصرف را انتخاب کنید (شماره پلاک، نام یا محل)."
 
@@ -23,6 +35,7 @@ class LocationPicker(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._index: LocationIndex | None = None
+        self._db: Database | None = None
         self._results: list[LocationRow] = []
         self.location: LocationRow | None = None
         layout = QVBoxLayout(self)
@@ -53,11 +66,50 @@ class LocationPicker(QWidget):
         self.summary = QLabel(objectName="StatusText")  # muted; red when property error=true
         self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
+        self.add_button = QPushButton("+ افزودن محل جدید")
+        self.add_button.setProperty("variant", "link")
+        self.add_button.hide()
+        self.add_button.clicked.connect(self._on_add)
+        layout.addWidget(self.add_button, 0, Qt.AlignmentFlag.AlignRight)
+        self._add: Callable[[str], Awaitable[int | None]] | None = None
+        self.edit.installEventFilter(self)
         self.setFocusProxy(self.edit)
+
+    def enable_add(self, create: Callable[[str], Awaitable[int | None]]) -> None:
+        """«+ افزودن محل جدید»: `create(typed)` makes the place and returns its id (None = cancelled)."""
+        self._add = create
+        self.add_button.show()
+
+    def _on_add(self) -> None:
+        if self._add is not None:
+            spawn(self._add_place())
+
+    async def _add_place(self) -> None:
+        location_id = await self._add(self.edit.text().strip())
+        if location_id is None:
+            return
+        self.set_index(await locations.load_index(self._db))
+        self.set_value(location_id)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (watched is self.edit and event.type() == QEvent.Type.FocusIn and self.location is None
+                and not self.edit.text().strip()):
+            self.show_common()
+        return super().eventFilter(watched, event)
+
+    def show_common(self) -> None:
+        """Before anything is typed: the places picked most often (toilets, parking, floors)."""
+        if self._index is None:
+            return
+        self._results = self._index.common()
+        self._model.setStringList([self._display(loc) for loc in self._results])
+        if self._results:
+            self.completer.complete()
 
     # ----- data -----
 
     async def load(self, db: Database) -> None:
+        self._db = db
         self.set_index(await locations.load_index(db))
 
     def set_index(self, index: LocationIndex) -> None:
@@ -110,7 +162,7 @@ class LocationPicker(QWidget):
         if self._index is None:
             return
         try:
-            self._results = self._index.search(text, limit=30) if text.strip() else []
+            self._results = self._index.search(text, limit=30) if text.strip() else self._index.common()
         except Phase1Plate as exc:
             self._results = []
             self._model.setStringList([])

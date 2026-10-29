@@ -22,7 +22,7 @@ from caspian.services import audit
 from caspian.services.actor import Actor
 from caspian.services.errors import NotFound, ValidationError
 
-PHASE1_MESSAGE = "این پلاک مربوط به فاز ۱ است"
+PHASE1_MESSAGE = "پلاک {number} مربوط به فاز ۱ است؛ این نرم‌افزار فقط برای فاز ۲ است"
 FLOOR_REQUIRED = "برای این محل، طبقه را انتخاب کنید."
 TYPE_NAMES = {
     LocationType.PLATE: "پلاک",
@@ -41,8 +41,8 @@ def fa_digits(text: str) -> str:
 
 
 class Phase1Plate(ValidationError):
-    def __init__(self) -> None:
-        super().__init__(PHASE1_MESSAGE)
+    def __init__(self, number: int | str = "") -> None:
+        super().__init__(PHASE1_MESSAGE.format(number=to_persian_digits(number)).replace("پلاک  ", "پلاک "))
 
 
 @dataclass(frozen=True)
@@ -192,7 +192,7 @@ class LocationIndex:
     def _phase1_check(self, key: str) -> None:
         number = key.removeprefix(_PLATE_WORD).split("/")[0]
         if number.isdigit() and int(number) in self.phase1 and self.exact_or_none(key) is None:
-            raise Phase1Plate()
+            raise Phase1Plate(int(number))
 
     def exact_or_none(self, key: str) -> LocationRow | None:
         hits = [loc for loc in self.locations if loc.is_active and key in loc.keys]
@@ -210,6 +210,23 @@ class LocationIndex:
                 return loc
         self._phase1_check(key)
         return self.exact_or_none(key)
+
+    def common(self, limit: int = 40) -> list[LocationRow]:
+        """What is picked most often, shown before anything is typed: the toilets of each floor, the
+        parking levels and roof, then the floors' common areas."""
+        def rank(loc: LocationRow) -> int | None:
+            if "سرویس" in loc.name_fa:
+                return 0
+            if loc.type == LocationType.FLOOR_PLACE:
+                return 1
+            if loc.type == LocationType.GENERAL:
+                return 2
+            return None
+
+        ranked = [(r, loc.floor.sort_order if loc.floor else 0, loc) for loc in self.locations
+                  if loc.is_active and (r := rank(loc)) is not None]
+        ranked.sort(key=lambda x: (x[0], x[1]))
+        return [loc for *_k, loc in ranked[:limit]]
 
     def search(self, text: str, limit: int = 30) -> list[LocationRow]:
         """Active locations matching code, name or alias: exact, then prefix, then contains."""

@@ -5,7 +5,6 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 
-from caspian.services import locations
 from caspian.services.errors import ValidationError
 from caspian.ui.location_picker import LocationPicker
 
@@ -62,7 +61,7 @@ async def test_arrow_and_enter_in_the_suggestions(picker, qtbot):
 
 async def test_phase1_plate_is_refused(picker):
     _type(picker, "50")
-    assert picker.summary.text() == locations.PHASE1_MESSAGE
+    assert picker.summary.text() == "پلاک ۵۰ مربوط به فاز ۱ است؛ این نرم‌افزار فقط برای فاز ۲ است"
     QTest.keyClick(picker.edit, Qt.Key.Key_Return)
     assert picker.location is None
     with pytest.raises(ValidationError):
@@ -97,3 +96,12 @@ async def test_set_value_and_typing_again_clears_the_choice(picker):
     _type(picker, "x")
     assert picker.location is None and picker.value() is None
 
+
+
+async def test_common_places_show_before_typing(picker):
+    """3.5: toilets of each floor, parking levels and floors' common areas are one click away."""
+    picker.show_common()
+    names = [loc.name_fa for loc in picker._results]
+    assert names and picker.completer.popup().isVisible()
+    first_kinds = [loc.type for loc in picker._results]
+    assert any("سرویس" in n for n in names) or any(t.value == "floor_place" for t in first_kinds)

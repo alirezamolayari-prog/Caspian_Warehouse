@@ -179,6 +179,15 @@ QPushButton[variant="link"]:hover {{ color: {t.primary_hover}; }}
 QPushButton[variant="link"]:disabled {{ color: {t.text_muted}; text-decoration: none; }}
 #AccountWindow QLineEdit {{ min-height: 34px; font-size: 11pt; }}
 #AccountWindow QPushButton[variant="primary"] {{ min-height: 36px; font-size: 11pt; }}
+QLineEdit:disabled, QComboBox:disabled, QPlainTextEdit:disabled, QAbstractSpinBox:disabled {{
+    background: {t.surface_alt}; color: {t.text_muted};
+}}
+#NoticeBar {{ background: {t.danger_soft}; border: 1px solid {t.warning}; border-radius: 10px; }}
+#NoticeBar QLabel {{ color: {t.text}; }}
+#LockedNote {{
+    background: {t.primary_soft}; border: 1px solid {t.primary}; border-radius: 8px;
+    padding: 8px 10px; color: {t.text};
+}}
 #RuleOk {{ color: {t.success}; }}
 #RuleBad {{ color: {t.text_muted}; }}
 #WarningBox {{ background: {t.danger_soft}; border: 1px solid {t.danger}; border-radius: 10px; }}

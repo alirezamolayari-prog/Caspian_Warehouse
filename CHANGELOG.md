@@ -49,6 +49,26 @@ All notable changes to Caspian Warehouse. Versions follow `pyproject.toml`; inst
 - Settings ← اتصال به سرور: the shared account is now «حساب مشترک (قدیمی)» and may stay empty; the
   server address is under «تنظیمات پیشرفته», prefilled with https://api.caspianmoblserver.ir.
 
+### Goods requests and the issue slip (حواله)
+- **A slip of an approved request is finalised only when it is really printed.** «پیش‌نمایش (بدون
+  ثبت)» shows it with a big diagonal «پیش‌نویس» and nothing changes; «چاپ» asks once, opens the
+  printer choice, and only then finalises and prints with the final number. Cancelling the printer
+  or the PDF file leaves it a draft. If the printer fails after finalising, the next print is still
+  the original; reprints carry «المثنی»; the approver's name never appears.
+- A locked slip looks locked: no search box, no «✕» on rows, greyed quantities and a clear note
+  «اقلام این حواله از درخواست تأییدشده آمده و قابل تغییر نیست».
+- Requests list: «در صف» instead of «—» until the server answers; new «ثبت‌کننده» (the server's
+  name, or the local author while queued) and «وضعیت ارسال» columns; «توضیحات» keeps only the
+  user's text; the full error is in the tooltip and the details window; «درخواست‌های من» filter.
+  The details title reads «درخواست در صف ارسال — …» / «درخواست شمارهٔ ۱۲ — …».
+- Chat: Jalali date with the time, «در صف ارسال» then «ارسال شد» on our messages, owners only as
+  «مالک», bubbles redrawn in the current theme.
+- New request form: common places (toilets of each floor, parking, floors) before typing,
+  «+ افزودن محل جدید» for location managers, «پلاک ۶ مربوط به فاز ۱ است؛ این نرم‌افزار فقط برای
+  فاز ۲ است»; live item suggestions while typing (code — name — unit — stock); a quantity above the
+  stock is marked on its row (not blocked: the owner decides); the connection notice is a coloured
+  bar with «ورود / تنظیم الان».
+
 ### Error messages
 - The unexpected-error window is Persian only: one sentence, the log path, and «کپی جزئیات برای
   پشتیبانی» (copies the technical details). No English, SQL or «Show Details…». The same error
