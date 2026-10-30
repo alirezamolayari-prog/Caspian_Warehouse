@@ -16,6 +16,7 @@ from qasync import asyncSlot
 from caspian.core import jalali
 from caspian.core.permissions import Perm
 from caspian.core.text import to_persian_digits
+from caspian.db.models import DocStatus
 from caspian.services import documents, health, items
 from caspian.services.server_link import goods
 from caspian.ui.health_dialog import show_health
@@ -45,6 +46,9 @@ PAGES: tuple[PageSpec, ...] = (
     PageSpec("users", "کاربران", "users", perm=Perm.USERS_MANAGE, bottom=True),
     PageSpec("settings", "تنظیمات", "settings", bottom=True),
 )
+
+
+_DOC_TONES = {DocStatus.DRAFT: "pending", DocStatus.POSTED: "ok", DocStatus.CANCELLED: "bad"}
 
 
 class DashboardPage(QWidget):
@@ -80,8 +84,12 @@ class DashboardPage(QWidget):
                                                        hint="با چاپ، حواله ثبت می‌شود")
             for key, option in (("requests_pending", "pending"), ("requests_approved", "approved")):
                 self.cards[key].clicked.connect(lambda o=option: self.open_page.emit("requests", o))
+        # Rows of equal cards (4, or 3 + 3 with the request cards): no short row beside a long one.
+        columns = 3 if len(self.cards) % 3 == 0 else 4
         for i, card in enumerate(self.cards.values()):
-            grid.addWidget(card, i // 4, i % 4)
+            grid.addWidget(card, i // columns, i % columns)
+        for column in range(columns):
+            grid.setColumnStretch(column, 1)
         targets = {"items": ("items", ""), "low_stock": ("items", "low_stock"),
                    "loans": ("documents", "loans")}
         for key, (page, option) in targets.items():
@@ -144,7 +152,9 @@ class DashboardPage(QWidget):
         rows = await documents.list_documents(self._ctx.db, self._ctx.actor, limit=10)
         self.recent.set_rows([(r.id, (r.number_text, r.type_name,
                                       jalali.format_date(r.doc_date), r.person or "—",
-                                      r.status_name)) for r in rows])
+                                      r.status_name)) for r in rows],
+                            badges={(i, 4): _DOC_TONES[r.status] for i, r in enumerate(rows)
+                                    if r.status in _DOC_TONES})
         self.recent.setVisible(bool(rows))
         self.empty.setVisible(not rows)
 

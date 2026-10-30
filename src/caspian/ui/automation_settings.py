@@ -281,7 +281,6 @@ class TasksTab(QWidget):
     async def refresh(self) -> None:
         rows = await scheduler.list_tasks(self._ctx.db, self._ctx.actor)
         self._rows = {r.id: r for r in rows}
-        theme = self._ctx.themes.current
 
         def details(r: TaskRow) -> str:
             if r.kind != TaskKind.REPORT:
@@ -304,7 +303,8 @@ class TasksTab(QWidget):
             [(r.id, (r.name, KIND_NAMES[r.kind], to_persian_digits(r.schedule_text), details(r),
                      STATUS_NAMES[r.status], r.machine or "—", next_run(r), last(r)))
              for r in rows],
-            highlight={(i, 4): theme.warning for i, r in enumerate(rows) if r.status == TaskStatus.PROPOSED},
+            badges={(i, 4): {TaskStatus.PROPOSED: "pending", TaskStatus.ACTIVE: "ok"}[r.status]
+                    for i, r in enumerate(rows) if r.status in (TaskStatus.PROPOSED, TaskStatus.ACTIVE)},
         )
         self._update_buttons()
 

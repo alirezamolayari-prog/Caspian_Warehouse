@@ -698,17 +698,17 @@ class RequestsPage(QWidget):
             return
         self._rows = {r.id: r for r in rows}
         theme = self._ctx.themes.current
-        colors = {RequestStatus.APPROVED: theme.success, RequestStatus.REJECTED: theme.danger,
-                  RequestStatus.QUEUED: theme.warning, RequestStatus.DRAFT: theme.warning}
+        tones = {RequestStatus.APPROVED: "ok", RequestStatus.ISSUED: "ok", RequestStatus.REJECTED: "bad",
+                 RequestStatus.PENDING: "pending", RequestStatus.QUEUED: "pending",
+                 RequestStatus.DRAFT: "pending"}
         self.table.set_rows(
             [(r.id, (r.number_text, r.requester, r.created_by, r.location, r.items_text,
                      ("● " if r.unseen else "") + r.status_name, r.send_status,
                      jalali.format_date(r.created_at.date()) if r.created_at else "", r.note))
              for r in rows],
             muted=[r.origin == "remote" for r in rows],
-            highlight={**{(i, STATUS_COL): colors[r.status]
-                          for i, r in enumerate(rows) if r.status in colors},
-                       **{(i, SEND_COL): theme.danger for i, r in enumerate(rows) if r.failed}})
+            highlight={(i, SEND_COL): theme.danger for i, r in enumerate(rows) if r.failed},
+            badges={(i, STATUS_COL): tones[r.status] for i, r in enumerate(rows) if r.status in tones})
         self.count_label.setText(f"{to_persian_digits(len(rows))} درخواست")
         self._update_buttons()
         self.refreshed.emit()

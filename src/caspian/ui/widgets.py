@@ -6,8 +6,8 @@ from decimal import Decimal
 from typing import Any
 
 import jdatetime
-from PySide6.QtCore import QModelIndex, QPoint, QRegularExpression, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QPainter, QRegularExpressionValidator
+from PySide6.QtCore import QModelIndex, QPoint, QRectF, QRegularExpression, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QPainter, QPen, QRegularExpressionValidator
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -20,6 +20,9 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSpinBox,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -29,6 +32,7 @@ from PySide6.QtWidgets import (
 from caspian.core import jalali
 from caspian.core.numbers import format_qty, parse_decimal
 from caspian.core.text import normalize, to_ascii_digits, to_persian_digits
+from caspian.ui.theme import current_theme
 
 
 class Card(QFrame):
@@ -142,6 +146,48 @@ class _SortItem(QTableWidgetItem):
         return sort_key(self.text()) < sort_key(other.text())
 
 
+BADGE_ROLE = Qt.ItemDataRole.UserRole + 60  # "ok" | "pending" | "bad": the cell is drawn as a status badge
+
+
+class BadgeDelegate(QStyledItemDelegate):
+    """Draws a status cell as a rounded badge with a coloured outline, in the same three colours
+    everywhere: green = approved / done, lemon = waiting, red = rejected / cancelled."""
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
+        kind = index.data(BADGE_ROLE)
+        if kind not in ("ok", "pending", "bad"):
+            super().paint(painter, option, index)
+            return
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        text = opt.text
+        opt.text = ""
+        widget = opt.widget
+        style = widget.style() if widget else None
+        if style is not None:  # row background, alternate colour and selection as usual
+            style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, widget)
+        fg, bg, line = current_theme().tone(kind)
+        font = QFont(opt.font)
+        font.setBold(True)
+        metrics = QFontMetrics(font)
+        rect = opt.rect.adjusted(6, 0, -6, 0)
+        width = min(metrics.horizontalAdvance(text) + 22, rect.width())
+        height = min(metrics.height() + 8, opt.rect.height() - 4)
+        rtl = opt.direction == Qt.LayoutDirection.RightToLeft
+        x = rect.right() - width + 1 if rtl else rect.left()
+        pill = QRectF(x, opt.rect.center().y() - height / 2 + 1, width, height)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor(line), 1.2))
+        painter.setBrush(QColor(bg))
+        painter.drawRoundedRect(pill.adjusted(0.5, 0.5, -0.5, -0.5), height / 2, height / 2)
+        painter.setFont(font)
+        painter.setPen(QColor(fg))
+        elided = metrics.elidedText(text, Qt.TextElideMode.ElideRight, int(width) - 14)
+        painter.drawText(pill, Qt.AlignmentFlag.AlignCenter, elided)
+        painter.restore()
+
+
 class DataTable(QTableWidget):
     """Read-only, row-selecting table. Rows carry an id retrievable via `selected_id()`."""
 
@@ -158,6 +204,8 @@ class DataTable(QTableWidget):
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.horizontalHeader().setHighlightSections(False)
+        self.verticalHeader().setDefaultSectionSize(40)  # calm, easy-to-click rows
+        self.setItemDelegate(BadgeDelegate(self))
         self._ids: list[object] = []
         self._empty_text = ""
         # Click a header to sort (#29); rows keep the service's order until then.
@@ -183,8 +231,10 @@ class DataTable(QTableWidget):
 
     def set_rows(self, rows: Sequence[tuple[object, Sequence[str]]],
                  muted: Sequence[bool] | None = None,
-                 highlight: dict[tuple[int, int], str] | None = None) -> None:
-        """rows: (id, cell texts). muted: rows to grey out. highlight: (row, col) -> color."""
+                 highlight: dict[tuple[int, int], str] | None = None,
+                 badges: dict[tuple[int, int], str] | None = None) -> None:
+        """rows: (id, cell texts). muted: rows to grey out. highlight: (row, col) -> color.
+        badges: (row, col) -> "ok" / "pending" / "bad", drawn as a coloured status badge."""
         keep = self.selected_id()
         self.setSortingEnabled(False)
         self.setRowCount(len(rows))
@@ -199,6 +249,8 @@ class DataTable(QTableWidget):
                     item.setForeground(muted_color)
                 if highlight and (r, c) in highlight:
                     item.setForeground(QColor(highlight[(r, c)]))
+                if badges and (r, c) in badges:
+                    item.setData(BADGE_ROLE, badges[(r, c)])
                 self.setItem(r, c, item)
         self.setSortingEnabled(True)  # re-applies the user's sort column, if any
         self.viewport().update()
