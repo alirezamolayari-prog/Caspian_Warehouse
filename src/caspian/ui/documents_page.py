@@ -682,16 +682,14 @@ class DocumentsList(QWidget):
         if seq != self._seq:
             return
         self._rows = {r.id: r for r in rows}
-        theme = self._ctx.themes.current
-        status_color = {DocStatus.DRAFT: theme.warning, DocStatus.CANCELLED: theme.danger}
+        tones = {DocStatus.DRAFT: "pending", DocStatus.POSTED: "ok", DocStatus.CANCELLED: "bad"}
         self.table.set_rows(
             [(r.id, (r.number_text, r.type_name, jalali.format_date(r.doc_date),
                      r.warehouse + (f" ← {r.dest_warehouse}" if r.dest_warehouse else ""),
                      r.person or "—", to_persian_digits(r.line_count), _status_text(r),
                      r.created_by or "—")) for r in rows],
             muted=[r.status == DocStatus.CANCELLED for r in rows],
-            highlight={(i, 6): status_color[r.status] for i, r in enumerate(rows)
-                       if r.status in status_color},
+            badges={(i, 6): tones[r.status] for i, r in enumerate(rows) if r.status in tones},
         )
         self.count_label.setText(f"{to_persian_digits(len(rows))} سند")
         self._update_buttons()

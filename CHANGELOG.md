@@ -7,6 +7,18 @@ All notable changes to Caspian Warehouse. Versions follow `pyproject.toml`; inst
 > Database changes run automatically on the first start of the new version and can't be undone
 > from inside the app.
 
+## Unreleased
+
+### New look (ui-ux-pro-max)
+- Calm slate-and-white design across the whole app: one primary colour, bigger text (10.5 pt),
+  rounder cards, inputs and buttons, taller table rows; no buttons were added or removed.
+- **Status badges, the same colours everywhere:** green = approved / posted / issued, lemon yellow =
+  waiting (owner, queue, draft, proposed task), red = rejected / cancelled — drawn as a badge with a
+  coloured outline in requests, documents, the dashboard and automation tasks.
+- **Dark mode is now the same slate theme, darker** (grey, not black; no gold buttons).
+- Dashboard cards line up in equal rows (4, or 3 + 3 with the request cards); the data-health
+  notice is a calm yellow bar instead of a red one.
+
 ## 1.2.0 (2026-10-29)
 
 ### Server sync
