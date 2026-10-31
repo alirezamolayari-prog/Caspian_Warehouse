@@ -219,3 +219,11 @@ async def test_a_deactivated_local_user_cannot_sign_in(db, admin, fake_server):
         await _sign_in(db, fake_server)
     assert exc.value.message == session.LOCAL_DISABLED
     assert auth  # the same lockout rules as local login are used offline
+
+
+async def test_a_clean_install_uses_the_real_caspian_server(db, admin):
+    """Release check: nothing to type on a new PC — sign-in, registration and the assistant go to
+    Caspian Server, never to a local or development address."""
+    assert await connection.get_url(db) is None  # nothing saved on a fresh database
+    assert await session.server_url(db) == "https://api.caspianmoblserver.ir"
+    assert not await session.server_mode(db)  # local logins keep working until a server is saved
