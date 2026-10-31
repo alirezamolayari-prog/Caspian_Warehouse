@@ -3,7 +3,7 @@
 Offline-first, AI-assisted inventory management desktop app for Windows. Persian RTL UI,
 Jalali calendar, MariaDB backend. Built for Caspian Furniture Market, sold/shared as a general
 product. Public repo: https://github.com/alirezamolayari-prog/Caspian_Warehouse (proprietary
-license — see LICENSE). Current release: **v1.1.0** (installer on GitHub Releases).
+license — see LICENSE). Current release: **v1.2.1** (installer on GitHub Releases).
 
 ## Features (all implemented)
 - Users/roles/permissions, login lockout, **admin PIN** for protected actions (delete/deactivate

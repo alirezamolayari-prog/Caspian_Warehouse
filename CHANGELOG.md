@@ -7,7 +7,12 @@ All notable changes to Caspian Warehouse. Versions follow `pyproject.toml`; inst
 > Database changes run automatically on the first start of the new version and can't be undone
 > from inside the app.
 
-## Unreleased
+## 1.2.1 (2026-10-31)
+
+First published release since 1.1.0. Version 1.2.0 was never published separately: everything listed
+under 1.2.0 below (server sync fixes, personal SMS accounts, issue slip finalised only after printing,
+Persian digits and dark mode, «دستیار کاسپین» through Caspian Server) ships in 1.2.1 together with the
+new look. A clean install connects to Caspian Server at https://api.caspianmoblserver.ir by default.
 
 ### New look (ui-ux-pro-max)
 - Calm slate-and-white design across the whole app: one primary colour, bigger text (10.5 pt),
@@ -19,7 +24,7 @@ All notable changes to Caspian Warehouse. Versions follow `pyproject.toml`; inst
 - Dashboard cards line up in equal rows (4, or 3 + 3 with the request cards); the data-health
   notice is a calm yellow bar instead of a red one.
 
-## 1.2.0 (2026-10-29)
+## 1.2.0 (not published — included in 1.2.1)
 
 ### Server sync
 - **A request is no longer stuck in «در صف ارسال» after the server refused the account.** 401/403
