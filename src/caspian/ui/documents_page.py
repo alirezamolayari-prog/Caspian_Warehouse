@@ -28,7 +28,7 @@ from caspian.core.numbers import format_qty
 from caspian.core.permissions import Perm
 from caspian.core.text import to_persian_digits
 from caspian.core.text import to_persian_digits as fa  # display-only digits (#19)
-from caspian.db.models import DocStatus, DocType
+from caspian.db.models import DocStatus, DocType, RequestStatus
 from caspian.services import documents as docs
 from caspian.services import items, locations, master
 from caspian.services.documents import (
@@ -43,6 +43,7 @@ from caspian.services.documents import (
 from caspian.services.errors import ServiceError, StocktakeFrozen, ValidationError
 from caspian.services.items import ItemRow
 from caspian.services.protected import ProtectedAction
+from caspian.services.server_link import goods
 from caspian.ui.app_context import AppContext, exec_dialog
 from caspian.ui.auth_dialogs import request_approval
 from caspian.ui.dialogs import Cancelled, FormDialog
@@ -136,10 +137,17 @@ class DocumentDialog(FormDialog):
     def __init__(self, ctx: AppContext, doc_type: DocType, detail: DocumentDetail | None,
                  warehouses, persons, units, loans: list[LoanRow], parent=None) -> None:
         number = detail.number if detail else None
-        self._read_only = detail is not None and detail.status != DocStatus.DRAFT
+        # Sent to the owners and not decided yet: nobody edits it (cancel the request first).
+        self._awaiting = detail is not None and detail.awaiting_owner
+        self._read_only = detail is not None and (detail.status != DocStatus.DRAFT or self._awaiting)
         # Made from an approved goods request: the approved lines, recipient and place stay as they are.
         self._linked = detail is not None and detail.input.server_request_id is not None
-        super().__init__(doc_title(doc_type, number), submit_text="ذخیره و ثبت نهایی",
+        # Issue / loan-out: the slip is a request; only an owner's approval posts it.
+        self._needs_owner = doc_type in docs.NEEDS_OWNER and not self._linked
+        rejected = detail is not None and detail.approval == RequestStatus.REJECTED
+        resend = "ارسال دوباره درخواست" if rejected else "ارسال درخواست"
+        submit = resend if self._needs_owner else "ذخیره و ثبت نهایی"
+        super().__init__(doc_title(doc_type, number), submit_text=submit,
                          cancel_text="بستن" if self._read_only else "انصراف", parent=parent)
         self.setMinimumWidth(900)  # the height follows the contents (a fixed 620 squeezed them)
         self._ctx, self._type, self._detail = ctx, doc_type, detail
@@ -149,13 +157,25 @@ class DocumentDialog(FormDialog):
         self.lines: list[_Line] = []
         self.saved_id: int | None = detail.id if detail else None
         self.posted = False
+        self.sent = False  # sent to the owners for approval
         data = detail.input if detail else DocumentInput(doc_type, dt.date.today(),
                                                          warehouses[0].id if warehouses else 0)
 
-        if detail is not None and detail.status != DocStatus.DRAFT:
-            self.subtitle_label = QLabel(f"وضعیت: {STATUS_NAMES[detail.status]} — فقط مشاهده",
-                                         objectName="Muted")
+        if self._read_only:
+            state = docs.state_name(detail.status, detail.approval)
+            hint = " — تا تصمیم مالک قابل تغییر نیست" if self._awaiting else " — فقط مشاهده"
+            self.subtitle_label = QLabel(f"وضعیت: {state}{hint}", objectName="Muted")
             self._layout.insertWidget(1, self.subtitle_label)
+        if rejected and detail.status == DocStatus.DRAFT:
+            reason = detail.rejection_reason or "دلیلی نوشته نشده است."
+            note = QLabel(f"مالک این درخواست را رد کرد. دلیل: {reason}\nسند را اصلاح و دوباره ارسال کنید.",
+                          objectName="RejectedNote")
+            note.setWordWrap(True)
+            self._layout.insertWidget(1, note)
+        elif self._awaiting and detail.approval_error:
+            note = QLabel(detail.approval_error, objectName="RejectedNote")
+            note.setWordWrap(True)
+            self._layout.insertWidget(1, note)
 
         header = QHBoxLayout()
         left, right = QFormLayout(), QFormLayout()
@@ -240,7 +260,7 @@ class DocumentDialog(FormDialog):
         # Prints the saved document (a draft is printed as «پیش‌نویس — فاقد اعتبار»).
         self.print_button = QPushButton("چاپ / پیش‌نمایش")
         self.print_button.setMenu(document_print_menu(self, ctx, lambda: self.saved_id))
-        self.print_button.setEnabled(self.saved_id is not None)
+        self.print_button.setEnabled(self._printable())
         self.buttons.insertWidget(1, self.print_button)
         self._inputs += [self.date, self.warehouse, self.dest, self.person, self.loan,
                          self.description, self.place, self.usage_note, self.item_input,
@@ -259,7 +279,7 @@ class DocumentDialog(FormDialog):
                           "مصرف هم). با «چاپ» ثبت نهایی می‌شود.", objectName="LockedNote")
             note.setWordWrap(True)
             self._layout.insertWidget(1, note)
-        if not ctx.actor.can(Perm.DOCUMENTS_POST):
+        if not ctx.actor.can(Perm.DOCUMENTS_EDIT if self._needs_owner else Perm.DOCUMENTS_POST):
             self.submit_button.hide()
         self._update_totals()
         self.item_input.setFocus()
@@ -478,8 +498,14 @@ class DocumentDialog(FormDialog):
             await docs.update_document(db, actor, self.saved_id, version, data)
         # Later saves in this dialog must compare against the new version.
         self._detail = await docs.get_document(db, actor, self.saved_id)
-        self.print_button.setEnabled(True)
+        self.print_button.setEnabled(self._printable())
         return self.saved_id
+
+    def _printable(self) -> bool:
+        """An issue / loan-out is printed only once the owner approved it (and it was posted)."""
+        if self.saved_id is None:
+            return False
+        return not self._needs_owner or (self._detail is not None and self._detail.status == DocStatus.POSTED)
 
     def _field_widgets(self, field: str) -> list:
         """The inputs a `documents.Problem.field` refers to (marked red until edited)."""
@@ -508,7 +534,8 @@ class DocumentDialog(FormDialog):
         if for_post and not await docs.check(self._ctx.db, self._ctx.actor, data, self.saved_id, False):
             # Only posting is blocked (recipient, place, stock…): keep the work as a draft (#15).
             await self._save()
-            messages.append("سند به‌صورت پیش‌نویس ذخیره شد؛ پس از اصلاح موارد بالا دوباره ثبت نهایی کنید.")
+            again = "ارسال" if self._needs_owner else "ثبت نهایی"
+            messages.append(f"سند به‌صورت پیش‌نویس ذخیره شد؛ پس از اصلاح موارد بالا دوباره {again} کنید.")
         self.show_problems(messages)
         self.mark_invalid(w for p in problems for w in self._field_widgets(p.field))
         return False
@@ -525,6 +552,9 @@ class DocumentDialog(FormDialog):
             raise Cancelled
         if not await self.confirm_date():
             raise Cancelled
+        if self._needs_owner:
+            await self._send_request()
+            return
         if not await confirm(self, "سند ذخیره و ثبت نهایی شود؟ موجودی تغییر می‌کند و سند پس از آن فقط با "
                              "ابطال قابل برگشت است.", "ثبت نهایی"):
             raise Cancelled
@@ -532,6 +562,18 @@ class DocumentDialog(FormDialog):
         await with_stocktake_override(self._ctx, self, lambda approval: docs.post_document(
             self._ctx.db, self._ctx.actor, doc_id, self._detail.version_id, approval))
         self.posted = True
+
+    async def _send_request(self) -> None:
+        """«ارسال درخواست»: saved, then queued for the owners. Stock moves only after approval."""
+        if not await confirm(self, "این سند برای تأیید مالک ارسال شود؟ تا تصمیم مالک قابل تغییر نیست "
+                             "و کالاهای آن رزرو می‌شود؛ پس از تأیید، خودکار ثبت نهایی و قابل چاپ می‌شود.",
+                             "ارسال درخواست"):
+            raise Cancelled
+        doc_id = await self._save()
+        await goods.submit_document(self._ctx.db, self._ctx.actor, doc_id)
+        if (link := getattr(self._ctx, "server_link", None)) is not None:
+            link.wake()
+        self.sent = True
 
     @asyncSlot()
     async def on_save_draft(self) -> None:
@@ -573,6 +615,10 @@ class CancelDialog(FormDialog):
 
 
 def _status_text(row: DocumentRow) -> str:
+    if row.status == DocStatus.DRAFT and row.approval == RequestStatus.REJECTED and row.rejection_reason:
+        return f"{row.status_name} — {row.rejection_reason}"
+    if row.awaiting_owner and row.approval_error:
+        return f"{row.status_name} — {row.approval_error}"
     if row.print_count:
         return f"{row.status_name} — چاپ‌شده ({to_persian_digits(row.print_count)})"
     return row.status_name
@@ -625,14 +671,16 @@ class DocumentsList(QWidget):
         self.post_button = QPushButton("ثبت نهایی")
         self.cancel_button = QPushButton("ابطال")
         self.delete_button = QPushButton("حذف پیش‌نویس")
+        self.withdraw_button = QPushButton("لغو درخواست")
+        self.withdraw_button.clicked.connect(self.on_withdraw)
         self.print_button = QPushButton("چاپ / پیش‌نمایش")
         self.print_button.setMenu(document_print_menu(self, ctx, self.table_selected_id, self.refresh))
         self.open_button.clicked.connect(self.on_open)
         self.post_button.clicked.connect(self.on_post)
         self.cancel_button.clicked.connect(self.on_cancel)
         self.delete_button.clicked.connect(self.on_delete)
-        for b in (self.print_button, self.open_button, self.post_button, self.cancel_button,
-                  self.delete_button):
+        for b in (self.print_button, self.open_button, self.post_button, self.withdraw_button,
+                  self.cancel_button, self.delete_button):
             actions.addWidget(b)
         layout.addLayout(actions)
 
@@ -660,12 +708,18 @@ class DocumentsList(QWidget):
         self.delete_button.setVisible(actor.can(Perm.DOCUMENTS_EDIT))
         self.post_button.setVisible(actor.can(Perm.DOCUMENTS_POST))
         self.cancel_button.setVisible(actor.can(Perm.DOCUMENTS_POST))
+        self.withdraw_button.setVisible(actor.can(Perm.DOCUMENTS_EDIT))
         self.open_button.setEnabled(row is not None)
-        self.open_button.setText("باز کردن" if row is None or row.status == DocStatus.DRAFT else "مشاهده")
-        self.print_button.setEnabled(row is not None)
+        editable = row is not None and row.status == DocStatus.DRAFT and not row.awaiting_owner
+        self.open_button.setText("باز کردن" if row is None or editable else "مشاهده")
         draft = row is not None and row.status == DocStatus.DRAFT
-        self.post_button.setEnabled(draft)
-        self.delete_button.setEnabled(draft)
+        # Issue / loan-out: printed only after the owner's approval, posted only by that approval.
+        owner_draft = draft and row.needs_owner
+        self.print_button.setEnabled(row is not None and not owner_draft)
+        self.post_button.setEnabled(draft and not row.needs_owner)
+        self.post_button.setToolTip(docs.OWNER_ONLY if owner_draft else "")
+        self.delete_button.setEnabled(editable)
+        self.withdraw_button.setEnabled(row is not None and row.awaiting_owner)
         self.cancel_button.setEnabled(row is not None and row.status == DocStatus.POSTED)
 
     @asyncSlot()
@@ -682,14 +736,13 @@ class DocumentsList(QWidget):
         if seq != self._seq:
             return
         self._rows = {r.id: r for r in rows}
-        tones = {DocStatus.DRAFT: "pending", DocStatus.POSTED: "ok", DocStatus.CANCELLED: "bad"}
         self.table.set_rows(
             [(r.id, (r.number_text, r.type_name, jalali.format_date(r.doc_date),
                      r.warehouse + (f" ← {r.dest_warehouse}" if r.dest_warehouse else ""),
                      r.person or "—", to_persian_digits(r.line_count), _status_text(r),
                      r.created_by or "—")) for r in rows],
             muted=[r.status == DocStatus.CANCELLED for r in rows],
-            badges={(i, 6): tones[r.status] for i, r in enumerate(rows) if r.status in tones},
+            badges={(i, 6): r.tone for i, r in enumerate(rows)},
         )
         self.count_label.setText(f"{to_persian_digits(len(rows))} سند")
         self._update_buttons()
@@ -750,6 +803,24 @@ class DocumentsList(QWidget):
             show_error(self, exc.message)
         else:
             show_info(self, f"«{title}» ثبت نهایی شد و موجودی به‌روز شد.")
+        await self.refresh()
+
+    @asyncSlot()
+    async def on_withdraw(self) -> None:
+        """«لغو درخواست»: the slip waits no more; it becomes an editable draft again."""
+        if (row := self.selected()) is None:
+            return
+        title = doc_title(row.doc_type, row.number)
+        if not await confirm(self, f"درخواست تأیید «{title}» لغو شود؟ سند به پیش‌نویس برمی‌گردد و "
+                             "اگر مالک بعداً آن را تأیید کند، اثری ندارد.", "لغو درخواست", danger=True):
+            return
+        try:
+            await goods.withdraw_request(self._ctx.db, self._ctx.actor, row.id)
+        except ServiceError as exc:
+            show_error(self, exc.message)
+        else:
+            if (link := getattr(self._ctx, "server_link", None)) is not None:
+                link.wake()
         await self.refresh()
 
     @asyncSlot()

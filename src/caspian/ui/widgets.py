@@ -146,16 +146,16 @@ class _SortItem(QTableWidgetItem):
         return sort_key(self.text()) < sort_key(other.text())
 
 
-BADGE_ROLE = Qt.ItemDataRole.UserRole + 60  # "ok" | "pending" | "bad": the cell is drawn as a status badge
+BADGE_ROLE = Qt.ItemDataRole.UserRole + 60  # "draft" | "ok" | "pending" | "bad": drawn as a status badge
 
 
 class BadgeDelegate(QStyledItemDelegate):
-    """Draws a status cell as a rounded badge with a coloured outline, in the same three colours
-    everywhere: green = approved / done, lemon = waiting, red = rejected / cancelled."""
+    """Draws a status cell as a rounded badge with a coloured outline, in the same colours
+    everywhere: grey = draft, green = approved / done, lemon = waiting, red = rejected / cancelled."""
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         kind = index.data(BADGE_ROLE)
-        if kind not in ("ok", "pending", "bad"):
+        if kind not in ("draft", "ok", "pending", "bad"):
             super().paint(painter, option, index)
             return
         opt = QStyleOptionViewItem(option)

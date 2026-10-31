@@ -48,7 +48,7 @@ DEFAULT_ROLES: dict[str, tuple[str, frozenset[Perm]]] = {
         frozenset({
             Perm.ITEMS_VIEW, Perm.ITEMS_EDIT, Perm.DOCUMENTS_VIEW, Perm.DOCUMENTS_EDIT,
             Perm.DOCUMENTS_POST, Perm.IMPORT_RUN, Perm.STOCKTAKE_RUN, Perm.REPORTS_VIEW,
-            Perm.AI_USE, Perm.STOCK_VIEW,
+            Perm.AI_USE, Perm.STOCK_VIEW, Perm.REQUESTS_MANAGE,
         }),
     ),
     "viewer": (
@@ -65,4 +65,9 @@ DEFAULT_ROLES: dict[str, tuple[str, frozenset[Perm]]] = {
 ADDED_PERMISSIONS: dict[Perm, tuple[str, ...]] = {
     Perm.STOCK_VIEW: ("manager", "storekeeper", "viewer"),
     Perm.REQUESTS_MANAGE: ("manager",),
+}
+# Later grants of an already-added permission to more roles, once each (key = marker in app_settings).
+ADDED_GRANTS: dict[str, tuple[Perm, tuple[str, ...]]] = {
+    # Storekeepers send issue slips for approval, so they see the request list too (1.3.0).
+    "requests.manage@storekeeper": (Perm.REQUESTS_MANAGE, ("storekeeper",)),
 }

@@ -4,6 +4,7 @@ from decimal import Decimal
 
 import pytest
 
+import approval_helpers as slips
 from caspian.db.models import DocStatus, DocType, PersonKind, StocktakeStatus
 from caspian.services import auth, items, master, protected, users
 from caspian.services import documents as docs
@@ -24,7 +25,7 @@ async def env(db, admin):
                                                      barcodes=[("111", None), ("111-C", u["کارتن"])]))
     b = await items.create_item(db, admin, ItemInput("1002", "فرز", u["عدد"], category_id=tools))
     c = await items.create_item(db, admin, ItemInput("2001", "میز", u["عدد"]))
-    await docs.create_and_post(db, admin, docs.DocumentInput(
+    await slips.create_and_post(db, admin, docs.DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh,
         [docs.LineInput(a, u["عدد"], Decimal(10)), docs.LineInput(b, u["عدد"], Decimal(5))]))
     person = await master.save_person(db, admin, "گیرنده", PersonKind.EMPLOYEE)
@@ -93,11 +94,11 @@ async def test_find_line_by_barcode_or_code(db, admin, env):
 async def test_movements_after_snapshot_are_flagged(db, admin, env):
     sid = await st.create_stocktake(db, admin, env["wh"])
     # Only possible with an admin override since the freeze is enforced (#7).
-    issue = await docs.create_document(db, admin, docs.DocumentInput(
-        DocType.ISSUE, dt.date.today(), env["wh"],
-        [docs.LineInput(env["b"], env["u"]["عدد"], Decimal(1))], person_id=env["person"]))
+    outgoing = await docs.create_document(db, admin, docs.DocumentInput(
+        DocType.ADJUSTMENT, dt.date.today(), env["wh"],
+        [docs.LineInput(env["b"], env["u"]["عدد"], Decimal(-1))]))
     approval = await protected.approve(db, admin, ProtectedAction.STOCKTAKE_OVERRIDE, "admin", ADMIN_PIN)
-    await docs.post_document(db, admin, issue, approval=approval)
+    await docs.post_document(db, admin, outgoing, approval=approval)
     await _counts(db, admin, sid, **{"1001": "10", "1002": "4", "2001": "0"})
     await st.submit_counts(db, admin, sid)
     report = await st.discrepancy_report(db, admin, sid)
@@ -135,15 +136,15 @@ async def test_posting_is_blocked_while_counting(db, admin, env):
     draft = await docs.create_document(db, admin, _issue(env))
     sid = await st.create_stocktake(db, admin, env["wh"])
     with pytest.raises(StocktakeFrozen, match="انبارگردانی"):
-        await docs.post_document(db, admin, draft)
+        await slips.post_document(db, admin, draft)
     await st.submit_counts(db, admin, sid, missing_as_zero=True)  # still frozen until approved
     with pytest.raises(StocktakeFrozen):
-        await docs.post_document(db, admin, draft)
+        await slips.post_document(db, admin, draft)
     assert (await docs.get_document(db, admin, draft)).status is DocStatus.DRAFT
 
 
 async def test_cancel_is_blocked_while_counting(db, admin, env):
-    posted = await docs.create_and_post(db, admin, _issue(env))
+    posted = await slips.create_and_post(db, admin, _issue(env))
     await st.create_stocktake(db, admin, env["wh"])
     with pytest.raises(StocktakeFrozen):
         await docs.cancel_document(db, admin, posted, "اشتباه")
@@ -153,19 +154,21 @@ async def test_freeze_only_covers_counted_items_and_warehouse(db, admin, env):
     wh2 = await master.save_warehouse(db, admin, "02", "انبار دوم")
     env["wh2"] = wh2
     await st.create_stocktake(db, admin, env["wh"], env["tools"])  # counts 1001 and 1002 only
-    await docs.create_and_post(db, admin, docs.DocumentInput(  # item outside the category: fine
+    await slips.create_and_post(db, admin, docs.DocumentInput(  # item outside the category: fine
         DocType.RECEIPT, dt.date.today(), env["wh"], [docs.LineInput(env["c"], env["u"]["عدد"], Decimal(1))]))
-    await docs.create_and_post(db, admin, docs.DocumentInput(  # other warehouse: fine
+    await slips.create_and_post(db, admin, docs.DocumentInput(  # other warehouse: fine
         DocType.RECEIPT, dt.date.today(), wh2, [docs.LineInput(env["a"], env["u"]["عدد"], Decimal(1))]))
     transfer_in = docs.DocumentInput(DocType.TRANSFER, dt.date.today(), wh2,
                                      [docs.LineInput(env["a"], env["u"]["عدد"], Decimal(1))],
                                      dest_warehouse_id=env["wh"])
     with pytest.raises(StocktakeFrozen):  # into the counted warehouse: blocked
-        await docs.create_and_post(db, admin, transfer_in)
+        await slips.create_and_post(db, admin, transfer_in)
 
 
 async def test_admin_override_with_pin_and_ai_never(db, admin, env):
-    draft = await docs.create_document(db, admin, _issue(env))
+    draft = await docs.create_document(db, admin, docs.DocumentInput(
+        DocType.ADJUSTMENT, dt.date.today(), env["wh"],
+        [docs.LineInput(env["b"], env["u"]["عدد"], Decimal(-1))]))
     await st.create_stocktake(db, admin, env["wh"])
     with pytest.raises(ApprovalError):
         await protected.approve(db, admin.as_ai(), ProtectedAction.STOCKTAKE_OVERRIDE, "admin", ADMIN_PIN)
@@ -187,7 +190,7 @@ async def test_approving_the_stocktake_itself_is_not_blocked(db, admin, env):
     await _counts(db, admin, sid, **{"1001": "9", "1002": "5", "2001": "0"})
     await st.submit_counts(db, admin, sid)
     assert await st.approve(db, admin, sid) is not None
-    await docs.create_and_post(db, admin, _issue(env))  # frozen no more
+    await slips.create_and_post(db, admin, _issue(env))  # frozen no more
 
 
 # ----- carton barcodes (#8) -----

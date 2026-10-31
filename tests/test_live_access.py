@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import pytest
 
+import approval_helpers as slips
 from caspian.db.models import DocStatus, DocType, PersonKind
 from caspian.services import auth, documents, items, master, protected, stocktake, users
 from caspian.services.errors import ServiceError
@@ -21,7 +22,7 @@ async def shop(db, admin):
     unit = (await master.list_units(db))[0].id
     wh = (await master.list_warehouses(db))[0].id
     lamp = await items.create_item(db, admin, ItemInput("2001", "لامپ", unit))
-    await documents.create_and_post(db, admin, documents.DocumentInput(
+    await slips.create_and_post(db, admin, documents.DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh, [documents.LineInput(lamp, unit, Decimal(50))]))
     person = await master.save_person(db, admin, "حسین کریمی", PersonKind.EMPLOYEE)
     await users.create_user(db, admin, "keeper1", "انباردار", PW, "storekeeper")
@@ -44,7 +45,7 @@ async def test_deactivated_session_is_blocked_at_once(db, admin, shop):
     draft = await documents.create_document(db, keeper, _issue(shop))
     await users.set_active(db, admin, keeper.user_id, False)  # from another PC
     actions = {
-        "post": lambda: documents.post_document(db, keeper, draft),
+        "post": lambda: slips.post_document(db, keeper, draft),
         "create": lambda: documents.create_document(db, keeper, _issue(shop)),
         "edit": lambda: documents.update_document(db, keeper, draft, 1, _issue(shop, 2)),
         "delete": lambda: documents.delete_draft(db, keeper, draft),
@@ -64,7 +65,7 @@ async def test_downgraded_role_loses_its_rights_at_once(db, admin, shop):
     approval = await protected.approve(db, admin, ProtectedAction.CHANGE_ROLE, "admin", ADMIN_PIN)
     await users.change_role(db, admin, keeper.user_id, "viewer", approval)
     with pytest.raises(ServiceError) as exc:
-        await documents.create_and_post(db, keeper, _issue(shop))
+        await slips.create_and_post(db, keeper, _issue(shop))
     assert "دوباره وارد شوید" in exc.value.message
     assert await _stock(db, shop["lamp"]) == 50
     viewer = (await auth.login(db, "keeper1", PW)).actor  # signing in again gives the new role
@@ -77,15 +78,15 @@ async def test_upgraded_role_keeps_working(db, admin, shop):
     approval = await protected.approve(db, admin, ProtectedAction.CHANGE_ROLE, "admin", ADMIN_PIN)
     await users.change_role(db, admin, keeper.user_id, "manager", approval)
     with pytest.raises(ServiceError):  # a different role is a different session: sign in again
-        await documents.create_and_post(db, keeper, _issue(shop))
+        await slips.create_and_post(db, keeper, _issue(shop))
     manager = (await auth.login(db, "keeper1", PW)).actor
-    await documents.create_and_post(db, manager, _issue(shop))
+    await slips.create_and_post(db, manager, _issue(shop))
     assert await _stock(db, shop["lamp"]) == 45
 
 
 async def test_active_user_and_the_assistant_still_work(db, admin, shop):
     keeper = shop["keeper"]
-    await documents.create_and_post(db, keeper, _issue(shop, 1))
+    await slips.create_and_post(db, keeper, _issue(shop, 1))
     draft = await documents.create_document(db, keeper.as_ai(), _issue(shop, 1))
     assert (await documents.get_document(db, admin, draft)).status == DocStatus.DRAFT
     await users.set_active(db, admin, keeper.user_id, False)

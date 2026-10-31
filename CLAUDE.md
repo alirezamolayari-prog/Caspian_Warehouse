@@ -3,7 +3,7 @@
 Offline-first, AI-assisted inventory management desktop app for Windows. Persian RTL UI,
 Jalali calendar, MariaDB backend. Built for Caspian Furniture Market, sold/shared as a general
 product. Public repo: https://github.com/alirezamolayari-prog/Caspian_Warehouse (proprietary
-license — see LICENSE). Current release: **v1.2.1** (installer on GitHub Releases).
+license — see LICENSE). Current release: **v1.3.0** (installer on GitHub Releases).
 
 ## Features (all implemented)
 - Users/roles/permissions, login lockout, **admin PIN** for protected actions (delete/deactivate
@@ -34,6 +34,14 @@ license — see LICENSE). Current release: **v1.2.1** (installer on GitHub Relea
   the approved lines (`linked.py` guards in `documents`), printing posts it (`document_print._ready_sheet`)
   and queues «issued». Owners are only «مالک». Password in keyring kind `server`. Tests use
   `tests/fake_caspian_server.py`; real-server check: `tests/test_server_e2e.py` (opt-in env).
+- **Owner approval for ISSUE / LOAN_OUT (1.3.0):** the slip IS the request (`goods_requests.document_id`).
+  `goods.submit_document` («ارسال درخواست», re-checks stock + reservations under balance locks) /
+  `goods.withdraw_request` (creator or admin; WITHDRAWN ignores later decisions). `post_document_in`
+  refuses these types (`documents.OWNER_ONLY`, every role); only `issue_link.post_approved_slips` (sync
+  tick) posts them via `documents.post_approved_in`. Pending = locked + reserved (`_reserved_in`); print
+  only when POSTED. States/colours: `documents.state_name/state_tone` (badge kind "draft" = grey). Old
+  standalone requests (`document_id` NULL) keep the print-to-post flow. Tests post slips through
+  `tests/approval_helpers.py`.
 - Documents: receipt, issue, transfer, adjustment, opening, loan out/return; draft → post
   (stock ledger + balances, row locks) → cancel (reversal rows; history never deleted).
 - **Draft-first imports** (Excel/CSV/Word, barcode scan, typed text) with row statuses

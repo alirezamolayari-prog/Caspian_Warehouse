@@ -10,7 +10,6 @@ from caspian.services import items, master
 from caspian.services.items import ItemInput
 from caspian.ui.app_context import AppContext
 from caspian.ui.documents_page import DocumentDialog
-from caspian.ui.requests_page import RequestDialog
 
 
 def _numbers(table) -> list[str]:
@@ -34,19 +33,6 @@ async def test_document_editor_rows_are_persian(qtbot, themes, db, admin):
     for item in (a, b):
         await dialog._ensure_units(item)
         dialog._add_line(item, "x", "x", unit, Decimal(1))
-    assert _numbers(dialog.table) == ["۱", "۲"]
-    dialog._remove_line(dialog.lines[0])
-    assert _numbers(dialog.table) == ["۱"]
-
-
-async def test_request_dialog_rows_are_persian(qtbot, themes, db, admin):
-    _unit, a, b = await _two_items(db, admin)
-    dialog = RequestDialog(AppContext(db, DbConfig(), Settings(), themes, admin), [],
-                           await master.list_warehouses(db),
-                           await master.list_units(db, include_inactive=True))
-    qtbot.addWidget(dialog)
-    await dialog.add_item(a, "2001", "لامپ")
-    await dialog.add_item(b, "2002", "سیم")
     assert _numbers(dialog.table) == ["۱", "۲"]
     dialog._remove_line(dialog.lines[0])
     assert _numbers(dialog.table) == ["۱"]

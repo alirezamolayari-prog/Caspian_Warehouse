@@ -35,6 +35,8 @@ from caspian.db.models import (
     DocType,
     Document,
     DocumentLine,
+    GoodsRequest,
+    GoodsRequestLine,
     ImportBatch,
     ImportLine,
     Item,
@@ -240,6 +242,8 @@ async def _close(db: Database, actor: Actor, year: int, options: CloseOptions, a
         if removed_docs:
             await s.execute(update(Document).where(Document.related_document_id.in_(removed_docs))
                             .values(related_document_id=None))
+            # Their goods requests go with them (the archive keeps both); lines/messages cascade.
+            await s.execute(delete(GoodsRequest).where(GoodsRequest.document_id.in_(removed_docs)))
             await s.execute(delete(DocumentLine).where(DocumentLine.document_id.in_(removed_docs)))
             await s.execute(delete(Document).where(Document.id.in_(removed_docs)))
 
@@ -280,6 +284,9 @@ async def _close(db: Database, actor: Actor, year: int, options: CloseOptions, a
         matched = select(ImportLine.match_item_id).where(ImportLine.match_item_id.is_not(None))
         used_items = set((await s.scalars(select(DocumentLine.item_id))).all()) | set(
             (await s.scalars(select(StockBalance.item_id))).all()) | set((await s.scalars(matched)).all())
+        # goods-request history keeps its items (their lines point at them)
+        used_items |= set((await s.scalars(select(GoodsRequestLine.item_id).where(
+            GoodsRequestLine.item_id.is_not(None)))).all())
         stale_cutoff = end - dt.timedelta(days=30 * STALE_MONTHS)
         removed_items = deactivated = 0
         for item in (await s.scalars(select(Item))).all():
@@ -300,7 +307,9 @@ async def _close(db: Database, actor: Actor, year: int, options: CloseOptions, a
         if not options.carry_persons:
             used_persons = set((await s.scalars(select(Document.person_id).where(
                 Document.person_id.is_not(None)))).all()) | set((await s.scalars(
-                    select(ImportBatch.person_id).where(ImportBatch.person_id.is_not(None)))).all())
+                    select(ImportBatch.person_id).where(ImportBatch.person_id.is_not(None)))).all()) | set(
+                (await s.scalars(select(GoodsRequest.person_id).where(
+                    GoodsRequest.person_id.is_not(None)))).all())
             for person in (await s.scalars(select(Person))).all():
                 if person.id not in used_persons:
                     await s.delete(person)

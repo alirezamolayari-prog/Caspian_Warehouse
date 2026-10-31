@@ -7,6 +7,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
+import approval_helpers as slips
 from caspian.db.models import DocStatus, Document, OutboxOp, RequestStatus, ServerOutbox
 from caspian.services import auth, documents, items, master, users
 from caspian.services.errors import ServiceError, ValidationError
@@ -43,7 +44,7 @@ async def _approve(shop, admin) -> int:
 async def test_approved_voucher_posts_and_queues_issued(cartons, admin):
     db = cartons["db"]
     doc_id = await _approve(cartons, admin)
-    await documents.post_document(db, admin, doc_id, via="goods_request")
+    await slips.post_document(db, admin, doc_id, via="goods_request")
     assert (await documents.get_document(db, admin, doc_id)).status == DocStatus.POSTED
     assert await stock(db, cartons["bags"]) == 30  # 2 cartons × 10
     async with db.session() as s:
@@ -61,7 +62,7 @@ async def test_changed_factor_blocks_the_linked_voucher(cartons, admin):
     data.units = [(cartons["carton"], Decimal(12))]
     await items.update_item(db, admin, cartons["bags"], detail.version_id, data)
     with pytest.raises(ValidationError) as exc:
-        await documents.post_document(db, admin, doc_id)
+        await slips.post_document(db, admin, doc_id)
     assert "ضریب" in exc.value.message and "۱۰" in exc.value.message and "۱۲" in exc.value.message
     assert await stock(db, cartons["bags"]) == 50
     assert (await goods.get_request(db, admin, cartons["request_id"])).row.status == RequestStatus.APPROVED
@@ -74,7 +75,7 @@ async def test_deactivated_user_cannot_post_the_linked_voucher(cartons, admin):
     manager = (await auth.login(db, "manager1", PW)).actor
     await users.set_active(db, admin, manager.user_id, False)
     with pytest.raises(ServiceError) as exc:
-        await documents.post_document(db, manager, doc_id)
+        await slips.post_document(db, manager, doc_id)
     assert "غیرفعال" in exc.value.message
     assert await stock(db, cartons["bags"]) == 50
     assert (await goods.get_request(db, admin, cartons["request_id"])).row.status == RequestStatus.APPROVED
@@ -90,7 +91,7 @@ async def test_unapproved_request_blocks_posting(cartons, admin):
         server_request_id=detail.row.server_id)
     doc_id = await documents.create_document(db, admin, data)
     with pytest.raises(ValidationError) as exc:
-        await documents.post_document(db, admin, doc_id)
+        await slips.post_document(db, admin, doc_id)
     assert exc.value.message == linked_rules.NOT_APPROVED
     assert await stock(db, cartons["bags"]) == 50
 

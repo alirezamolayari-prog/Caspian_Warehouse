@@ -5,6 +5,7 @@ from decimal import Decimal
 import pytest
 from openpyxl import load_workbook
 
+import approval_helpers as slips
 from caspian.db.models import DocType, PersonKind
 from caspian.services import auth, items, master, reports, users
 from caspian.services import documents as docs
@@ -31,7 +32,7 @@ async def env(db, admin):
     async def post(doc_type, date, wh_id, *lines, **kw):
         if doc_type == DocType.ISSUE:
             kw.setdefault("person_id", recipient)  # issues need a recipient to be posted
-        return await docs.create_and_post(db, admin, docs.DocumentInput(
+        return await slips.create_and_post(db, admin, docs.DocumentInput(
             doc_type, date, wh_id, [docs.LineInput(*ln) for ln in lines], **kw))
 
     # 2 boxes at 4,000,000 per box -> 1,000,000 per piece
@@ -104,9 +105,9 @@ async def test_loans_and_activity_reports(db, admin, env):
     pallet = await items.create_item(db, admin, ItemInput("3001", "پالت", env["u"]["عدد"],
                                                           is_returnable=True))
     person = await master.save_person(db, admin, "علی", PersonKind.EMPLOYEE)
-    await docs.create_and_post(db, admin, docs.DocumentInput(
+    await slips.create_and_post(db, admin, docs.DocumentInput(
         DocType.RECEIPT, TODAY, env["wh"], [docs.LineInput(pallet, env["u"]["عدد"], D(3))]))
-    await docs.create_and_post(db, admin, docs.DocumentInput(
+    await slips.create_and_post(db, admin, docs.DocumentInput(
         DocType.LOAN_OUT, TODAY, env["wh"], [docs.LineInput(pallet, env["u"]["عدد"], D(2))],
         person_id=person))
     loans = await reports.loans_report(db, admin)

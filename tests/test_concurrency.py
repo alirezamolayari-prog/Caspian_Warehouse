@@ -8,6 +8,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import func, select, text
 
+import approval_helpers as slips
 from caspian.db.base import Base
 from caspian.db.bootstrap import prepare
 from caspian.db.database import Database
@@ -24,13 +25,13 @@ async def _scenario(db: Database, admin) -> None:
     wh = (await master.list_warehouses(db))[0].id
     item = await items.create_item(db, admin, ItemInput("C-1", "میز همزمان", unit))
     person = await master.save_person(db, admin, "گیرنده", PersonKind.EMPLOYEE)
-    await documents.create_and_post(db, admin, documents.DocumentInput(
+    await slips.create_and_post(db, admin, documents.DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh, [documents.LineInput(item, unit, Decimal(10))]))
 
     plate = (await locations.load_index(db)).find("68").id  # issues need a consumption place
 
     def issue(qty):
-        return documents.create_and_post(db, admin, documents.DocumentInput(
+        return slips.create_and_post(db, admin, documents.DocumentInput(
             DocType.ISSUE, dt.date.today(), wh, [documents.LineInput(item, unit, Decimal(qty))],
             person_id=person, location_id=plate))
 
@@ -78,8 +79,8 @@ async def test_same_draft_posted_from_two_pcs(db, admin):
                                       [documents.LineInput(item, unit, Decimal(7))])
     doc = await documents.create_document(db, admin, receipt)
 
-    results = await asyncio.gather(documents.post_document(db, admin, doc),
-                                   documents.post_document(db, admin, doc), return_exceptions=True)
+    results = await asyncio.gather(slips.post_document(db, admin, doc),
+                                   slips.post_document(db, admin, doc), return_exceptions=True)
     errors = [r for r in results if isinstance(r, BaseException)]
     assert len(errors) == 1 and isinstance(errors[0], ServiceError), results
     async with db.session() as s:

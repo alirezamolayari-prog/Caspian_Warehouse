@@ -90,3 +90,45 @@ async def test_request_to_printed_voucher(qtbot, themes, request_shop, admin, tm
     assert on_server["status"] == "issued" and on_server["issue_number"] == number
     row = (await goods.get_request(db, admin, request_id)).row
     assert row.status == RequestStatus.ISSUED and not row.waiting
+
+
+async def test_slip_sent_rejected_resent_approved_posted(request_shop, admin):
+    """The slip is the request: send → owner rejects → fix and resend → owner approves → posted
+    automatically, printable, and the owners see «issued»."""
+    import datetime as dt
+    from decimal import Decimal
+
+    from caspian.db.models import DocType
+
+    db = request_shop["db"]
+    await connection.save_connection(db, admin, URL, WAREHOUSE[0], WAREHOUSE[1])
+    engine = SyncEngine(db)
+    doc_id = await documents.create_document(db, admin, documents.DocumentInput(
+        DocType.ISSUE, dt.date.today(), request_shop["warehouse"],
+        [documents.LineInput(request_shop["bags"], request_shop["unit"], Decimal(30))],
+        person_id=request_shop["person"], location_id=request_shop["location"].id))
+    await goods.submit_document(db, admin, doc_id)
+    assert (await engine.tick(admin)).state == SyncState.CONNECTED
+    async with db.session() as s:
+        server_id = (await s.scalar(select(GoodsRequest).where(GoodsRequest.document_id == doc_id))).server_id
+    assert (await _owner("GET", f"/requests/{server_id}"))["status"] == "pending"
+
+    await _owner("POST", f"/requests/{server_id}/reject", json={"reason": "زیاد است"})
+    await engine.tick(admin)
+    detail = await documents.get_document(db, admin, doc_id)
+    assert detail.approval == RequestStatus.REJECTED and detail.rejection_reason == "زیاد است"
+    detail.input.lines[0].qty = Decimal(4)
+    await documents.update_document(db, admin, doc_id, detail.version_id, detail.input)
+    await goods.submit_document(db, admin, doc_id)
+    await engine.tick(admin)
+    on_server = await _owner("GET", f"/requests/{server_id}")
+    assert on_server["status"] == "pending" and on_server["items"][0]["quantity"] == 4
+
+    await _owner("POST", f"/requests/{server_id}/approve")
+    await engine.tick(admin)
+    detail = await documents.get_document(db, admin, doc_id)
+    assert detail.status == DocStatus.POSTED and await stock(db, request_shop["bags"]) == 46
+    await engine.tick(admin)
+    assert (await _owner("GET", f"/requests/{server_id}"))["status"] == "issued"
+    sheet = await documents.print_sheet(db, admin, doc_id)
+    assert sheet.posted_by == admin.display_name

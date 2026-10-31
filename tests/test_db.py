@@ -9,6 +9,7 @@ from sqlalchemy import func, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
+import approval_helpers as slips
 from caspian.core.permissions import Perm
 from caspian.core.text import normalize
 from caspian.db.base import Base
@@ -166,7 +167,7 @@ async def test_mariadb_full_schema():
 
         admin = (await auth.login(db, "admin", "admin")).actor
         assert [r.name for r in await items.search_items(db, admin, "کابینت")] == ["كابينت"]
-        await docs.create_and_post(db, admin, docs.DocumentInput(
+        await slips.create_and_post(db, admin, docs.DocumentInput(
             DocType.RECEIPT, dt.date(2026, 9, 27), wh_id,
             [docs.LineInput(item.id, box_id, Decimal(2))]))
         from caspian.db.models import PersonKind
@@ -177,7 +178,7 @@ async def test_mariadb_full_schema():
             DocType.ISSUE, dt.date(2026, 9, 27), wh_id,
             [docs.LineInput(item.id, item.base_unit_id, Decimal(50))], person_id=person))
         with pytest.raises(ValidationError):
-            await docs.post_document(db, admin, issue)  # 50 > 48
+            await slips.post_document(db, admin, issue)  # 50 > 48
         assert (await docs.stock_by_warehouse(db, item.id))[0][1] == Decimal(48)
 
         from caspian.services import reports

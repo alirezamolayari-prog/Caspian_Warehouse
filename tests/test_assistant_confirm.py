@@ -11,9 +11,19 @@ from PySide6.QtCore import QPoint, Qt, QUrl
 from PySide6.QtTest import QTest
 from sqlalchemy import select
 
+import approval_helpers as slips
 from caspian.core.settings import Settings
 from caspian.db.database import DbConfig
-from caspian.db.models import AuditLog, DocStatus, DocType, Document, PersonKind, ProviderKind
+from caspian.db.models import (
+    AuditLog,
+    DocStatus,
+    DocType,
+    Document,
+    GoodsRequest,
+    PersonKind,
+    ProviderKind,
+    RequestStatus,
+)
 from caspian.services import auth, documents, items, locations, master, reports, users
 from caspian.services.ai import config
 from caspian.services.ai.gateway import Gateway
@@ -33,7 +43,7 @@ async def shop(locations_required, admin, monkeypatch):
     u = (await master.list_units(db))[0].id
     wh = (await master.list_warehouses(db))[0].id
     candle = await items.create_item(db, admin, ItemInput("1016", "شمع", u))
-    await documents.create_and_post(db, admin, documents.DocumentInput(
+    await slips.create_and_post(db, admin, documents.DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh, [documents.LineInput(candle, u, Decimal(5))]))
     await master.save_person(db, admin, "خانم صفا", PersonKind.EMPLOYEE)
     return {"db": db, "candle": candle}
@@ -62,7 +72,7 @@ def _issue_script(qty=1):
         {"content": "پیش‌نویس حواله آماده است؛ برای ثبت، دکمه تأیید را بزنید."})
 
 
-async def test_yes_posts_as_the_person(qtbot, themes, shop, admin):
+async def test_yes_sends_the_issue_for_approval(qtbot, themes, shop, admin):
     db = shop["db"]
     handler, _seen = _issue_script()
     page = _page(qtbot, themes, db, admin, handler)
@@ -74,17 +84,20 @@ async def test_yes_posts_as_the_person(qtbot, themes, shop, admin):
     assert "محل مصرف: پله اضطراری اسدنژاد · طبقه دوم" in text and "شرح مصرف: روشنایی پله" in text
     assert await _stock(db, shop["candle"]) == 5  # nothing changed before «بله»
 
+    assert card.yes.text() == "بله، بفرست"
     card.yes.click()
     assert await wait_until(lambda: not page.pending_cards())
-    assert await _stock(db, shop["candle"]) == 4
-    assert "ثبت نهایی شد" in page.transcript.toPlainText()
+    assert await _stock(db, shop["candle"]) == 5  # sent, not posted: the owner decides
+    assert "برای تأیید مالک ارسال شد" in page.transcript.toPlainText()
+    doc_id = card.summary.document_id
+    assert (await documents.get_document(db, admin, doc_id)).approval == RequestStatus.QUEUED
     async with db.session() as s:
-        posted = await s.scalar(select(AuditLog).where(AuditLog.action == "document.posted")
-                                .order_by(AuditLog.id.desc()))
-    assert posted.details["via"] == "assistant" and posted.user_id == admin.user_id
+        request_id = await s.scalar(select(GoodsRequest.id).where(GoodsRequest.document_id == doc_id))
+    await slips.approve(db, request_id)
+    await slips.post_approved(db, doc_id)
+    assert await _stock(db, shop["candle"]) == 4
     table = await reports.user_activity(db, admin)
     actions = [row[2] for row in table.rows]
-    assert any("به پیشنهاد دستیار" in a for a in actions)
     assert any("توسط دستیار از طرف" in a for a in actions)  # the draft the assistant created
 
 
@@ -181,7 +194,7 @@ async def test_link_through_the_main_window_shows_the_editor(qtbot, themes, shop
     index = await locations.load_index(db)
     floor = next(f.id for f in index.floors if f.code == "F2")
     person = (await master.search_persons(db, "صفا"))[0].id
-    doc_id = await documents.create_and_post(db, admin, documents.DocumentInput(
+    doc_id = await slips.create_and_post(db, admin, documents.DocumentInput(
         DocType.ISSUE, dt.date.today(), (await master.list_warehouses(db))[0].id,
         [documents.LineInput(shop["candle"], (await master.list_units(db))[0].id, Decimal(1))],
         person_id=person, location_id=index.find("PL-ASD").id, floor_id=floor))

@@ -7,6 +7,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import update
 
+import approval_helpers as slips
 from caspian.core.settings import Settings
 from caspian.db.database import DbConfig
 from caspian.db.models import BatchStatus, DocType, Document, ImportKind, ImportSource, StocktakeStatus
@@ -102,7 +103,7 @@ async def test_dashboard_warns_about_unhealthy_data(qtbot, ctx, monkeypatch):
     unit = (await master.list_units(ctx.db))[0].id
     item = await items.create_item(ctx.db, ctx.actor, ItemInput("1", "x", unit))
     wh = (await master.list_warehouses(ctx.db))[0].id
-    doc = await documents.create_and_post(ctx.db, ctx.actor, documents.DocumentInput(
+    doc = await slips.create_and_post(ctx.db, ctx.actor, documents.DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh, [documents.LineInput(item, unit, Decimal(1))]))
     page = pages.DashboardPage(ctx)
     qtbot.addWidget(page)

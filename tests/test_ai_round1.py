@@ -8,6 +8,7 @@ import httpx
 import pytest
 from sqlalchemy import select, update
 
+import approval_helpers as slips
 from caspian.db.models import (
     AuditLog,
     DocStatus,
@@ -40,7 +41,7 @@ async def shop(db, admin, monkeypatch):
     async with db.session() as s:
         await s.execute(update(Item).where(Item.id == jaro2).values(name="جارو", name_normalized="جارو"))
     drill = await items.create_item(db, admin, ItemInput("1001", "دریل بوش", u["عدد"]))
-    await documents.create_and_post(db, admin, documents.DocumentInput(
+    await slips.create_and_post(db, admin, documents.DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh,
         [documents.LineInput(i, u["عدد"], Decimal(10)) for i in (jaro1, jaro2, drill)]))
     person = await master.save_person(db, admin, "علی مولایاری", PersonKind.EMPLOYEE)
@@ -69,7 +70,7 @@ async def test_services_refuse_destructive_actions_for_the_ai(db, admin, shop, t
     ai = admin.as_ai()
     draft = await documents.create_document(db, ai, documents.DocumentInput(
         DocType.RECEIPT, dt.date.today(), shop["wh"], [_line(shop)]))
-    posted = await documents.create_and_post(db, admin, documents.DocumentInput(
+    posted = await slips.create_and_post(db, admin, documents.DocumentInput(
         DocType.RECEIPT, dt.date.today(), shop["wh"], [_line(shop)]))
     batch = await imports.create_batch(db, ai, ImportKind.ITEMS, ImportSource.TEXT, [RawRow(name="x")])
     sid = await stocktake.create_stocktake(db, admin, shop["wh"])
@@ -91,7 +92,7 @@ async def test_services_refuse_destructive_actions_for_the_ai(db, admin, shop, t
         stocktake.cancel(db, ai, sid),
         stocktake.approve(db, ai, sid),
         backup.restore_backup(db, ai, None, tmp_path / "x.bak", None, None, tmp_path),
-        documents.post_document(db, ai, draft),  # stock changes need a person (QA Part A #1)
+        slips.post_document(db, ai, draft),  # stock changes need a person (QA Part A #1)
     ]
     for attempt in attempts:
         with pytest.raises(PermissionDenied, match="دستیار کاسپین"):
@@ -118,8 +119,8 @@ async def test_issue_for_a_named_person_is_prepared_as_a_draft(db, admin, shop):
     assert detail.status is DocStatus.DRAFT and detail.input.person_id == shop["person"]
     assert await _stock(db, shop["drill"]) == before  # nothing changed yet
 
-    # «بله، ثبت کن» on the card: the person posts it, recorded as on the assistant's suggestion.
-    await documents.post_document(db, admin, result["document_id"], via="assistant")
+    # «بله، بفرست» on the card: the person sends it; stock leaves only with the owner's approval.
+    await slips.post_document(db, admin, result["document_id"])
     assert await _stock(db, shop["drill"]) == before - 1
     async with db.session() as s:
         created = await s.scalar(select(AuditLog).where(AuditLog.action == "document.created")
@@ -127,7 +128,7 @@ async def test_issue_for_a_named_person_is_prepared_as_a_draft(db, admin, shop):
         posted = await s.scalar(select(AuditLog).where(AuditLog.action == "document.posted")
                                 .order_by(AuditLog.id.desc()))
     assert created.details["via_ai"] and created.details["on_behalf_of"] == admin.display_name
-    assert posted.details["via"] == "assistant" and posted.user_id == admin.user_id
+    assert posted.details["via"] == "owner_approval" and posted.user_id == admin.user_id
 
 
 async def test_unknown_or_ambiguous_person_is_asked(db, admin, shop):
@@ -154,8 +155,8 @@ async def test_the_assistant_can_never_post(db, admin, shop):
     assert result["status"] == "DRAFT" and "posted" not in result
     assert "error" in await _tool(ctx, "post_document", document=str(result["document_id"]))
     with pytest.raises(PermissionDenied, match="دستیار کاسپین"):  # enforced in the service
-        await documents.post_document(db, admin.as_ai(), result["document_id"])
-    await documents.post_document(db, admin, result["document_id"])  # people still can
+        await slips.post_document(db, admin.as_ai(), result["document_id"])
+    await slips.post_document(db, admin, result["document_id"])  # people still can
 
 
 async def test_post_errors_keep_the_draft(db, admin, shop):
@@ -163,7 +164,7 @@ async def test_post_errors_keep_the_draft(db, admin, shop):
     result = await _tool(ctx, "create_document", doc_type="ISSUE", person="علی مولایاری",
                          lines=[{"code": "1001", "qty": 99}])
     with pytest.raises(ValidationError, match="کافی نیست"):  # the person's «بله» fails
-        await documents.post_document(db, admin, result["document_id"], via="assistant")
+        await slips.post_document(db, admin, result["document_id"], via="assistant")
     assert (await documents.get_document(db, admin, result["document_id"])).status is DocStatus.DRAFT
 
 

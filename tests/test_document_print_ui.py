@@ -3,6 +3,7 @@ from decimal import Decimal
 
 import pytest
 
+import approval_helpers as slips
 from caspian.core.settings import Settings
 from caspian.db.database import DbConfig
 from caspian.db.models import DocType, PersonKind
@@ -24,11 +25,11 @@ async def env(themes, db, admin):
     wh = (await master.list_warehouses(db))[0].id
     drill = await items.create_item(db, admin, ItemInput("1001", "دریل بوش", u["عدد"]))
     person = await master.save_person(db, admin, "علی رضایی", PersonKind.SUPPLIER)
-    receipt = await docs.create_and_post(db, admin, DocumentInput(
+    receipt = await slips.create_and_post(db, admin, DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh, [LineInput(drill, u["عدد"], Decimal(5), Decimal(2000), "نو")],
         person_id=person))
     draft = await docs.create_document(db, admin, DocumentInput(
-        DocType.ISSUE, dt.date.today(), wh, [LineInput(drill, u["عدد"], Decimal(1))]))
+        DocType.ADJUSTMENT, dt.date.today(), wh, [LineInput(drill, u["عدد"], Decimal(-1))]))
     ctx = AppContext(db, DbConfig(), Settings(), themes, admin)
     return {"ctx": ctx, "receipt": receipt, "draft": draft}
 

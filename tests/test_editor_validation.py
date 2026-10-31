@@ -5,6 +5,7 @@ from decimal import Decimal
 
 import pytest
 
+import approval_helpers as slips
 from caspian.core.settings import Settings
 from caspian.db.database import DbConfig
 from caspian.db.models import DocType, PersonKind
@@ -93,7 +94,7 @@ async def test_valid_issue_asks_once_then_posts(qtbot, env, asked):
     import datetime as dt
 
     wh = (await master.list_warehouses(db))[0].id
-    await docs.create_and_post(db, actor, DocumentInput(DocType.RECEIPT, dt.date.today(), wh, [
+    await slips.create_and_post(db, actor, DocumentInput(DocType.RECEIPT, dt.date.today(), wh, [
         docs.LineInput(env["lamp"], env["u"]["عدد"], Decimal(5))]))
     dlg = await _dialog(qtbot, env)
     dlg.item_input.setText("3001")
@@ -102,7 +103,7 @@ async def test_valid_issue_asks_once_then_posts(qtbot, env, asked):
     dlg.place.set_value((await locations.load_index(db)).find("68").id)
     dlg.submit_button.click()
     await settle(dlg)
-    assert len(asked) == 1 and dlg.posted and not dlg.status.isVisible()
+    assert len(asked) == 1 and dlg.sent and not dlg.status.isVisible()  # sent to the owners
 
 
 

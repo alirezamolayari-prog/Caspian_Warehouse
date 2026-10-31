@@ -394,9 +394,9 @@ class MainWindow(QMainWindow):
         elif option == "loans":
             documents = self._pages["documents"]
             documents.tabs.setCurrentWidget(documents.loans)
-        elif option in ("pending", "approved"):
+        elif option in ("pending", "rejected"):
             requests = self._pages["requests"]
-            status = RequestStatus.PENDING if option == "pending" else RequestStatus.APPROVED
+            status = RequestStatus.PENDING if option == "pending" else RequestStatus.REJECTED
             requests.status_filter.setCurrentIndex(requests.status_filter.findData(status))
         elif option == "drafts":
             documents = self._pages["documents"]

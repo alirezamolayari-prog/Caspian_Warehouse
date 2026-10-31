@@ -3,6 +3,7 @@ from decimal import Decimal
 
 import pytest
 
+import approval_helpers as slips
 from caspian.core.settings import Settings
 from caspian.db.database import DbConfig
 from caspian.db.models import DocType, StocktakeStatus
@@ -39,7 +40,7 @@ async def env(themes, db, admin):
                                                      units=[(u["کارتن"], Decimal(12))],
                                                      barcodes=[("111", None), ("111-C", u["کارتن"])]))
     await items.create_item(db, admin, ItemInput("1002", "فرز", u["عدد"]))
-    await docs.create_and_post(db, admin, docs.DocumentInput(
+    await slips.create_and_post(db, admin, docs.DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh, [docs.LineInput(a, u["عدد"], Decimal(7))]))
     await users.create_user(db, admin, "shomar", "", "Count#2026", "counter")
     counter = (await auth.login(db, "shomar", "Count#2026")).actor
