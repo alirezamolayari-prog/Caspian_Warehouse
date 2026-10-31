@@ -44,5 +44,6 @@ async def exec_dialog(dialog: QDialog) -> int:
     # A fixed minimum size must never squeeze the contents (bug list round 1 #1): open at least as
     # large as the layout needs.
     dialog.resize(dialog.size().expandedTo(dialog.minimumSizeHint()))
-    dialog.open()
+    # The base open(): PySide6's QPrintDialog only exposes open(receiver, member) (print crashed).
+    QDialog.open(dialog)
     return await future

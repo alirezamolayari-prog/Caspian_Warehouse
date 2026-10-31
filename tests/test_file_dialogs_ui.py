@@ -51,3 +51,32 @@ async def test_cancelled_dialog_returns_none(qtbot):
     assert await wait_until(lambda: _open_file_dialog() is not None)
     _open_file_dialog().reject()
     assert await task is None
+
+
+async def test_print_dialog_opens_through_exec_dialog(qtbot, monkeypatch):
+    """PySide6's QPrintDialog hides the zero-argument open() (print crashed with «open expected 2
+    arguments, got 0»): exec_dialog must use QDialog's own open(). The native Windows dialog itself
+    is not shown here."""
+    from PySide6.QtPrintSupport import QPrintDialog, QPrinter
+    from PySide6.QtWidgets import QDialog
+
+    from caspian.ui.app_context import exec_dialog
+
+    opened = []
+    monkeypatch.setattr(QDialog, "open", lambda self: opened.append(self))
+    printer = QPrinter()
+    dialog = QPrintDialog(printer)
+    qtbot.addWidget(dialog)
+    task = asyncio.ensure_future(exec_dialog(dialog))
+    await asyncio.sleep(0)
+    assert opened == [dialog] and not task.done()
+    dialog.finished.emit(QDialog.DialogCode.Accepted)
+    assert await asyncio.wait_for(task, 5) == QDialog.DialogCode.Accepted
+    monkeypatch.undo()
+
+    plain = QDialog()
+    qtbot.addWidget(plain)
+    task = asyncio.ensure_future(exec_dialog(plain))
+    assert await wait_until(plain.isVisible)
+    plain.accept()
+    assert await task == QDialog.DialogCode.Accepted
