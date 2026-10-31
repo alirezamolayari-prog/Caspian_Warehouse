@@ -33,7 +33,7 @@ def _key(lines) -> list[tuple]:
 
 
 def check_postable(req: GoodsRequest | None, doc: Document) -> GoodsRequest:
-    if req is None:
+    if req is None or req.document_id is not None:  # a slip sent as a request is posted only by the sync
         raise ValidationError(MISSING)
     if req.status != RequestStatus.APPROVED:
         raise ValidationError(NOT_APPROVED)

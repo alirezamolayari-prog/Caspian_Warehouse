@@ -3,6 +3,7 @@ from decimal import Decimal
 
 import pytest
 
+import approval_helpers as slips
 from caspian.core.settings import Settings
 from caspian.db.database import DbConfig
 from caspian.db.models import DocStatus, DocType, PersonKind
@@ -105,7 +106,7 @@ async def test_insufficient_stock_keeps_draft(qtbot, env):
 async def test_posted_document_is_read_only(qtbot, env):
     db, actor = env["ctx"].db, env["ctx"].actor
     wh = (await master.list_warehouses(db))[0].id
-    doc_id = await docs.create_and_post(db, actor, DocumentInput(
+    doc_id = await slips.create_and_post(db, actor, DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh, [LineInput(env["drill"], env["u"]["عدد"],
                                                          Decimal(3))]))
     dlg = await make_dialog(env, DocType.RECEIPT, await docs.get_document(db, actor, doc_id))
@@ -118,10 +119,10 @@ async def test_posted_document_is_read_only(qtbot, env):
 async def test_loan_return_prefills_outstanding(qtbot, env):
     db, actor = env["ctx"].db, env["ctx"].actor
     wh = (await master.list_warehouses(db))[0].id
-    await docs.create_and_post(db, actor, DocumentInput(
+    await slips.create_and_post(db, actor, DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh, [LineInput(env["pallet"], env["u"]["عدد"],
                                                          Decimal(10))]))
-    loan = await docs.create_and_post(db, actor, DocumentInput(
+    loan = await slips.create_and_post(db, actor, DocumentInput(
         DocType.LOAN_OUT, dt.date.today(), wh,
         [LineInput(env["pallet"], env["u"]["عدد"], Decimal(7))], person_id=env["person"]))
     dlg = await make_dialog(env, DocType.LOAN_RETURN)
@@ -135,7 +136,7 @@ async def test_loan_return_prefills_outstanding(qtbot, env):
 async def test_documents_page_and_cancel(qtbot, env):
     db, actor = env["ctx"].db, env["ctx"].actor
     wh = (await master.list_warehouses(db))[0].id
-    doc_id = await docs.create_and_post(db, actor, DocumentInput(
+    doc_id = await slips.create_and_post(db, actor, DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh, [LineInput(env["drill"], env["u"]["عدد"],
                                                          Decimal(3))]))
     page = DocumentsPage(env["ctx"])
@@ -269,7 +270,7 @@ async def test_cancel_reason_has_focus(qtbot, env):
     """Typing went nowhere the first time: the reason field must have the focus (#34)."""
     ctx = env["ctx"]
     wh = (await master.list_warehouses(ctx.db))[0].id
-    posted = await docs.create_and_post(ctx.db, ctx.actor, DocumentInput(
+    posted = await slips.create_and_post(ctx.db, ctx.actor, DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh, [LineInput(env["drill"], env["u"]["عدد"], Decimal(1))]))
     [row] = [r for r in await docs.list_documents(ctx.db, ctx.actor) if r.id == posted]
     dlg = CancelDialog(ctx, row)

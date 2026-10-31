@@ -17,12 +17,14 @@ import pytest
 import time_machine
 from sqlalchemy import func, select
 
+import approval_helpers as slips
 from caspian.db.models import DocStatus, DocType, Document, PersonKind, StockBalance, StockLedger
 from caspian.services import backup, documents, fiscal, health, items, master, protected
 from caspian.services import stocktake as st
 from caspian.services.errors import ValidationError
 from caspian.services.fiscal import CloseOptions
 from caspian.services.items import ItemInput
+from caspian.services.server_link import goods
 
 pytestmark = [
     pytest.mark.slow,
@@ -67,7 +69,7 @@ class Sim:
 
     async def post(self, doc_type, wh, lines, **kw):
         try:
-            doc = await documents.create_and_post(self.db, self.admin, documents.DocumentInput(
+            doc = await slips.create_and_post(self.db, self.admin, documents.DocumentInput(
                 doc_type, dt.date.today(), wh, [documents.LineInput(i, self.unit, D(q)) for i, q in lines],
                 **kw))
         except ValidationError:
@@ -79,6 +81,8 @@ class Sim:
     async def end_of_day(self):
         """Refused documents stay as drafts (work is never lost); the user deletes them."""
         for row in await documents.list_documents(self.db, self.admin, status=DocStatus.DRAFT):
+            if row.awaiting_owner:  # approved but no longer postable (stock gone): take it back first
+                await goods.withdraw_request(self.db, self.admin, row.id)
             await documents.delete_draft(self.db, self.admin, row.id)
 
     async def day(self, n: int):

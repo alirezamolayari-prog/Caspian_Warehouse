@@ -6,6 +6,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import func, select, update
 
+import approval_helpers as slips
 from caspian.core.text import normalize
 from caspian.db.models import (
     AuditLog,
@@ -107,7 +108,7 @@ async def test_merge_moves_history_and_stock(db, admin, u):
     async with db.session() as s:  # legacy duplicate, created before this rule existed
         await s.execute(update(Item).where(Item.id == dupe).values(name="جارو", name_normalized="جارو"))
     for item_id, qty in ((keep, 5), (dupe, 3)):
-        await documents.create_and_post(db, admin, documents.DocumentInput(
+        await slips.create_and_post(db, admin, documents.DocumentInput(
             DocType.RECEIPT, dt.date.today(), wh, [documents.LineInput(item_id, u["عدد"], Decimal(qty))]))
     [finding] = [f for f in await health.check(db, admin) if f.kind == "duplicate_items"]
     assert "۱۰۰۶" in finding.title and "۱۰۱۷" in finding.title

@@ -4,7 +4,6 @@ connection tab, and printing an approved voucher (which posts it)."""
 
 from decimal import Decimal
 
-import pytest
 from PySide6.QtWidgets import QLabel, QToolButton
 from sqlalchemy import func, select
 
@@ -18,7 +17,7 @@ from caspian.ui import document_print, messages
 from caspian.ui.app_context import AppContext
 from caspian.ui.documents_page import DocumentDialog
 from caspian.ui.main_window import MainWindow
-from caspian.ui.requests_page import RequestChatDialog, RequestDialog, RequestsPage
+from caspian.ui.requests_page import RequestChatDialog, RequestsPage
 from caspian.ui.server_status import ServerLink
 from caspian.ui.settings_page import SettingsPage
 from caspian.ui.widgets import Toast
@@ -37,13 +36,6 @@ async def _count(db) -> int:
     async with db.session() as s:
         return await s.scalar(select(func.count()).select_from(GoodsRequest))
 
-
-async def _dialog(ctx, linked) -> RequestDialog:
-    db = linked["db"]
-    dialog = RequestDialog(ctx, await master.search_persons(db), await master.list_warehouses(db),
-                           await master.list_units(db, include_inactive=True))
-    await dialog.load()
-    return dialog
 
 
 async def test_list_shows_every_status(qtbot, themes, linked, admin):
@@ -95,36 +87,6 @@ async def test_full_error_in_tooltip_and_details_and_my_requests_filter(qtbot, t
     assert [r.id for r in await goods.list_requests(db, admin, mine=True)] == [request_id]
 
 
-async def test_new_request_dialog_makes_one_request(qtbot, themes, linked, admin):
-    db = linked["db"]
-    dialog = await _dialog(_ctx(themes, linked, admin), linked)
-    qtbot.addWidget(dialog)
-    dialog.show()
-    dialog.person.select_value(linked["person"])
-    dialog.place.set_value(linked["location"].id)
-    await dialog.add_item(linked["bags"], "1024", "کیسه زباله")
-    await dialog.add_item(linked["bags"], "1024", "کیسه زباله")  # same item again: quantity + 1
-    assert len(dialog.lines) == 1 and dialog.lines[0].qty.value() == 2
-    dialog.lines[0].qty.set_value(Decimal(20))
-    dialog.submit_button.click()
-    dialog.submit_button.click()  # an impatient second click
-    assert await wait_until(lambda: dialog.result() == 1 and not dialog.isVisible())
-    assert await _count(db) == 1
-    [row] = await goods.list_requests(db, admin)
-    assert row.status == RequestStatus.QUEUED and row.lines[0].qty == 20
-    assert not dialog.submit_button.isEnabled()
-
-
-async def test_dialog_lists_every_problem_and_saves_nothing(qtbot, themes, linked, admin):
-    dialog = await _dialog(_ctx(themes, linked, admin), linked)
-    qtbot.addWidget(dialog)
-    dialog.show()
-    dialog.person.select_value(None)
-    dialog.submit_button.click()
-    assert await wait_until(lambda: dialog.status.isVisible())
-    text = dialog.status.text()
-    assert "درخواست‌کننده" in text and "محل مصرف" in text and "کالا" in text
-    assert dialog.isVisible() and await _count(linked["db"]) == 0
 
 
 async def test_decision_notifies_and_badges(qtbot, themes, linked, admin):
@@ -324,9 +286,8 @@ async def test_connection_tab_only_for_admin(qtbot, themes, linked, admin):
     assert manager.can(goods.Perm.REQUESTS_MANAGE)  # the manager role runs requests itself
 
 
-@pytest.mark.parametrize("role", ["viewer", "storekeeper"])
-async def test_page_hidden_without_permission(qtbot, themes, linked, admin, role):
-    await users.create_user(linked["db"], admin, "u1", "کاربر", "Str0ngPass1", role)
+async def test_page_hidden_without_permission(qtbot, themes, linked, admin):
+    await users.create_user(linked["db"], admin, "u1", "کاربر", "Str0ngPass1", "viewer")
     actor = (await auth.login(linked["db"], "u1", "Str0ngPass1")).actor
     window = MainWindow(_ctx(themes, linked, actor))
     qtbot.addWidget(window)
@@ -334,38 +295,18 @@ async def test_page_hidden_without_permission(qtbot, themes, linked, admin, role
     assert not window.server_status.isVisibleTo(window)
 
 
-async def test_item_suggestions_while_typing_and_over_stock_warning(qtbot, themes, linked, admin):
-    """3.5: suggestions (code — name — unit — stock) appear before Enter; more than the stock is
-    allowed but marked on that row."""
-    dialog = await _dialog(_ctx(themes, linked, admin), linked)
-    qtbot.addWidget(dialog)
-    dialog.show()
-    dialog.item_input.setText("کیسه")
-    dialog._suggest()
-    assert await wait_until(lambda: dialog._suggest_model.rowCount() > 0)
-    text = dialog._suggest_model.stringList()[0]
-    assert "کیسه زباله" in text and "موجودی: ۵۰" in text
-    dialog._on_suggestion(dialog._suggest_model.index(0))
-    assert await wait_until(lambda: len(dialog.lines) == 1)
-    line = dialog.lines[0]
-    assert not dialog.over_stock_lines()
-    line.qty.set_value(Decimal(80))
-    assert dialog.over_stock_lines() == [line] and "بیشتر از موجودی" in line.name_cell.toolTip()
-    line.qty.set_value(Decimal(5))
-    assert not dialog.over_stock_lines()
+async def test_storekeeper_sees_the_request_list(qtbot, themes, linked, admin):
+    """Warehouse staff send slips for approval, so they follow them in «درخواست کالا» too."""
+    await users.create_user(linked["db"], admin, "u1", "انباردار", "Str0ngPass1", "storekeeper")
+    actor = (await auth.login(linked["db"], "u1", "Str0ngPass1")).actor
+    assert actor.can(goods.Perm.REQUESTS_MANAGE)
+    window = MainWindow(_ctx(themes, linked, actor))
+    qtbot.addWidget(window)
+    assert window._nav_buttons["requests"].isVisibleTo(window)
+    page = window._pages["requests"]
+    assert not hasattr(page, "new_button")  # one way to ask for goods: the slip itself
 
 
-async def test_add_place_link_only_for_location_managers(qtbot, themes, linked, admin):
-    dialog = await _dialog(_ctx(themes, linked, admin), linked)
-    qtbot.addWidget(dialog)
-    dialog.show()
-    assert dialog.place.add_button.isVisible()
-    await users.create_user(linked["db"], admin, "m2", "مدیر انبار", "Str0ngPass1", "manager")
-    manager = (await auth.login(linked["db"], "m2", "Str0ngPass1")).actor
-    other = await _dialog(_ctx(themes, linked, manager), linked)
-    qtbot.addWidget(other)
-    other.show()
-    assert not other.place.add_button.isVisible()
 
 
 async def test_connection_bar_is_coloured_with_a_setup_button(qtbot, themes, linked, admin):
@@ -385,13 +326,13 @@ async def test_connection_bar_is_coloured_with_a_setup_button(qtbot, themes, lin
 
 
 async def test_dashboard_request_cards_open_the_filtered_list(qtbot, themes, linked, admin):
-    """4.5: «در انتظار تأیید مالک» / «تأییدشده — منتظر چاپ حواله» open the list with that filter,
-    shown as a chip that clears it."""
+    """4.5: «در انتظار تأیید مالک» / «رد شده توسط مالک» open the list with that filter, shown as a
+    chip that clears it."""
     db, server, engine = linked["db"], linked["server"], linked["engine"]
     for qty in (1, 2):
         await goods.create_request(db, admin, request_input(linked, qty=qty))
     await engine.tick(admin)
-    server.approve(1)
+    server.reject(1, "زیاد است")
     await engine.tick(admin)
     assert await goods.dashboard_counts(db) == (1, 1)
     window = MainWindow(_ctx(themes, linked, admin))
@@ -399,10 +340,10 @@ async def test_dashboard_request_cards_open_the_filtered_list(qtbot, themes, lin
     dashboard = window._pages["dashboard"]
     await dashboard.refresh()
     assert dashboard.cards["requests_pending"].value.text() == "۱"
-    dashboard.cards["requests_approved"].clicked.emit()
+    dashboard.cards["requests_rejected"].clicked.emit()
     requests = window._pages["requests"]
     assert window._stack.currentWidget() is requests
-    assert requests.status_filter.currentData() == RequestStatus.APPROVED
-    assert requests.filter_chip.isVisibleTo(requests) and "تأیید شد" in requests.filter_chip.text()
+    assert requests.status_filter.currentData() == RequestStatus.REJECTED
+    assert requests.filter_chip.isVisibleTo(requests) and "رد شد" in requests.filter_chip.text()
     requests.filter_chip.click()
     assert requests.status_filter.currentData() is None and not requests.filter_chip.isVisibleTo(requests)

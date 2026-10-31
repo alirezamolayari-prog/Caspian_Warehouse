@@ -31,12 +31,13 @@ from caspian.db.models import (
     Person,
     RequestStatus,
     ServerOutbox,
+    StockBalance,
     Unit,
     User,
     Warehouse,
 )
 from caspian.db.retry import with_retries
-from caspian.services import audit, locations
+from caspian.services import audit, documents, locations
 from caspian.services.actor import Actor
 from caspian.services.documents import Problem
 from caspian.services.errors import NotFound, PermissionDenied, ServiceError, ValidationError
@@ -48,6 +49,7 @@ STATUS_NAMES = {
     RequestStatus.APPROVED: "تأیید شد",
     RequestStatus.REJECTED: "رد شد",
     RequestStatus.ISSUED: "حواله صادر شد",
+    RequestStatus.WITHDRAWN: "لغو شد",
 }
 OWNER_NAME = "مالک"  # owners are never named on this side (the server hides who decided)
 MAX_TEXT = 4000
@@ -108,6 +110,7 @@ class RequestRow:
     failed: bool = False  # the server refused something of it: «ارسال مجدد» puts it back in the queue
     created_by: str = ""  # «ثبت‌کننده»: the server's name for the registrar, else the local author's
     mine: bool = False  # registered by the person looking at the list
+    slip: bool = False  # the request IS this slip (sent with «ارسال درخواست»); posted on approval
 
     @property
     def number_text(self) -> str:
@@ -131,10 +134,14 @@ class RequestRow:
             return "منتظر تأیید شما"
         if self.status == RequestStatus.QUEUED or (self.waiting and self.status != RequestStatus.ISSUED):
             return "در صف ارسال"
+        if self.status == RequestStatus.APPROVED and self.slip:
+            return "تأیید شد؛ حواله خودکار ثبت نهایی می‌شود"
         if self.status == RequestStatus.APPROVED and self.document_id is None:
             return "حواله خروج به‌زودی ساخته می‌شود"
         if self.status == RequestStatus.APPROVED:
             return "آماده چاپ حواله"
+        if self.status == RequestStatus.WITHDRAWN:
+            return "انبار درخواست را لغو کرد"
         if self.status == RequestStatus.ISSUED:
             number = f"حواله {to_persian_digits(self.issue_number)}" if self.issue_number else "حواله صادر شد"
             return number + (" (در صف ارسال به سرور)" if self.waiting else "")
@@ -364,6 +371,147 @@ async def retry_failed(db: Database, actor: Actor, request_id: int) -> bool:
     return await with_retries(attempt)
 
 
+# ----- issue / loan-out slips: the slip itself is the request -----
+
+WITHDRAWN_MESSAGE = "این درخواست توسط انبار لغو شد؛ لطفاً آن را تأیید نکنید."
+NOT_SENDABLE = "فقط پیش‌نویس حواله خروج یا خروج امانی برای تأیید مالک ارسال می‌شود."
+NOT_WITHDRAWABLE = "این سند درخواست در انتظار تأییدی ندارد."
+_STATE_OPS = (OutboxOp.CREATE, OutboxOp.RESUBMIT)
+
+
+async def _slip_snapshot(s: AsyncSession, doc: Document) -> tuple[Person | None, str, list[GoodsRequestLine]]:
+    """What the owners see of the slip: recipient, place and lines (texts as on the slip)."""
+    person = await s.get(Person, doc.person_id) if doc.person_id else None
+    place = await documents.place_text_in(s, doc)
+    if not place:  # the server needs a place; a loan has none
+        who = f" — {person.name}" if person else ""
+        place = f"{documents.DOC_TYPE_NAMES[doc.doc_type]}{who}"
+    lines = []
+    for ln in doc.lines:
+        item, unit = await s.get(Item, ln.item_id), await s.get(Unit, ln.unit_id)
+        lines.append(GoodsRequestLine(line_no=ln.line_no, item_id=item.id, unit_id=unit.id, qty=ln.qty,
+                                      item_code=item.code, item_name=item.name, unit_name=unit.name))
+    return person, place[:200], lines
+
+
+def _slip_note(doc: Document) -> str:
+    head = f"{documents.DOC_TYPE_NAMES[doc.doc_type]} {documents.number_text(doc.doc_type, doc.number)}"
+    rest = " — ".join(t for t in (doc.usage_note.strip(), doc.description.strip()) if t)
+    return (f"{head}: {rest}" if rest else head)[:MAX_TEXT]
+
+
+async def _fill_from_slip(s: AsyncSession, req: GoodsRequest, doc: Document) -> None:
+    person, place, lines = await _slip_snapshot(s, doc)
+    req.person_id = person.id if person else None
+    req.requester_name = " ".join(person.name.split())[:100] if person else ""
+    req.requester_phone = clean_phone(person.phone) if person else ""
+    req.warehouse_id = doc.warehouse_id
+    req.location_id, req.floor_id = doc.location_id, doc.consumption_floor_id
+    req.location_text = place
+    req.note = _slip_note(doc)
+    if req.lines:
+        req.lines.clear()
+        await s.flush()
+    req.lines.extend(lines)
+
+
+async def _reserve_in(s: AsyncSession, doc: Document) -> None:
+    """Stock check again inside the sending transaction, with the balances of the slip's items
+    locked: two PCs sending slips for the same goods at once can't both reserve the last ones."""
+    item_ids = sorted({ln.item_id for ln in doc.lines})
+    await s.execute(select(StockBalance.item_id).where(
+        StockBalance.warehouse_id == doc.warehouse_id, StockBalance.item_id.in_(item_ids))
+        .order_by(StockBalance.item_id).with_for_update())
+    lines = list(doc.lines)
+    if problems := await documents._posting_problems(s, documents._input_of(doc), lines, doc.id):
+        raise ValidationError(problems[0].message)
+
+
+async def submit_document(db: Database, actor: Actor, doc_id: int) -> int:
+    """«ارسال درخواست»: send an issue / loan-out slip to the owners. It is saved in the outbox at
+    once (sent now if online, later if not) and is posted only when an owner approves it — there is
+    no local way round that. After a rejection the edited slip goes again as a resubmit of the same
+    request. Returns the request id; pressing twice never sends twice."""
+    actor.require_human("ارسال درخواست تأیید")
+    actor.require(Perm.DOCUMENTS_EDIT)
+    detail = await documents.get_document(db, actor, doc_id)
+    if detail.input.doc_type not in documents.NEEDS_OWNER or detail.status != DocStatus.DRAFT:
+        raise ValidationError(NOT_SENDABLE)
+    if problems := await documents.check(db, actor, detail.input, doc_id):
+        raise ValidationError(problems[0].message)
+
+    async def attempt() -> int:
+        async with db.session(actor) as s:
+            doc = await s.scalar(select(Document).where(Document.id == doc_id).with_for_update())
+            if (doc is None or doc.status != DocStatus.DRAFT or doc.doc_type not in documents.NEEDS_OWNER
+                    or doc.server_request_id is not None):
+                raise ValidationError(NOT_SENDABLE)
+            if doc.version_id != detail.version_id:  # changed after the check above
+                raise ValidationError("سند هم‌زمان تغییر کرد؛ دوباره «ارسال درخواست» را بزنید.")
+            req = await documents.request_of_in(s, doc.id)
+            if req is not None and req.status in documents.AWAITING_OWNER:
+                return req.id  # already sent
+            await _reserve_in(s, doc)
+            if req is not None and req.status == RequestStatus.REJECTED and not await _waiting(s, req.id):
+                await _fill_from_slip(s, req, doc)
+                req.status, req.unseen, req.last_error = RequestStatus.QUEUED, False, ""
+                s.add(ServerOutbox(request_id=req.id, op=OutboxOp.RESUBMIT, user_id=actor.user_id))
+                action = "goods_request.resubmitted"
+            else:
+                if req is not None:  # withdrawn earlier: that request stays in the history
+                    req.document_id = None
+                    await s.flush()
+                req = GoodsRequest(client_request_id=str(uuid.uuid4()), status=RequestStatus.QUEUED,
+                                   origin="local", document_id=doc.id, lines=[])
+                await _fill_from_slip(s, req, doc)
+                s.add(req)
+                await s.flush()
+                s.add(ServerOutbox(request_id=req.id, op=OutboxOp.CREATE, user_id=actor.user_id))
+                action = "goods_request.created"
+            audit.record(s, actor, action, "goods_request", req.id,
+                         {"document": doc.id, "type": doc.doc_type.value, "number": doc.number})
+            return req.id
+
+    return await with_retries(attempt)
+
+
+async def withdraw_request(db: Database, actor: Actor, doc_id: int) -> None:
+    """«لغو درخواست»: the sender takes back a slip that is waiting for the owners. The slip becomes an
+    ordinary draft again. What the server has not seen yet is simply dropped; otherwise the owners get
+    a message, and a later approval of this request is ignored (no stock moves)."""
+    actor.require_human("لغو درخواست")
+    actor.require(Perm.DOCUMENTS_EDIT)
+
+    async def attempt() -> None:
+        async with db.session(actor) as s:
+            doc = await s.get(Document, doc_id)
+            req = await documents.request_of_in(s, doc_id) if doc else None
+            if req is None or doc.status != DocStatus.DRAFT or req.status not in documents.AWAITING_OWNER:
+                raise ValidationError(NOT_WITHDRAWABLE)
+            if doc.created_by_id != actor.user_id and not actor.is_admin:
+                raise PermissionDenied("فقط ثبت‌کننده سند (یا مدیر سیستم) می‌تواند درخواست را لغو کند.")
+            unsent = list((await s.scalars(select(ServerOutbox).where(
+                ServerOutbox.request_id == req.id, ServerOutbox.op.in_(_STATE_OPS),
+                ServerOutbox.attempts == 0))).all())
+            for row in unsent:
+                await s.delete(row)
+            # A create or resubmit that never left this PC: the server has nothing waiting for owners.
+            server_waiting = not (req.status == RequestStatus.QUEUED and unsent)
+            req.status, req.document_id, req.last_error = RequestStatus.WITHDRAWN, None, ""
+            if server_waiting:
+                message = GoodsRequestMessage(request_id=req.id, sender_name=actor.display_name,
+                                              sender_role="warehouse", text=WITHDRAWN_MESSAGE,
+                                              user_id=actor.user_id)
+                s.add(message)
+                await s.flush()
+                s.add(ServerOutbox(request_id=req.id, op=OutboxOp.MESSAGE, message_id=message.id,
+                                   user_id=actor.user_id))
+            audit.record(s, actor, "goods_request.withdrawn", "goods_request", req.id,
+                         {"document": doc.id, "server_id": req.server_id})
+
+    await with_retries(attempt)
+
+
 # ----- assistant drafts -----
 
 
@@ -436,6 +584,9 @@ async def _rows(s: AsyncSession, requests: list[GoodsRequest], viewer: int | Non
     docs = {sid: (doc_id, status) for doc_id, status, sid in (await s.execute(
         select(Document.id, Document.status, Document.server_request_id)
         .where(Document.server_request_id.in_(server_ids)))).all()} if server_ids else {}
+    slip_ids = [r.document_id for r in requests if r.document_id is not None]
+    slips = dict((await s.execute(select(Document.id, Document.status).where(
+        Document.id.in_(slip_ids)))).all()) if slip_ids else {}
     waiting = set((await s.scalars(select(ServerOutbox.request_id).where(
         ServerOutbox.request_id.in_([r.id for r in requests]),
         ServerOutbox.op != OutboxOp.MESSAGE))).all()) if requests else set()
@@ -451,7 +602,8 @@ async def _rows(s: AsyncSession, requests: list[GoodsRequest], viewer: int | Non
         me = (None, await s.scalar(select(User.server_user_id).where(User.id == viewer)))
     rows = []
     for r in requests:
-        doc_id, doc_status = docs.get(r.server_id, (None, None))
+        doc_id, doc_status = ((r.document_id, slips.get(r.document_id)) if r.document_id is not None
+                              else docs.get(r.server_id, (None, None)))
         author, _ = authors.get(r.created_by_id, ("", None))
         mine = bool(viewer) and (r.created_by_id == viewer if r.created_by_server_id is None
                                  else r.created_by_server_id == (me[1] if me else None))
@@ -459,18 +611,25 @@ async def _rows(s: AsyncSession, requests: list[GoodsRequest], viewer: int | Non
             r.id, r.server_id, r.status, r.origin, r.requester_name, r.requester_phone, r.location_text,
             r.note, tuple(_line_view(ln) for ln in r.lines), r.created_at, r.unseen, r.rejection_reason,
             r.issue_number, r.last_error, r.id in waiting, doc_id, doc_status, r.id in failed,
-            r.created_by_name or (author if r.origin == "local" else ""), mine))
+            r.created_by_name or (author if r.origin == "local" else ""), mine,
+            r.document_id is not None))
     return rows
 
 
+OPEN_STATUSES = (RequestStatus.QUEUED, RequestStatus.PENDING, RequestStatus.APPROVED, RequestStatus.REJECTED)
+
+
 async def list_requests(db: Database, actor: Actor, status: RequestStatus | None = None,
-                        limit: int = 300, mine: bool = False) -> list[RequestRow]:
-    """`mine`: only what the person looking registered («درخواست‌های من»)."""
+                        limit: int = 300, mine: bool = False, open_only: bool = False) -> list[RequestRow]:
+    """`mine`: only what the person looking registered («درخواست‌های من»). `open_only`: what still
+    needs someone: waiting for the owners or rejected (an approved slip until it is posted)."""
     actor.require(Perm.REQUESTS_MANAGE)
     async with db.session() as s:
         stmt = select(GoodsRequest).order_by(GoodsRequest.id.desc()).limit(limit)
         if status is not None:
             stmt = stmt.where(GoodsRequest.status == status)
+        if open_only:
+            stmt = stmt.where(GoodsRequest.status.in_(OPEN_STATUSES))
         rows = await _rows(s, list((await s.scalars(stmt)).all()), actor.user_id)
     return [r for r in rows if r.mine] if mine else rows
 
@@ -500,12 +659,14 @@ async def mark_seen(db: Database, actor: Actor, request_id: int) -> None:
 
 
 async def dashboard_counts(db: Database) -> tuple[int, int]:
-    """(waiting for an owner, approved and waiting for its slip to be printed)."""
+    """(sent and waiting for an owner, queued ones included; rejected and waiting to be fixed)."""
     async with db.session() as s:
         rows = dict((await s.execute(select(GoodsRequest.status, func.count()).where(
-            GoodsRequest.status.in_((RequestStatus.PENDING, RequestStatus.APPROVED)))
+            GoodsRequest.origin == "local",
+            GoodsRequest.status.in_((RequestStatus.QUEUED, RequestStatus.PENDING, RequestStatus.REJECTED)))
             .group_by(GoodsRequest.status))).all())
-    return rows.get(RequestStatus.PENDING, 0), rows.get(RequestStatus.APPROVED, 0)
+    return (rows.get(RequestStatus.QUEUED, 0) + rows.get(RequestStatus.PENDING, 0),
+            rows.get(RequestStatus.REJECTED, 0))
 
 
 async def unseen_count(db: Database) -> int:

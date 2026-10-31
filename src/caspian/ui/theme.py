@@ -39,7 +39,8 @@ class Theme:
     warning: str
     success: str
     shadow: str
-    # Status badges, the same everywhere: green = approved/done, lemon = waiting, red = rejected.
+    # Status badges, the same everywhere: grey = draft, green = approved/done, lemon = waiting,
+    # red = rejected (the grey one reuses the neutral surface tokens).
     ok_fg: str
     ok_bg: str
     ok_line: str
@@ -55,8 +56,9 @@ class Theme:
         return self.name == "dark"
 
     def tone(self, kind: str) -> tuple[str, str, str]:
-        """(text, background, border) of a status badge: kind is "ok", "pending" or "bad"."""
+        """(text, background, border) of a status badge: kind is "draft", "ok", "pending" or "bad"."""
         return {
+            "draft": (self.text_muted, self.surface_alt, self.border),
             "ok": (self.ok_fg, self.ok_bg, self.ok_line),
             "pending": (self.pending_fg, self.pending_bg, self.pending_line),
             "bad": (self.bad_fg, self.bad_bg, self.bad_line),
@@ -244,6 +246,10 @@ QPushButton#HealthWarning:hover {{ border-width: 2px; }}
 #LockedNote {{
     background: {t.primary_soft}; border: 1px solid {t.border}; border-radius: 10px;
     padding: 8px 12px; color: {t.text};
+}}
+#RejectedNote {{
+    background: {t.bad_bg}; border: 1px solid {t.bad_line}; border-radius: 10px;
+    padding: 8px 12px; color: {t.bad_fg};
 }}
 #RuleOk {{ color: {t.success}; }}
 #RuleBad {{ color: {t.text_muted}; }}

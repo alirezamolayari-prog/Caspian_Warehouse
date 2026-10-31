@@ -7,6 +7,7 @@ import pytest
 from openpyxl import load_workbook
 from sqlalchemy import func, select, update
 
+import approval_helpers as slips
 from caspian.db.models import AuditLog, DocStatus, DocType, Document, Item, Person, PersonKind, StockLedger
 from caspian.services import documents as docs
 from caspian.services import fiscal, items, master, protected, reports
@@ -40,7 +41,7 @@ async def env(db, admin, tmp_path):
     async def post(doc_type, date, *lines, **kw):
         if doc_type == DocType.ISSUE:
             kw.setdefault("person_id", emp)  # issues need a recipient to be posted
-        return await docs.create_and_post(db, admin, docs.DocumentInput(
+        return await slips.create_and_post(db, admin, docs.DocumentInput(
             doc_type, date, wh, [docs.LineInput(ids[c], u["عدد"], D(q)) for c, q in lines], **kw))
 
     await post(DocType.RECEIPT, OLD, ("C", 5))
@@ -104,7 +105,7 @@ async def test_close_year_carries_balances_and_loans(env):
     assert "fiscal.year_closed" in actions
 
     # The carried loan can still be returned in the new year...
-    await docs.create_and_post(db, admin, docs.DocumentInput(
+    await slips.create_and_post(db, admin, docs.DocumentInput(
         DocType.LOAN_RETURN, NEW, env["wh"], [docs.LineInput(ids["P"], env["u"]["عدد"], D(4))],
         person_id=env["emp"], related_document_id=env["loan"]))
     assert await docs.outstanding_loans(db, admin) == []
@@ -189,7 +190,7 @@ async def test_year_end_on_mariadb(tmp_path):
         unit = (await master.list_units(db))[0].id
         wh = (await master.list_warehouses(db))[0].id
         item = await items.create_item(db, admin, ItemInput("A", "دریل", unit))
-        await docs.create_and_post(db, admin, docs.DocumentInput(
+        await slips.create_and_post(db, admin, docs.DocumentInput(
             DocType.RECEIPT, Y1404, wh, [docs.LineInput(item, unit, D(9))]))
         result = await fiscal.run_year_end(
             db, admin, 1404, CloseOptions(), await _approval(db, admin),
@@ -223,7 +224,7 @@ async def test_health_check_ignores_loans_carried_over(env):
     db, admin = env["db"], env["admin"]
     await _close(env)
     assert await health.check(db, admin) == []
-    await docs.create_and_post(db, admin, docs.DocumentInput(
+    await slips.create_and_post(db, admin, docs.DocumentInput(
         DocType.LOAN_RETURN, NEW, env["wh"], [docs.LineInput(env["ids"]["P"], env["u"]["عدد"], D(4))],
         person_id=env["emp"], related_document_id=env["loan"]))
     assert await health.check(db, admin) == []

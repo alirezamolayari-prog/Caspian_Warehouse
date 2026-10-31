@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm.exc import StaleDataError
 
+import approval_helpers as slips
 from caspian.db.models import DocStatus, DocType, PersonKind
 from caspian.services import documents, items, master, protected, stocktake
 from caspian.services.errors import ConcurrencyError, ServiceError, ValidationError
@@ -21,7 +22,7 @@ async def shop(db, admin):
     wh = (await master.list_warehouses(db))[0].id
     wh2 = await master.save_warehouse(db, admin, "W2", "انبار دوم")
     drill = await items.create_item(db, admin, ItemInput("7001", "دریل", units["عدد"], is_returnable=True))
-    await documents.create_and_post(db, admin, documents.DocumentInput(
+    await slips.create_and_post(db, admin, documents.DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh, [documents.LineInput(drill, units["عدد"], Decimal(5))]))
     person = await master.save_person(db, admin, "رضا", PersonKind.EMPLOYEE)
     return {"unit": units["عدد"], "wh": wh, "wh2": wh2, "drill": drill, "person": person}
@@ -32,7 +33,7 @@ def _line(shop, qty):
 
 
 async def test_check_lists_a_loan_return_above_what_is_outstanding(db, admin, shop):
-    loan = await documents.create_and_post(db, admin, documents.DocumentInput(
+    loan = await slips.create_and_post(db, admin, documents.DocumentInput(
         DocType.LOAN_OUT, dt.date.today(), shop["wh"], _line(shop, 2), person_id=shop["person"]))
     data = documents.DocumentInput(DocType.LOAN_RETURN, dt.date.today(), shop["wh"], _line(shop, 3),
                                    person_id=shop["person"], related_document_id=loan)
@@ -54,7 +55,7 @@ async def test_check_of_a_transfer_counts_both_warehouses(db, admin, shop):
 
 async def test_post_with_pin_on_a_deadlock_is_not_retried(db, admin, shop, monkeypatch):
     draft = await documents.create_document(db, admin, documents.DocumentInput(
-        DocType.ISSUE, dt.date.today(), shop["wh"], _line(shop, 1), person_id=shop["person"]))
+        DocType.RECEIPT, dt.date.today(), shop["wh"], _line(shop, 1)))
     approval = await protected.approve(db, admin, ProtectedAction.STOCKTAKE_OVERRIDE, "admin", ADMIN_PIN)
     calls = []
 
@@ -70,7 +71,7 @@ async def test_post_with_pin_on_a_deadlock_is_not_retried(db, admin, shop, monke
 
 
 async def test_cancel_with_pin_changed_meanwhile_reports_a_conflict(db, admin, shop, monkeypatch):
-    doc = await documents.create_and_post(db, admin, documents.DocumentInput(
+    doc = await slips.create_and_post(db, admin, documents.DocumentInput(
         DocType.ISSUE, dt.date.today(), shop["wh"], _line(shop, 1), person_id=shop["person"]))
     approval = await protected.approve(db, admin, ProtectedAction.STOCKTAKE_OVERRIDE, "admin", ADMIN_PIN)
 

@@ -6,6 +6,7 @@ from decimal import Decimal
 import time_machine
 from sqlalchemy import func, select, update
 
+import approval_helpers as slips
 from caspian.db.models import Document, StockBalance, StockLedger, Unit
 from caspian.services import documents, health, items, master
 from caspian.services.items import ItemInput
@@ -17,9 +18,9 @@ async def test_lists_old_bad_data_without_changing_it(db, admin):
     wh = (await master.list_warehouses(db))[0].id
     ok = await items.create_item(db, admin, ItemInput("1001", "دریل", u["عدد"]))
     cable = await items.create_item(db, admin, ItemInput("2001", "کابل", u["متر"]))
-    future = await documents.create_and_post(db, admin, documents.DocumentInput(
+    future = await slips.create_and_post(db, admin, documents.DocumentInput(
         documents.DocType.RECEIPT, dt.date.today(), wh, [documents.LineInput(ok, u["عدد"], Decimal(3))]))
-    await documents.create_and_post(db, admin, documents.DocumentInput(
+    await slips.create_and_post(db, admin, documents.DocumentInput(
         documents.DocType.RECEIPT, dt.date.today(), wh,
         [documents.LineInput(cable, u["متر"], Decimal("2.5"))]))
     assert await health.check(db, admin) == []

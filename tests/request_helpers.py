@@ -4,6 +4,7 @@ conftest.py)."""
 import datetime as dt
 from decimal import Decimal
 
+import approval_helpers as slips
 from caspian.db.models import DocType, PersonKind
 from caspian.services import documents, items, locations, master
 from caspian.services.items import ItemInput
@@ -18,7 +19,7 @@ async def make_shop(db, admin) -> dict:
     wh = (await master.list_warehouses(db))[0].id
     bags = await items.create_item(db, admin, ItemInput("1024", "کیسه زباله", unit))
     soap = await items.create_item(db, admin, ItemInput("1030", "مایع دستشویی", unit))
-    await documents.create_and_post(db, admin, documents.DocumentInput(
+    await slips.create_and_post(db, admin, documents.DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh, [documents.LineInput(bags, unit, Decimal(50)),
                                                documents.LineInput(soap, unit, Decimal(10))]))
     person = await master.save_person(db, admin, "علی رضایی", PersonKind.EMPLOYEE, phone="0912 345 6789")

@@ -601,6 +601,7 @@ class RequestStatus(enum.StrEnum):
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
     ISSUED = "ISSUED"  # the issue voucher was posted (printed)
+    WITHDRAWN = "WITHDRAWN"  # cancelled here while pending; a later decision of the owners is ignored
 
 
 class GoodsRequest(IdMixin, TimestampMixin, CreatedByMixin, Base):
@@ -634,6 +635,9 @@ class GoodsRequest(IdMixin, TimestampMixin, CreatedByMixin, Base):
     # Who registered it, as the server says (`created_by_id` / `created_by_name`, «ثبت‌کننده»).
     created_by_server_id: Mapped[int | None] = mapped_column(Integer)
     created_by_name: Mapped[str] = mapped_column(String(150), default="", server_default="")
+    # The issue / loan-out slip that IS this request («ارسال درخواست»); posted only once approved.
+    # None for older requests registered on their own (their slip is found by `server_request_id`).
+    document_id: Mapped[int | None] = mapped_column(BigIntPK, ForeignKey("documents.id"), unique=True)
 
     lines: Mapped[list["GoodsRequestLine"]] = relationship(
         back_populates="request", cascade="all, delete-orphan", order_by="GoodsRequestLine.line_no",

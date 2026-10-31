@@ -3,6 +3,7 @@ from decimal import Decimal
 
 import pytest
 
+import approval_helpers as slips
 from caspian.core.settings import Settings
 from caspian.db.database import DbConfig
 from caspian.db.models import DocType, PersonKind
@@ -19,11 +20,11 @@ async def page(qtbot, themes, db, admin):
     u = {x.name: x.id for x in await master.list_units(db)}
     wh = (await master.list_warehouses(db))[0].id
     drill = await items.create_item(db, admin, ItemInput("1001", "دریل", u["عدد"]))
-    await docs.create_and_post(db, admin, docs.DocumentInput(
+    await slips.create_and_post(db, admin, docs.DocumentInput(
         DocType.RECEIPT, dt.date.today() - dt.timedelta(10), wh,
         [docs.LineInput(drill, u["عدد"], Decimal(100), Decimal(250000))]))
     recipient = await master.save_person(db, admin, "گیرنده", PersonKind.EMPLOYEE)
-    await docs.create_and_post(db, admin, docs.DocumentInput(
+    await slips.create_and_post(db, admin, docs.DocumentInput(
         DocType.ISSUE, dt.date.today() - dt.timedelta(5), wh,
         [docs.LineInput(drill, u["عدد"], Decimal(90))], person_id=recipient))
     p = ReportsPage(AppContext(db, DbConfig(), Settings(), themes, admin))

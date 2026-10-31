@@ -9,6 +9,7 @@ from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import text
 
+import approval_helpers as slips
 from caspian.db.base import Base
 from caspian.db.bootstrap import prepare
 from caspian.db.database import Database
@@ -28,7 +29,7 @@ async def _business_data(db: Database) -> dict:
     unit = (await master.list_units(db))[0].id
     wh = (await master.list_warehouses(db))[0].id
     item = await items.create_item(db, admin, ItemInput("M-1", "کالای مهاجرت", unit))
-    doc = await docs.create_and_post(db, admin, docs.DocumentInput(
+    doc = await slips.create_and_post(db, admin, docs.DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh, [docs.LineInput(item, unit, Decimal(5))]))
     batch = await imports.create_batch(db, admin, ImportKind.STOCK, ImportSource.SCAN,
                                        [RawRow(code="M-1", qty=Decimal(1))], "b", DocType.RECEIPT, wh)

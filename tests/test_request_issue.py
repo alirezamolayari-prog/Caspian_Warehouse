@@ -7,6 +7,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
+import approval_helpers as slips
 from caspian.db.models import (
     DocStatus,
     DocType,
@@ -70,7 +71,7 @@ async def test_no_voucher_before_approval_and_linked_draft_is_guarded(linked, ad
         await documents.print_sheet(db, admin, doc_id)
     assert exc.value.message == linked_rules.NOT_APPROVED
     with pytest.raises(ValidationError):
-        await documents.post_document(db, admin, doc_id)
+        await slips.post_document(db, admin, doc_id)
     assert await stock(db, linked["bags"]) == 50
 
 
@@ -79,7 +80,7 @@ async def test_printing_posts_and_reports_issued(linked, admin):
     request_id, doc_id = await _approved(linked, admin)
     sheet = await documents.print_sheet(db, admin, doc_id)
     assert sheet.linked_request and not sheet.trackable
-    await documents.post_document(db, admin, doc_id, via="goods_request")
+    await slips.post_document(db, admin, doc_id, via="goods_request")
     assert await stock(db, linked["bags"]) == 30
     row = (await goods.get_request(db, admin, request_id)).row
     number = documents.number_text(DocType.ISSUE, (await documents.get_document(db, admin, doc_id)).number)
@@ -98,7 +99,7 @@ async def test_issued_queued_while_offline_and_retried_safely(linked, admin):
     db, server, engine = linked["db"], linked["server"], linked["engine"]
     request_id, doc_id = await _approved(linked, admin)
     server.online = False
-    await documents.post_document(db, admin, doc_id)
+    await slips.post_document(db, admin, doc_id)
     await engine.tick(admin)
     assert server.requests[1]["status"] == "approved"
     server.online = True
@@ -135,7 +136,7 @@ async def test_linked_voucher_keeps_the_approved_lines(linked, admin):
         doc = await s.get(Document, doc_id)
         doc.lines[0].qty = doc.lines[0].base_qty = Decimal(30)
     with pytest.raises(ValidationError) as exc:
-        await documents.post_document(db, admin, doc_id)
+        await slips.post_document(db, admin, doc_id)
     assert exc.value.message == linked_rules.LINES_CHANGED
     assert await stock(db, linked["bags"]) == 50
 
@@ -147,7 +148,7 @@ async def test_old_draft_is_dated_on_the_day_it_is_printed(linked, admin):
     async with db.session() as s:
         doc = await s.get(Document, doc_id)
         doc.doc_date = yesterday
-    await documents.post_document(db, admin, doc_id)
+    await slips.post_document(db, admin, doc_id)
     detail = await documents.get_document(db, admin, doc_id)
     from caspian.core import jalali
 
@@ -159,7 +160,7 @@ async def test_old_draft_is_dated_on_the_day_it_is_printed(linked, admin):
 async def test_cancel_when_goods_were_not_delivered(linked, admin):
     db = linked["db"]
     request_id, doc_id = await _approved(linked, admin)
-    await documents.post_document(db, admin, doc_id)
+    await slips.post_document(db, admin, doc_id)
     await documents.cancel_document(db, admin, doc_id, "کالا تحویل نشد")
     assert await stock(db, linked["bags"]) == 50
     async with db.session() as s:

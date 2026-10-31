@@ -8,10 +8,10 @@ from decimal import Decimal
 import openpyxl
 import pytest
 
+import approval_helpers as slips
 from caspian.db.models import DocType, PersonKind
 from caspian.db.readonly import wrap_read_only
 from caspian.mcp_server import build_server
-from caspian.services import documents as docs
 from caspian.services import items, locations, master, reports, scheduler
 from caspian.services.ai.tools import ToolContext, run_tool
 from caspian.services.documents import DocumentInput, LineInput
@@ -30,14 +30,14 @@ async def env(locations_required, admin):
     soap = await items.create_item(db, admin, ItemInput("3002", "مایع شوینده", u["عدد"]))
     guard = await master.save_person(db, admin, "حسن نگهبان", PersonKind.EMPLOYEE)
     cleaner = await master.save_person(db, admin, "مریم نظافت", PersonKind.EMPLOYEE)
-    await docs.create_and_post(db, admin, DocumentInput(DocType.RECEIPT, DAY - dt.timedelta(days=5), wh, [
+    await slips.create_and_post(db, admin, DocumentInput(DocType.RECEIPT, DAY - dt.timedelta(days=5), wh, [
         LineInput(lamp, u["عدد"], Decimal(100), Decimal(50_000)),
         LineInput(soap, u["عدد"], Decimal(100), Decimal(200_000))]))
     index = await locations.load_index(db)
     floor = {f.code: f.id for f in index.floors}
 
     async def issue(code, lines, person=guard, floor_code=None, day=DAY):
-        return await docs.create_and_post(db, admin, DocumentInput(
+        return await slips.create_and_post(db, admin, DocumentInput(
             DocType.ISSUE, day, wh, [LineInput(i, u["عدد"], Decimal(q)) for i, q in lines], person_id=person,
             location_id=index.find(code).id, floor_id=floor[floor_code] if floor_code else None))
 
@@ -94,7 +94,7 @@ async def test_issues_without_place_are_listed_apart(env):
     await locations.save_settings(env["db"], env["admin"], "1-6,46-57,83-92", required_on_issue=False)
     u = {x.name: x.id for x in await master.list_units(env["db"])}
     wh = (await master.list_warehouses(env["db"]))[0].id
-    await docs.create_and_post(env["db"], env["admin"], DocumentInput(
+    await slips.create_and_post(env["db"], env["admin"], DocumentInput(
         DocType.ISSUE, DAY, wh, [LineInput(env["lamp"], u["عدد"], Decimal(1))], person_id=env["guard"]))
     rows = await reports.consumption(env["db"], env["admin"], "floor")
     assert rows[-1].floor == reports.NO_PLACE and rows[-1].documents == 1
@@ -162,7 +162,7 @@ async def test_value_ignores_a_newer_receipt_without_price(env):
     db, admin = env["db"], env["admin"]
     u = {x.name: x.id for x in await master.list_units(db)}
     wh = (await master.list_warehouses(db))[0].id
-    await docs.create_and_post(db, admin, DocumentInput(DocType.RECEIPT, DAY - dt.timedelta(days=1), wh, [
+    await slips.create_and_post(db, admin, DocumentInput(DocType.RECEIPT, DAY - dt.timedelta(days=1), wh, [
         LineInput(env["lamp"], u["عدد"], Decimal(10), Decimal(0))]))
     async with db.session() as s:
         prices = await reports.last_purchase_prices(s, [env["lamp"]])

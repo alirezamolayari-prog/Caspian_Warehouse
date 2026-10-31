@@ -7,6 +7,7 @@ from decimal import Decimal
 
 import pytest
 
+import approval_helpers as slips
 from caspian.db.models import DocType
 from caspian.services import documents, items, master
 from caspian.services.errors import ValidationError
@@ -19,7 +20,7 @@ async def screws(db, admin):
     piece, box = units["عدد"], units["کارتن"]
     item = await items.create_item(db, admin, ItemInput("9", "پیچ", piece, units=[(box, Decimal(24))]))
     wh = (await master.list_warehouses(db))[0].id
-    await documents.create_and_post(db, admin, documents.DocumentInput(
+    await slips.create_and_post(db, admin, documents.DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh, [documents.LineInput(item, piece, Decimal(100))]))
     draft = await documents.create_document(db, admin, documents.DocumentInput(
         DocType.RECEIPT, dt.date.today(), wh, [documents.LineInput(item, box, Decimal(2))]))
@@ -40,7 +41,7 @@ async def _stock(db, item_id) -> Decimal:
 async def test_changed_factor_blocks_posting_with_a_clear_message(db, admin, screws):
     await _set_units(db, admin, screws["item"], [(screws["box"], Decimal(12))])
     with pytest.raises(ValidationError) as exc:
-        await documents.post_document(db, admin, screws["draft"])
+        await slips.post_document(db, admin, screws["draft"])
     assert "ضریب" in exc.value.message and "کارتن" in exc.value.message and "پیچ" in exc.value.message
     assert "۲۴" in exc.value.message and "۱۲" in exc.value.message
     assert await _stock(db, screws["item"]) == 100  # nothing moved
@@ -52,19 +53,19 @@ async def test_saving_the_draft_again_uses_todays_factor(db, admin, screws):
     await _set_units(db, admin, screws["item"], [(screws["box"], Decimal(12))])
     detail = await documents.get_document(db, admin, screws["draft"])
     await documents.update_document(db, admin, screws["draft"], detail.version_id, detail.input)
-    await documents.post_document(db, admin, screws["draft"])
+    await slips.post_document(db, admin, screws["draft"])
     assert await _stock(db, screws["item"]) == 124
 
 
 async def test_unchanged_factor_posts_normally(db, admin, screws):
-    await documents.post_document(db, admin, screws["draft"])
+    await slips.post_document(db, admin, screws["draft"])
     assert await _stock(db, screws["item"]) == 148
 
 
 async def test_removed_unit_blocks_posting(db, admin, screws):
     await _set_units(db, admin, screws["item"], [])
     with pytest.raises(ValidationError) as exc:
-        await documents.post_document(db, admin, screws["draft"])
+        await slips.post_document(db, admin, screws["draft"])
     assert "واحد" in exc.value.message
     assert await _stock(db, screws["item"]) == 100
 

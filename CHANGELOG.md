@@ -7,6 +7,27 @@ All notable changes to Caspian Warehouse. Versions follow `pyproject.toml`; inst
 > Database changes run automatically on the first start of the new version and can't be undone
 > from inside the app.
 
+## 1.3.0 (2026-10-31)
+
+### Goods leave only with the owner's approval
+- **«حواله خروج» and «خروج امانی» are the goods request.** Their button is now «ارسال درخواست»: the
+  slip goes to Caspian Owner and shows «درخواست ارسال شد — در انتظار تأیید». When an owner approves
+  it, it is posted automatically (stock leaves then) and becomes printable. Nobody can post these two
+  types any other way — not the toolbar «ثبت نهایی», printing, the assistant or an import, for any role
+  including مدیر سیستم. Receipts, opening balances, stocktakes, transfers and returns work as before.
+- While a slip waits it is locked (no edit, no delete) and its goods are **reserved**: a second slip
+  can't take the same goods. Its sender (or the system admin) can «لغو درخواست»; the slip becomes a
+  draft again, the owners get a message, and a late approval is ignored.
+- **Rejected** slips show the owner's reason in red; fix them and press «ارسال دوباره درخواست».
+- Offline: the request stays «در صف ارسال» and is sent when the server is back. Nothing is ever
+  posted locally instead. The approver's name is never stored on the slip or printed.
+- «درخواست کالا» is now only the list of waiting / rejected requests (with the chat); the separate
+  «درخواست جدید» form and the assistant's own request tool are gone. Storekeepers (انباردار) see it too.
+- Status colours: draft = grey, waiting = lemon, approved / posted = green, rejected = red. The
+  dashboard shows «در انتظار تأیید مالک» and «رد شده توسط مالک».
+- An approved slip keeps the date written on it. Closing a fiscal year also removes the requests of
+  that year's slips (the archive keeps them).
+
 ## 1.2.1 (2026-10-31)
 
 First published release since 1.1.0. Version 1.2.0 was never published separately: everything listed

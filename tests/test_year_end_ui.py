@@ -1,6 +1,7 @@
 import datetime as dt
 from decimal import Decimal
 
+import approval_helpers as slips
 from caspian.core.settings import Settings
 from caspian.db.database import DbConfig
 from caspian.db.models import DocType
@@ -42,7 +43,7 @@ async def test_reports_can_read_closed_year_archive(qtbot, themes, db, admin, tm
     unit = (await master.list_units(db))[0].id
     wh = (await master.list_warehouses(db))[0].id
     item = await items.create_item(db, admin, ItemInput("A", "دریل", unit))
-    await docs.create_and_post(db, admin, docs.DocumentInput(
+    await slips.create_and_post(db, admin, docs.DocumentInput(
         DocType.RECEIPT, dt.date(2025, 9, 1), wh, [docs.LineInput(item, unit, Decimal(5))]))
     approval = await protected.approve(db, admin, protected.ProtectedAction.CLOSE_FISCAL_YEAR,
                                        "admin", "4826")

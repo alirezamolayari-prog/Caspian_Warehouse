@@ -16,7 +16,6 @@ from qasync import asyncSlot
 from caspian.core import jalali
 from caspian.core.permissions import Perm
 from caspian.core.text import to_persian_digits
-from caspian.db.models import DocStatus
 from caspian.services import documents, health, items
 from caspian.services.server_link import goods
 from caspian.ui.health_dialog import show_health
@@ -48,9 +47,6 @@ PAGES: tuple[PageSpec, ...] = (
 )
 
 
-_DOC_TONES = {DocStatus.DRAFT: "pending", DocStatus.POSTED: "ok", DocStatus.CANCELLED: "bad"}
-
-
 class DashboardPage(QWidget):
     open_page = Signal(str, str)  # page key, option (e.g. "low_stock")
 
@@ -79,10 +75,9 @@ class DashboardPage(QWidget):
             "drafts": StatCard("پیش‌نویس‌های در انتظار", hint="اسناد ثبت‌نشده"),
         }
         if ctx.actor.can(Perm.REQUESTS_MANAGE):  # goods requests waiting for someone (4.5)
-            self.cards["requests_pending"] = StatCard("در انتظار تأیید مالک", hint="درخواست‌های کالا")
-            self.cards["requests_approved"] = StatCard("تأییدشده — منتظر چاپ حواله",
-                                                       hint="با چاپ، حواله ثبت می‌شود")
-            for key, option in (("requests_pending", "pending"), ("requests_approved", "approved")):
+            self.cards["requests_pending"] = StatCard("در انتظار تأیید مالک", hint="حواله‌های ارسال‌شده")
+            self.cards["requests_rejected"] = StatCard("رد شده توسط مالک", hint="اصلاح و ارسال دوباره")
+            for key, option in (("requests_pending", "pending"), ("requests_rejected", "rejected")):
                 self.cards[key].clicked.connect(lambda o=option: self.open_page.emit("requests", o))
         # Rows of equal cards (4, or 3 + 3 with the request cards): no short row beside a long one.
         columns = 3 if len(self.cards) % 3 == 0 else 4
@@ -140,9 +135,9 @@ class DashboardPage(QWidget):
         self.cards["drafts"].set_value(to_persian_digits(pending.total), pending.hint)
         self.cards["loans"].set_value(to_persian_digits(loans))
         if "requests_pending" in self.cards:
-            waiting, approved = await goods.dashboard_counts(self._ctx.db)
+            waiting, rejected = await goods.dashboard_counts(self._ctx.db)
             self.cards["requests_pending"].set_value(to_persian_digits(waiting))
-            self.cards["requests_approved"].set_value(to_persian_digits(approved))
+            self.cards["requests_rejected"].set_value(to_persian_digits(rejected))
         if not self._ctx.actor.can(Perm.DOCUMENTS_VIEW):
             return
         findings = await health.check(self._ctx.db, self._ctx.actor)
@@ -153,8 +148,7 @@ class DashboardPage(QWidget):
         self.recent.set_rows([(r.id, (r.number_text, r.type_name,
                                       jalali.format_date(r.doc_date), r.person or "—",
                                       r.status_name)) for r in rows],
-                            badges={(i, 4): _DOC_TONES[r.status] for i, r in enumerate(rows)
-                                    if r.status in _DOC_TONES})
+                            badges={(i, 4): r.tone for i, r in enumerate(rows)})
         self.recent.setVisible(bool(rows))
         self.empty.setVisible(not rows)
 

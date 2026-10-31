@@ -273,7 +273,11 @@ class AssistantPage(QWidget):
         except ServiceError as exc:
             self._append("error", exc.message)
             return None
-        card = ConfirmCard(summary, self._ctx.actor.can(Perm.DOCUMENTS_POST), self)
+        if summary.needs_owner:  # goods leave only with an owner's approval: «بله» sends the request
+            card = ConfirmCard(summary, self._ctx.actor.can(Perm.DOCUMENTS_EDIT), self,
+                               question="این سند برای تأیید مالک ارسال شود؟", yes_text="بله، بفرست")
+        else:
+            card = ConfirmCard(summary, self._ctx.actor.can(Perm.DOCUMENTS_POST), self)
         card.confirmed.connect(lambda c: spawn(self.on_confirm(c)))
         card.rejected.connect(lambda c: spawn(self.on_reject(c)))
         card.open_requested.connect(lambda doc: spawn(self._open(doc)))
@@ -300,6 +304,9 @@ class AssistantPage(QWidget):
         from caspian.ui.documents_page import with_stocktake_override
 
         s = card.summary
+        if s.needs_owner:
+            await self._send_for_approval(card)
+            return
         card.set_busy(True)
         try:
             await with_stocktake_override(self._ctx, self, lambda approval: documents.post_document(
@@ -315,6 +322,23 @@ class AssistantPage(QWidget):
             card.show_message("خطای غیرمنتظره؛ جزئیات در فایل گزارش ثبت شد.")
             return
         self._append("assistant", f"✓ {s.title} ثبت نهایی شد و موجودی به‌روز شد.",
+                     f'<br><a href="doc:{s.document_id}">باز کردن {s.title} ←</a>')
+        self._close_card(card)
+
+    async def _send_for_approval(self, card: ConfirmCard) -> None:
+        """«بله، بفرست» on an issue / loan-out: the person sends it to the owners (never posted here)."""
+        s = card.summary
+        card.set_busy(True)
+        try:
+            await goods.submit_document(self._ctx.db, self._ctx.actor, s.document_id)
+        except ServiceError as exc:
+            card.set_busy(False)
+            card.show_message(exc.message)
+            self._append("error", f"{s.title} ارسال نشد: {exc.message}\nپیش‌نویس باقی ماند.")
+            return
+        if (link := getattr(self._ctx, "server_link", None)) is not None:
+            link.wake()
+        self._append("assistant", f"✓ {s.title} برای تأیید مالک ارسال شد؛ پس از تأیید ثبت نهایی می‌شود.",
                      f'<br><a href="doc:{s.document_id}">باز کردن {s.title} ←</a>')
         self._close_card(card)
 

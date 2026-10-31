@@ -9,6 +9,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
+import approval_helpers as slips
 from caspian.db.models import DocType, RequestStatus
 from caspian.services import documents
 from caspian.services.server_link import connection, goods
@@ -75,7 +76,7 @@ async def test_local_work_continues_while_the_server_hangs(db, admin, request_sh
     try:
         await asyncio.sleep(0.2)
         started = time.monotonic()
-        await documents.create_and_post(db, admin, documents.DocumentInput(
+        await slips.create_and_post(db, admin, documents.DocumentInput(
             DocType.RECEIPT, dt.date.today(), request_shop["warehouse"],
             [documents.LineInput(request_shop["bags"], request_shop["unit"], Decimal(7))]))
         assert time.monotonic() - started < 3  # receipts don't wait for the server

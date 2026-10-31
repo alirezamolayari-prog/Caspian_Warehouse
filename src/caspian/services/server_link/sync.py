@@ -229,7 +229,11 @@ class SyncEngine:
             result.state, result.message = self._state(me, poller, senders, problems)
         except ServerError as exc:  # unreachable: everything stays queued
             result.state, result.message = SyncState.DISCONNECTED, exc.message
-        try:  # approvals already here become vouchers even while the server is unreachable
+        try:  # approved slips are posted (stock leaves) even while the server is unreachable again
+            result.changed |= bool(await issue_link.post_approved_slips(self._db))
+        except Exception:
+            log.exception("Posting approved slips failed")
+        try:  # older requests registered on their own: approvals become draft vouchers
             result.changed |= bool(await issue_link.ensure_issue_drafts(self._db, actor))
         except Exception:
             log.exception("Making issue vouchers for approved requests failed")
@@ -492,8 +496,8 @@ async def _apply_request(s: AsyncSession, req: GoodsRequest, row: dict, initial:
     if row.get("issue_number") and not req.issue_number:
         req.issue_number = row["issue_number"]
     new = _STATUS.get(row.get("status"))
-    if new is None or new == req.status or req.status == RequestStatus.ISSUED:
-        return None
+    if new is None or new == req.status or req.status in (RequestStatus.ISSUED, RequestStatus.WITHDRAWN):
+        return None  # issued never goes back; a withdrawn slip ignores the owners' later decision
     if await _state_ops(s, req.id):
         return None
     old, req.status = req.status, new

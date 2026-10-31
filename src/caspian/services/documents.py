@@ -34,6 +34,7 @@ from caspian.db.models import (
     Document,
     DocumentLine,
     Floor,
+    GoodsRequest,
     Item,
     Location,
     Person,
@@ -48,7 +49,7 @@ from caspian.db.models import (
     Warehouse,
 )
 from caspian.services import audit, locations
-from caspian.services.actor import Actor
+from caspian.services.actor import SYSTEM, Actor
 from caspian.services.errors import (
     ConcurrencyError,
     NotFound,
@@ -85,6 +86,23 @@ _SOURCE_SIGN = {
     DocType.ADJUSTMENT: 1, DocType.LOAN_OUT: -1, DocType.LOAN_RETURN: 1,
 }
 NEEDS_PERSON = {DocType.LOAN_OUT, DocType.LOAN_RETURN}
+# Goods leave the warehouse only with an owner's approval in Caspian Owner: these slips are sent as
+# goods requests («ارسال درخواست») and are posted by the sync when the approval arrives, never by
+# a person (any role, admin included), the assistant, an import or printing.
+NEEDS_OWNER = frozenset({DocType.ISSUE, DocType.LOAN_OUT})
+# Request states that keep the slip locked and its goods reserved.
+AWAITING_OWNER = (RequestStatus.QUEUED, RequestStatus.PENDING, RequestStatus.APPROVED)
+OWNER_ONLY = ("حواله خروج و خروج امانی فقط با تأیید مالک در Caspian Owner ثبت نهایی می‌شوند؛ "
+              "«ارسال درخواست» را بزنید.")
+AWAITING = ("درخواست این سند برای تأیید مالک ارسال شده و تا تصمیم مالک قابل تغییر یا حذف نیست؛ "
+            "برای تغییر، ابتدا «لغو درخواست» را بزنید.")
+PRINT_AFTER_APPROVAL = "این سند پس از تأیید مالک و ثبت نهایی قابل چاپ است."
+APPROVAL_NAMES = {
+    RequestStatus.QUEUED: "در صف ارسال",
+    RequestStatus.PENDING: "درخواست ارسال شد — در انتظار تأیید",
+    RequestStatus.APPROVED: "تأیید شده — در حال ثبت",
+    RequestStatus.REJECTED: "رد شده",
+}
 # Shown before the number so two «سند ۱» of different types can't be confused (ر-۱، ح-۱ …).
 DOC_PREFIX = {
     DocType.RECEIPT: "ر", DocType.ISSUE: "ح", DocType.TRANSFER: "ت", DocType.ADJUSTMENT: "ص",
@@ -147,6 +165,14 @@ class DocumentRow:
     created_by: str
     description: str
     print_count: int = 0
+    approval: RequestStatus | None = None  # state of the slip's request to the owners
+    rejection_reason: str = ""
+    approval_error: str = ""  # why sending or the automatic posting failed
+    from_request: bool = False  # older flow: made from an approved goods request (printing posts it)
+
+    @property
+    def needs_owner(self) -> bool:
+        return self.doc_type in NEEDS_OWNER and not self.from_request
 
     @property
     def number_text(self) -> str:
@@ -158,7 +184,30 @@ class DocumentRow:
 
     @property
     def status_name(self) -> str:
-        return STATUS_NAMES[self.status]
+        return state_name(self.status, self.approval)
+
+    @property
+    def tone(self) -> str:
+        return state_tone(self.status, self.approval)
+
+    @property
+    def awaiting_owner(self) -> bool:
+        return self.status == DocStatus.DRAFT and self.approval in AWAITING_OWNER
+
+
+def state_name(status: DocStatus, approval: RequestStatus | None) -> str:
+    if status == DocStatus.DRAFT and approval in APPROVAL_NAMES:
+        return APPROVAL_NAMES[approval]
+    return STATUS_NAMES[status]
+
+
+def state_tone(status: DocStatus, approval: RequestStatus | None) -> str:
+    """Badge colour, the same everywhere: grey draft, lemon waiting, green final, red rejected/void."""
+    if status == DocStatus.POSTED:
+        return "ok"
+    if status == DocStatus.CANCELLED or approval == RequestStatus.REJECTED:
+        return "bad"
+    return "pending" if approval in AWAITING_OWNER else "draft"
 
 
 @dataclass(frozen=True)
@@ -183,6 +232,13 @@ class DocumentDetail:
     status: DocStatus
     input: DocumentInput
     lines: list[LineView]
+    approval: RequestStatus | None = None
+    rejection_reason: str = ""
+    approval_error: str = ""
+
+    @property
+    def awaiting_owner(self) -> bool:
+        return self.status == DocStatus.DRAFT and self.approval in AWAITING_OWNER
 
 
 @dataclass(frozen=True)
@@ -408,17 +464,45 @@ async def _posting_problems(s: AsyncSession, data: DocumentInput, lines: list[Do
                 continue
             balance = await s.scalar(select(StockBalance.qty).where(
                 StockBalance.item_id == item_id, StockBalance.warehouse_id == wh_id)) or Decimal(0)
-            if balance + change < 0:
+            reserved = await _reserved_in(s, item_id, wh_id, doc_id)
+            if balance - reserved + change < 0:
                 item = await s.get(Item, item_id)
                 wh = await s.get(Warehouse, wh_id)
                 hint = pending_hint(await _pending_incoming_in(s, item_id, wh_id, doc_id),
                                     item.base_unit.name)
+                held = (f"، رزرو برای درخواست‌های در انتظار تأیید: {format_qty(reserved)}"
+                        if reserved else "")
                 problems.append(Problem(
                     f"line:{first_line[(item_id, wh_id)]}",
                     f"موجودی «{item.name}» در «{wh.name}» کافی نیست "
-                    f"(موجود: {format_qty(balance)}، نیاز: {format_qty(-change)})."
+                    f"(موجود: {format_qty(balance)}{held}، نیاز: {format_qty(-change)})."
                     + (f" {hint}" if hint else "")))
     return problems
+
+
+async def _reserved_in(s: AsyncSession, item_id: int, warehouse_id: int,
+                       exclude_doc: int | None = None) -> Decimal:
+    """Goods of slips sent for approval and not yet posted: held, so they can't be issued twice."""
+    stmt = (select(func.coalesce(func.sum(DocumentLine.base_qty), 0))
+            .join(Document, DocumentLine.document_id == Document.id)
+            .join(GoodsRequest, GoodsRequest.document_id == Document.id)
+            .where(Document.status == DocStatus.DRAFT, Document.doc_type.in_(NEEDS_OWNER),
+                   Document.warehouse_id == warehouse_id, DocumentLine.item_id == item_id,
+                   GoodsRequest.status.in_(AWAITING_OWNER)))
+    if exclude_doc is not None:
+        stmt = stmt.where(Document.id != exclude_doc)
+    return Decimal(await s.scalar(stmt) or 0)
+
+
+async def request_of_in(s: AsyncSession, doc_id: int) -> GoodsRequest | None:
+    """The goods request this slip was sent as (None if it was never sent)."""
+    return await s.scalar(select(GoodsRequest).where(GoodsRequest.document_id == doc_id))
+
+
+async def _refuse_while_awaiting(s: AsyncSession, doc: Document) -> None:
+    req = await request_of_in(s, doc.id)
+    if req is not None and req.status in AWAITING_OWNER:
+        raise ValidationError(AWAITING)
 
 
 async def check(db: Database, actor: Actor, data: DocumentInput, doc_id: int | None = None,
@@ -582,12 +666,14 @@ async def list_documents(
     stmt = (
         select(Document, Warehouse.name, dest.name, Person.name, func.coalesce(lines.c.n, 0),
                # the full name people know, the login name only as a fallback (bug list #5)
-               func.coalesce(func.nullif(User.full_name, ""), User.username))
+               func.coalesce(func.nullif(User.full_name, ""), User.username),
+               GoodsRequest.status, GoodsRequest.rejection_reason, GoodsRequest.last_error)
         .join(Warehouse, Document.warehouse_id == Warehouse.id)
         .outerjoin(dest, Document.dest_warehouse_id == dest.id)
         .outerjoin(Person, Document.person_id == Person.id)
         .outerjoin(lines, lines.c.document_id == Document.id)
         .outerjoin(User, Document.created_by_id == User.id)
+        .outerjoin(GoodsRequest, GoodsRequest.document_id == Document.id)
         .order_by(Document.doc_date.desc(), Document.id.desc())
         .limit(limit)
     )
@@ -613,8 +699,9 @@ async def list_documents(
         rows = (await s.execute(stmt)).all()
     return [
         DocumentRow(d.id, d.doc_type, d.number, d.fiscal_year, d.doc_date, d.status, wh,
-                    dwh or "", person or "", n, creator or "", d.description, d.print_count)
-        for d, wh, dwh, person, n, creator in rows
+                    dwh or "", person or "", n, creator or "", d.description, d.print_count,
+                    approval, reason or "", error or "", d.server_request_id is not None)
+        for d, wh, dwh, person, n, creator, approval, reason, error in rows
     ]
 
 
@@ -636,8 +723,10 @@ async def get_document(db: Database, actor: Actor, doc_id: int) -> DocumentDetai
             location_id=doc.location_id, floor_id=doc.consumption_floor_id, usage_note=doc.usage_note,
             server_request_id=doc.server_request_id,
         )
+        req = await request_of_in(s, doc.id)
         return DocumentDetail(doc.id, doc.version_id, doc.number, doc.fiscal_year, doc.status,
-                              data, views)
+                              data, views, req.status if req else None,
+                              req.rejection_reason if req else "", req.last_error if req else "")
 
 
 @dataclass(frozen=True)
@@ -696,6 +785,8 @@ async def print_sheet(db: Database, actor: Actor, doc_id: int) -> PrintSheet:
     actor.require(Perm.DOCUMENTS_VIEW)
     async with db.session() as s:
         doc = await _load(s, doc_id)
+        if doc.doc_type in NEEDS_OWNER and doc.status == DocStatus.DRAFT and doc.server_request_id is None:
+            raise ValidationError(PRINT_AFTER_APPROVAL)
         if doc.server_request_id is not None and doc.status == DocStatus.DRAFT:
             from caspian.services.server_link import linked
 
@@ -884,6 +975,15 @@ async def pending_counts(db: Database) -> tuple[int, int]:
     return drafts or 0, len(loans)
 
 
+async def awaiting_owner_count(db: Database) -> int:
+    """Slips sent for approval and not decided (or not yet posted): the dashboard card."""
+    async with db.session() as s:
+        return await s.scalar(select(func.count()).select_from(Document)
+                              .join(GoodsRequest, GoodsRequest.document_id == Document.id)
+                              .where(Document.status == DocStatus.DRAFT,
+                                     GoodsRequest.status.in_(AWAITING_OWNER))) or 0
+
+
 # ----- commands -----
 
 
@@ -958,6 +1058,7 @@ async def _update_document(db: Database, actor: Actor, doc_id: int, expected_ver
             raise ValidationError("فقط سند پیش‌نویس قابل ویرایش است.")
         if data.doc_type != doc.doc_type:
             raise ValidationError("نوع سند قابل تغییر نیست.")
+        await _refuse_while_awaiting(s, doc)
         if jalali.fiscal_year_of(data.doc_date) != doc.fiscal_year:
             raise ValidationError("تاریخ سند باید در همان سال مالی بماند.")
         if doc.server_request_id is not None and _locked(data) != _locked(_input_of(doc)):
@@ -996,7 +1097,11 @@ async def _delete_draft(db: Database, actor: Actor, doc_id: int) -> None:
             from caspian.services.server_link import linked
 
             raise ValidationError(linked.NO_DELETE)
+        await _refuse_while_awaiting(s, doc)
         await ensure_open_year(s, doc.fiscal_year)
+        if (req := await request_of_in(s, doc.id)) is not None:
+            req.document_id = None  # the request's history stays; only the draft goes
+            await s.flush()
         from caspian.services import imports  # imports depends on this module
 
         await imports.reopen_for_deleted_document(s, actor, doc.id)
@@ -1044,13 +1149,45 @@ async def post_document_in(s: AsyncSession, actor: Actor, doc: Document, *,
     if doc.status != DocStatus.DRAFT:
         raise ValidationError("این سند قبلاً ثبت یا ابطال شده است.")
     request = None
-    if doc.server_request_id is not None:  # made from a goods request: only once it is approved
+    if doc.server_request_id is not None:  # older flow: made from an approved goods request
         from caspian.services.server_link import linked
 
         request = linked.check_postable(await linked.linked_request_in(s, doc), doc)
-        today = dt.date.today()
-        if doc.doc_date < today and jalali.fiscal_year_of(today) == doc.fiscal_year:
-            doc.doc_date = today  # the goods leave on the day it is printed
+        _date_today(doc)
+    elif doc.doc_type in NEEDS_OWNER:  # every role, admin included: only the owner's approval posts
+        raise ValidationError(OWNER_ONLY)
+    await _post_body(s, actor, doc, approval=approval, stocktake_id=stocktake_id, via=via)
+    if request is not None:
+        linked.mark_issued_in(s, actor, request, number_text(doc.doc_type, doc.number))
+
+
+def _date_today(doc: Document) -> None:
+    today = dt.date.today()
+    if doc.doc_date < today and jalali.fiscal_year_of(today) == doc.fiscal_year:
+        doc.doc_date = today  # the goods leave on the day it is printed
+
+
+async def post_approved_in(s: AsyncSession, doc: Document, request: GoodsRequest) -> None:
+    """The owner approved the slip in Caspian Owner: post it now (called only by the sync).
+
+    It is posted in the name of the person who sent it, with the date written on the slip; who
+    approved is never stored on the document or printed (the server hides it; the audit says
+    `via=owner_approval`)."""
+    from caspian.services.server_link import linked
+
+    if doc.status != DocStatus.DRAFT:
+        raise ValidationError("این سند قبلاً ثبت یا ابطال شده است.")
+    if request.document_id != doc.id or request.status != RequestStatus.APPROVED:
+        raise ValidationError(linked.NOT_APPROVED)
+    sender = await s.get(User, doc.created_by_id) if doc.created_by_id else None
+    actor = (Actor(sender.id, sender.username, sender.full_name, "owner_approval", frozenset())
+             if sender else SYSTEM)
+    await _post_body(s, actor, doc, via="owner_approval")
+    linked.mark_issued_in(s, actor, request, number_text(doc.doc_type, doc.number))
+
+
+async def _post_body(s: AsyncSession, actor: Actor, doc: Document, *, approval: Approval | None = None,
+                     stocktake_id: int | None = None, via: str | None = None) -> None:
     # Re-validate: items/warehouses may have been deactivated since the draft was saved.
     await _validate(s, _input_of(doc))
     await _check_factors(s, doc)
@@ -1073,8 +1210,6 @@ async def post_document_in(s: AsyncSession, actor: Actor, doc: Document, *,
                  {"type": doc.doc_type.value, "number": doc.number, **override,
                   **({"via": via} if via else {})},
                  approved_by_id=approver_id)
-    if request is not None:
-        linked.mark_issued_in(s, actor, request, number_text(doc.doc_type, doc.number))
 
 
 @dataclass(frozen=True)
@@ -1086,6 +1221,7 @@ class Confirmation:
     title: str  # «حواله خروج ح-۱۰»
     lines: list[str]  # «۱ عدد شمع (کد ۱۰۱۶)»
     details: list[tuple[str, str]]  # (label, value): تحویل‌گیرنده، محل مصرف، شرح مصرف، انبار…
+    needs_owner: bool = False  # issue / loan-out: «بله» sends it for the owners' approval
 
     @property
     def text(self) -> str:
@@ -1113,7 +1249,7 @@ async def confirmation(db: Database, actor: Actor, doc_id: int) -> Confirmation:
                    ("تاریخ", jalali.format_date(doc.doc_date))]
         return Confirmation(doc.id, doc.version_id,
                             f"{DOC_TYPE_NAMES[doc.doc_type]} {number_text(doc.doc_type, doc.number)}",
-                            lines, details)
+                            lines, details, doc.doc_type in NEEDS_OWNER)
 
 
 async def discard_assistant_draft(db: Database, actor: Actor, doc_id: int) -> None:

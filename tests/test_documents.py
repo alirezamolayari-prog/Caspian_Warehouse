@@ -4,6 +4,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import func, select
 
+import approval_helpers as slips
 from caspian.db.models import AppSetting, DocStatus, DocType, PersonKind, StockLedger
 from caspian.services import auth, items, master, protected, users
 from caspian.services import documents as docs
@@ -43,7 +44,7 @@ async def balance(db, item_id, wh_id=None) -> Decimal:
 
 
 async def receive(e, qty=Decimal(2), unit="جعبه", item="drill", wh="wh1") -> int:
-    return await docs.create_and_post(e["db"], e["admin"], doc(
+    return await slips.create_and_post(e["db"], e["admin"], doc(
         DocType.RECEIPT, e[wh], (e[item], e["u"][unit], qty)))
 
 
@@ -82,19 +83,19 @@ async def test_issue_cannot_exceed_stock(env):
         DocType.ISSUE, env["wh1"], (env["drill"], env["u"]["جعبه"], Decimal(1)),  # 24 > 10
         person_id=env["person"]))
     with pytest.raises(ValidationError, match="کافی نیست"):
-        await docs.post_document(db, admin, doc_id)
+        await slips.post_document(db, admin, doc_id)
     assert (await docs.get_document(db, admin, doc_id)).status is DocStatus.DRAFT
     assert await balance(db, env["drill"]) == Decimal(10)
     async with db.session() as s:
         s.add(AppSetting(key="allow_negative_stock", value=True))
-    await docs.post_document(db, admin, doc_id)
+    await slips.post_document(db, admin, doc_id)
     assert await balance(db, env["drill"]) == Decimal(-14)
 
 
 async def test_transfer(env):
     db, admin = env["db"], env["admin"]
     await receive(env, Decimal(30), "عدد")
-    await docs.create_and_post(db, admin, doc(
+    await slips.create_and_post(db, admin, doc(
         DocType.TRANSFER, env["wh1"], (env["drill"], env["u"]["عدد"], Decimal(12)),
         dest_warehouse_id=env["wh2"]))
     assert await balance(db, env["drill"], env["wh1"]) == Decimal(18)
@@ -108,7 +109,7 @@ async def test_transfer(env):
 async def test_adjustment_signed_lines(env):
     db, admin = env["db"], env["admin"]
     await receive(env, Decimal(5), "عدد")
-    await docs.create_and_post(db, admin, doc(
+    await slips.create_and_post(db, admin, doc(
         DocType.ADJUSTMENT, env["wh1"], (env["drill"], env["u"]["عدد"], Decimal(-2))))
     assert await balance(db, env["drill"]) == Decimal(3)
     with pytest.raises(ValidationError, match="بزرگ‌تر از صفر"):
@@ -143,7 +144,7 @@ async def test_edit_delete_only_drafts_and_concurrency(env):
         await docs.update_document(db, admin, doc_id, detail.version_id, data)
     detail = await docs.get_document(db, admin, doc_id)
     assert [ln.base_qty for ln in detail.lines] == [Decimal(1), Decimal(24)]
-    await docs.post_document(db, admin, doc_id)
+    await slips.post_document(db, admin, doc_id)
     with pytest.raises(ValidationError):
         await docs.update_document(db, admin, doc_id, detail.version_id + 1, data)
     with pytest.raises(ValidationError):
@@ -157,7 +158,7 @@ async def test_edit_delete_only_drafts_and_concurrency(env):
 async def test_cancel_reverses_and_guards_negative(env):
     db, admin = env["db"], env["admin"]
     receipt = await receive(env, Decimal(10), "عدد")
-    await docs.create_and_post(db, admin, doc(
+    await slips.create_and_post(db, admin, doc(
         DocType.ISSUE, env["wh1"], (env["drill"], env["u"]["عدد"], Decimal(8)), person_id=env["person"]))
     with pytest.raises(ValidationError, match="کافی نیست"):
         await docs.cancel_document(db, admin, receipt)  # would leave -8
@@ -180,7 +181,7 @@ async def test_post_revalidates_inactive_item(env):
                                        "4826")
     await items.set_item_active(db, admin, env["drill"], False, approval)
     with pytest.raises(ValidationError, match="غیرفعال"):
-        await docs.post_document(db, admin, doc_id)
+        await slips.post_document(db, admin, doc_id)
 
 
 async def test_loans_lifecycle(env):
@@ -193,7 +194,7 @@ async def test_loans_lifecycle(env):
     with pytest.raises(ValidationError, match="تحویل‌گیرنده"):
         await docs.create_document(db, admin, doc(
             DocType.LOAN_OUT, env["wh1"], (env["pallet"], env["u"]["عدد"], Decimal(1))))
-    loan = await docs.create_and_post(db, admin, doc(
+    loan = await slips.create_and_post(db, admin, doc(
         DocType.LOAN_OUT, env["wh1"], (env["pallet"], env["u"]["عدد"], Decimal(6)),
         person_id=env["person"]))
     assert await balance(db, env["pallet"]) == Decimal(4)
@@ -202,14 +203,14 @@ async def test_loans_lifecycle(env):
 
     ret = doc(DocType.LOAN_RETURN, env["wh1"], (env["pallet"], env["u"]["عدد"], Decimal(4)),
               person_id=env["person"], related_document_id=loan)
-    first_return = await docs.create_and_post(db, admin, ret)
+    first_return = await slips.create_and_post(db, admin, ret)
     [row] = await docs.outstanding_loans(db, admin)
     assert row.outstanding == Decimal(2)
     assert await balance(db, env["pallet"]) == Decimal(8)
 
     too_much = await docs.create_document(db, admin, ret)  # 4 more but only 2 outstanding
     with pytest.raises(ValidationError, match="مانده امانی"):
-        await docs.post_document(db, admin, too_much)
+        await slips.post_document(db, admin, too_much)
     with pytest.raises(ValidationError, match="برگشت‌ها"):
         await docs.cancel_document(db, admin, loan)
 
@@ -237,7 +238,7 @@ async def test_list_filters_and_search(env):
     db, admin = env["db"], env["admin"]
     await receive(env)
     await receive(env, Decimal(1), "عدد", item="pallet")
-    await docs.create_and_post(db, admin, doc(
+    await slips.create_and_post(db, admin, doc(
         DocType.LOAN_OUT, env["wh1"], (env["pallet"], env["u"]["عدد"], Decimal(1)),
         person_id=env["person"], description="برای نمایشگاه"))
     assert len(await docs.list_documents(db, admin, DocType.RECEIPT)) == 2
@@ -271,7 +272,7 @@ async def test_number_collision_retries(env, monkeypatch):
 async def test_print_sheet_has_everything_for_the_form(env):
     db, admin = env["db"], env["admin"]
     await receive(env, Decimal(1))  # 24 pieces in stock
-    doc_id = await docs.create_and_post(db, admin, doc(
+    doc_id = await slips.create_and_post(db, admin, doc(
         DocType.ISSUE, env["wh1"], (env["drill"], env["u"]["عدد"], Decimal(3), Decimal(1000), "یدکی"),
         person_id=env["person"], description="برای کارگاه"))
     sheet = await docs.print_sheet(db, admin, doc_id)
@@ -333,10 +334,10 @@ async def test_pending_incoming_explains_zero_stock(env):
                                                       (env["drill"], env["u"]["عدد"], Decimal(5)),
                                                       person_id=env["person"]))
     with pytest.raises(ValidationError, match="پیش‌نویس ر-۱ منتظر ثبت نهایی"):
-        await docs.post_document(db, admin, issue)
-    await docs.post_document(db, admin, draft)
+        await slips.post_document(db, admin, issue)
+    await slips.post_document(db, admin, draft)
     assert await docs.pending_incoming(db, admin, env["drill"], env["wh1"]) == []
-    await docs.post_document(db, admin, issue)
+    await slips.post_document(db, admin, issue)
 
 
 # ----- validation rules (#18, #21, #22) -----
@@ -361,12 +362,12 @@ async def test_issue_needs_a_recipient_to_be_posted(env):
     draft = await docs.create_document(db, admin, doc(DocType.ISSUE, env["wh1"],
                                                       (env["drill"], env["u"]["عدد"], Decimal(1))))
     with pytest.raises(ValidationError, match="تحویل‌گیرنده"):
-        await docs.post_document(db, admin, draft)
+        await slips.post_document(db, admin, draft)
     detail = await docs.get_document(db, admin, draft)
     data = detail.input
     data.person_id = env["person"]
     await docs.update_document(db, admin, draft, detail.version_id, data)
-    await docs.post_document(db, admin, draft)
+    await slips.post_document(db, admin, draft)
 
 
 async def test_decimals_only_for_units_that_allow_them(env):
